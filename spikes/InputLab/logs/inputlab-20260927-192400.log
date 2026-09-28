@@ -1,0 +1,2598 @@
+      1.32  DEVICE iPad iPadOS 26.7
+      9.42  MENU main menu rebuilt (strip=false), full tree in log file
+      9.47  MENU [] com.apple.menu.root
+      9.49  MENU   [Input Lab] com.apple.menu.application
+      9.50  MENU     [] com.apple.menu.about
+      9.51  MENU     [] com.apple.menu.preferences
+      9.54  MENU       Input Lab Settings…  ⌨ ["cmd"] ","
+      9.56  MENU     [Services] com.apple.menu.services
+      9.57  MENU     [] com.apple.menu.hide
+      9.58  MENU     [] com.apple.menu.quit
+      9.58  MENU   [File] com.apple.menu.file
+      9.59  MENU     [] com.apple.menu.new-item
+      9.60  MENU     [] com.apple.menu.open
+      9.61  MENU     [] com.apple.menu.close
+      9.62  MENU       Close  ⌨ ["cmd"] "w"
+      9.63  MENU     [] com.apple.menu.document
+      9.64  MENU     [] com.apple.menu.print
+      9.64  MENU   [Edit] com.apple.menu.edit
+      9.65  MENU     [] com.apple.menu.undo-redo
+      9.66  MENU       Undo  ⌨ ["cmd"] "z"
+      9.67  MENU       Redo  ⌨ ["cmd", "shift"] "z"
+      9.68  MENU     [] com.apple.menu.standard-edit
+      9.69  MENU       Cut  ⌨ ["cmd"] "x"
+      9.71  MENU       Copy  ⌨ ["cmd"] "c"
+      9.72  MENU       Paste  ⌨ ["cmd"] "v"
+      9.73  MENU       Paste and Match Style  ⌨ ["cmd", "opt", "shift"] "v"
+      9.74  MENU       Delete
+      9.75  MENU       Select All  ⌨ ["cmd"] "a"
+      9.76  MENU     [Find] com.apple.menu.find
+      9.77  MENU       [] com.apple.menu.find-panel
+      9.78  MENU         Find  ⌨ ["cmd"] "f"
+      9.79  MENU         Find & Replace  ⌨ ["cmd", "opt"] "f"
+      9.80  MENU         Find Next  ⌨ ["cmd"] "g"
+      9.81  MENU         Find Previous  ⌨ ["cmd", "shift"] "g"
+      9.82  MENU       Use Selection for Find  ⌨ ["cmd"] "e"
+      9.84  MENU     [Spelling and Grammar] com.apple.menu.spelling
+      9.84  MENU       [] com.apple.menu.spelling-panel
+      9.85  MENU       [] com.apple.menu.spelling-options
+      9.86  MENU     [Substitutions] com.apple.menu.substitutions
+      9.87  MENU       [] com.apple.menu.substitutions-panel
+      9.87  MENU       [] com.apple.menu.substitution-options
+      9.88  MENU     [Transformations] com.apple.menu.transformations
+      9.89  MENU     [Speech] com.apple.command.speech
+      9.89  MENU   [Format] com.apple.menu.format
+      9.90  MENU     [Font] com.apple.menu.font
+      9.91  MENU       [Text Style] com.apple.menu.text-style
+      9.92  MENU         Bold  ⌨ ["cmd"] "b"
+      9.93  MENU         Italic  ⌨ ["cmd"] "i"
+      9.94  MENU         Underline  ⌨ ["cmd"] "u"
+      9.95  MENU       [] com.apple.menu.text-size
+      9.96  MENU         Bigger  ⌨ ["cmd"] "+"
+      9.97  MENU         Smaller  ⌨ ["cmd"] "-"
+      9.97  MENU       [] com.apple.menu.text-color
+      9.98  MENU       [] com.apple.menu.text-style-pasteboard
+      9.99  MENU     [Text] com.apple.menu.text
+     10.00  MENU       [] com.apple.menu.alignment
+     10.01  MENU         Align Left  ⌨ ["cmd"] "{"
+     10.02  MENU         Center  ⌨ ["cmd"] "|"
+     10.02  MENU         Justify
+     10.03  MENU         Align Right  ⌨ ["cmd"] "}"
+     10.04  MENU       [Writing Direction] com.apple.menu.writing-direction
+     10.05  MENU         Default
+     10.06  MENU         Right to Left
+     10.07  MENU         Left to Right
+     10.07  MENU   [View] com.apple.menu.view
+     10.08  MENU     [] com.apple.menu.toolbar
+     10.09  MENU       Customize Toolbar…
+     10.09  MENU     [] com.apple.menu.sidebar
+     10.10  MENU       Show Sidebar  ⌨ ["cmd", "ctrl"] "s"
+     10.11  MENU     [] com.apple.menu.fullscreen
+     10.12  MENU   [Window] com.apple.menu.window
+     10.12  MENU     [] com.apple.menu.minimize-and-zoom
+     10.13  MENU     [] com.apple.menu.bring-all-to-front
+     10.14  MENU   [Help] com.apple.menu.help
+     10.14  MENU       ⌨ ["cmd"] "?"
+     22.44  GC GCMouseDidBecomeCurrentNotification Optional(GCMouse)
+     22.51  GC GCMouseDidConnectNotification Optional(GCMouse)
+     22.52  GC mouse attached: Mouse vendor=Magic Keyboard aux=0 middle=false
+     22.58  GC GCKeyboardDidConnectNotification Optional(GCKeyboard)
+     22.60  GC keyboard attached: Generic Keyboard
+     30.37  SCENE scene (1376.0, 1032.0) screen (1376.0, 1032.0) native (2064.0, 2752.0) scale 2.0 maxFPS 120
+    399.48  SCENE didBecomeActive
+    402.75  LOCK isLocked=true (wanted=true)
+    609.98  GCMOVE dx 0.00 dy -0.00
+  48897.20  GCMOVE dx 0.00 dy -0.00
+  48912.57  GCMOVE dx 0.00 dy -0.00
+  48928.95  GCMOVE dx 0.00 dy -0.00
+  48937.38  GCMOVE dx 0.00 dy -0.00
+  48945.66  GCMOVE dx 0.00 dy -0.00
+  48953.80  GCMOVE dx 0.00 dy -0.00
+  48979.50  GCMOVE dx 0.00 dy -0.00
+  48987.70  GCMOVE dx 0.00 dy -0.00
+  48996.26  GCMOVE dx 0.00 dy -0.00
+  49004.35  GCMOVE dx 0.00 dy -0.00
+  49029.23  GCMOVE dx 0.00 dy -0.00
+  49037.49  GCMOVE dx 3.00 dy -0.00
+  49045.69  GCMOVE dx 2.00 dy -0.00
+  49054.04  GCMOVE dx 3.00 dy 2.00
+  49062.34  GCMOVE dx 2.00 dy 1.00
+  49070.64  GCMOVE dx 2.00 dy 3.00
+  49078.98  GCMOVE dx 3.00 dy 2.00
+  49087.39  GCMOVE dx 2.00 dy 4.00
+  49095.70  GCMOVE dx 2.00 dy 3.00
+  49104.03  GCMOVE dx 1.00 dy 3.00
+  49112.36  GCMOVE dx 2.00 dy 4.00
+  49120.81  GCMOVE dx 1.00 dy 4.00
+  49128.99  GCMOVE dx 1.00 dy 5.00
+  49137.29  GCMOVE dx 1.00 dy 4.00
+  49145.73  GCMOVE dx 1.00 dy 5.00
+  49154.10  GCMOVE dx 0.00 dy 5.00
+  49162.33  GCMOVE dx 0.00 dy 4.00
+  49170.66  GCMOVE dx 0.00 dy 5.00
+  49179.08  GCMOVE dx 0.00 dy 5.00
+  49187.33  GCMOVE dx 0.00 dy 5.00
+  49195.69  GCMOVE dx 0.00 dy 4.00
+  49204.00  GCMOVE dx -1.00 dy 7.00
+  49212.34  GCMOVE dx 0.00 dy 4.00
+  49220.78  GCMOVE dx 0.00 dy 7.00
+  49229.00  GCMOVE dx 0.00 dy 4.00
+  49237.40  GCMOVE dx 0.00 dy 8.00
+  49245.75  GCMOVE dx 0.00 dy 3.00
+  49254.24  GCMOVE dx 0.00 dy 8.00
+  49262.37  GCMOVE dx 1.00 dy 4.00
+  49270.82  GCMOVE dx 1.00 dy 6.00
+  49279.08  GCMOVE dx 2.00 dy 6.00
+  49287.57  GCMOVE dx 2.00 dy 5.00
+  49295.73  GCMOVE dx 3.00 dy 8.00
+  49304.10  GCMOVE dx 2.00 dy 6.00
+  49312.39  GCMOVE dx 2.00 dy 7.00
+  49320.72  GCMOVE dx 2.00 dy 6.00
+  49329.07  GCMOVE dx 2.00 dy 8.00
+  49337.46  GCMOVE dx 2.00 dy 7.00
+  49345.78  GCMOVE dx 2.00 dy 8.00
+  49354.14  GCMOVE dx 1.00 dy 8.00
+  49362.37  GCMOVE dx 2.00 dy 8.00
+  49370.68  GCMOVE dx 2.00 dy 9.00
+  49379.01  GCMOVE dx 1.00 dy 8.00
+  49387.34  GCMOVE dx 2.00 dy 9.00
+  49395.67  GCMOVE dx 2.00 dy 8.00
+  49404.12  GCMOVE dx 1.00 dy 8.00
+  49412.39  GCMOVE dx 2.00 dy 8.00
+  49420.79  GCMOVE dx 2.00 dy 4.00
+  49429.04  GCMOVE dx 2.00 dy 8.00
+  49437.49  GCMOVE dx 2.00 dy 6.00
+  49445.76  GCMOVE dx 1.00 dy 6.00
+  49454.05  GCMOVE dx 2.00 dy 5.00
+  49462.36  GCMOVE dx 2.00 dy 5.00
+  49470.66  GCMOVE dx 1.00 dy 5.00
+  49479.09  GCMOVE dx 2.00 dy 4.00
+  49487.50  GCMOVE dx 1.00 dy 4.00
+  49495.68  GCMOVE dx 1.00 dy 3.00
+  49504.06  GCMOVE dx 1.00 dy 3.00
+  49512.40  GCMOVE dx 1.00 dy 3.00
+  49520.69  GCMOVE dx 1.00 dy 2.00
+  49529.01  GCMOVE dx 1.00 dy 2.00
+  49537.45  GCMOVE dx 1.00 dy 2.00
+  49545.77  GCMOVE dx 0.00 dy 1.00
+  49554.15  GCMOVE dx 1.00 dy 1.00
+  49562.46  GCMOVE dx 0.00 dy 1.00
+  49570.83  GCMOVE dx 0.00 dy -0.00
+  49579.18  GCMOVE dx 1.00 dy 1.00
+  49595.74  GCMOVE dx 1.00 dy -0.00
+  49604.12  GCMOVE dx 0.00 dy 1.00
+  49612.48  GCMOVE dx 1.00 dy -0.00
+  49629.09  GCMOVE dx 1.00 dy -0.00
+  49637.59  GCMOVE dx 0.00 dy -0.00
+  49645.85  GCMOVE dx 0.00 dy -0.00
+  49654.18  GCMOVE dx 0.00 dy -0.00
+  49662.37  GCMOVE dx 0.00 dy -0.00
+  62276.89  GCMOVE dx 0.00 dy -0.00
+  62296.52  GCMOVE dx 0.00 dy -0.00
+  62304.65  GCMOVE dx 0.00 dy -0.00
+  62312.91  GCMOVE dx 1.00 dy -0.00
+  62321.20  GCMOVE dx 6.00 dy 3.00
+  62329.68  GCMOVE dx 5.00 dy 5.00
+  62337.97  GCMOVE dx 4.00 dy 3.00
+  62346.32  GCMOVE dx 5.00 dy 3.00
+  62354.67  GCMOVE dx 3.00 dy 3.00
+  62363.03  GCMOVE dx 3.00 dy 2.00
+  62371.20  GCMOVE dx 3.00 dy 3.00
+  62379.43  GCMOVE dx 2.00 dy 1.00
+  62387.86  GCMOVE dx 4.00 dy 3.00
+  62396.39  GCMOVE dx 2.00 dy 2.00
+  62404.69  GCMOVE dx 2.00 dy 2.00
+  62413.02  GCMOVE dx 2.00 dy 1.00
+  62421.08  GCMOVE dx 1.00 dy 1.00
+  62429.47  GCMOVE dx 1.00 dy -0.00
+  62437.74  GCMOVE dx 1.00 dy -0.00
+  62446.07  GCMOVE dx 1.00 dy -0.00
+  62454.38  GCMOVE dx 1.00 dy -2.00
+  62462.75  GCMOVE dx 0.00 dy -4.00
+  62471.05  GCMOVE dx 1.00 dy -6.00
+  62479.38  GCMOVE dx 1.00 dy -6.00
+  62487.93  GCMOVE dx 1.00 dy -7.00
+  62496.18  GCMOVE dx 2.00 dy -7.00
+  62504.42  GCMOVE dx 2.00 dy -7.00
+  62512.78  GCMOVE dx 1.00 dy -4.00
+  62521.08  GCMOVE dx 2.00 dy -7.00
+  62529.31  GCMOVE dx 2.00 dy -6.00
+  62537.60  GCMOVE dx 1.00 dy -5.00
+  62545.98  GCMOVE dx 1.00 dy -4.00
+  62554.43  GCMOVE dx 1.00 dy -3.00
+  62562.64  GCMOVE dx 1.00 dy -3.00
+  62571.06  GCMOVE dx 2.00 dy -4.00
+  62579.59  GCMOVE dx 3.00 dy -4.00
+  62587.79  GCMOVE dx 2.00 dy -5.00
+  62596.07  GCMOVE dx 2.00 dy -5.00
+  62604.41  GCMOVE dx 3.00 dy -6.00
+  62612.74  GCMOVE dx 1.00 dy -4.00
+  62621.23  GCMOVE dx 2.00 dy -6.00
+  62629.46  GCMOVE dx 2.00 dy -5.00
+  62637.81  GCMOVE dx 2.00 dy -5.00
+  62646.15  GCMOVE dx 1.00 dy -4.00
+  62654.37  GCMOVE dx 1.00 dy -3.00
+  62662.81  GCMOVE dx 1.00 dy -2.00
+  62671.10  GCMOVE dx 1.00 dy -2.00
+  62679.45  GCMOVE dx 1.00 dy -2.00
+  62687.83  GCMOVE dx 1.00 dy -4.00
+  62696.07  GCMOVE dx 1.00 dy -6.00
+  62704.41  GCMOVE dx 1.00 dy -6.00
+  62712.79  GCMOVE dx 1.00 dy -7.00
+  62721.04  GCMOVE dx 1.00 dy -8.00
+  62729.32  GCMOVE dx 1.00 dy -8.00
+  62737.67  GCMOVE dx 1.00 dy -9.00
+  62746.07  GCMOVE dx 1.00 dy -5.00
+  62754.45  GCMOVE dx 1.00 dy -8.00
+  62762.74  GCMOVE dx 1.00 dy -7.00
+  62771.07  GCMOVE dx 0.00 dy -6.00
+  62779.39  GCMOVE dx 0.00 dy -4.00
+  62787.73  GCMOVE dx 0.00 dy -3.00
+  62796.06  GCMOVE dx 0.00 dy -3.00
+  62804.38  GCMOVE dx 0.00 dy -0.00
+  62812.70  GCMOVE dx 0.00 dy -0.00
+  62821.11  GCMOVE dx 0.00 dy -0.00
+  63230.12  GCMOVE dx 0.00 dy -0.00
+  63238.17  GCMOVE dx 0.00 dy -0.00
+  63246.20  GCMOVE dx 0.00 dy -0.00
+  63254.64  GCMOVE dx 0.00 dy -0.00
+  63262.88  GCMOVE dx 0.00 dy -0.00
+  63271.16  GCMOVE dx 0.00 dy -0.00
+  63279.60  GCMOVE dx 0.00 dy -0.00
+  63288.10  GCMOVE dx 0.00 dy -0.00
+  63296.37  GCMOVE dx 0.00 dy -0.00
+  63304.44  GCMOVE dx 0.00 dy -0.00
+  63329.83  GCMOVE dx 0.00 dy 2.00
+  63338.29  GCMOVE dx 0.00 dy 6.00
+  63346.24  GCMOVE dx 1.00 dy 7.00
+  63354.58  GCMOVE dx 1.00 dy 8.00
+  63362.67  GCMOVE dx 1.00 dy 8.00
+  63371.07  GCMOVE dx 0.00 dy 10.00
+  63379.39  GCMOVE dx 0.00 dy 9.00
+  63387.74  GCMOVE dx -1.00 dy 9.00
+  63396.12  GCMOVE dx -3.00 dy 9.00
+  63404.39  GCMOVE dx -4.00 dy 8.00
+  63412.76  GCMOVE dx -5.00 dy 7.00
+  63421.06  GCMOVE dx -5.00 dy 6.00
+  63429.40  GCMOVE dx -7.00 dy 6.00
+  63437.79  GCMOVE dx -6.00 dy 4.00
+  63446.09  GCMOVE dx -7.00 dy 4.00
+  63454.40  GCMOVE dx -8.00 dy 2.00
+  63462.78  GCMOVE dx -8.00 dy 2.00
+  63471.06  GCMOVE dx -7.00 dy 1.00
+  63479.44  GCMOVE dx -8.00 dy -0.00
+  63487.67  GCMOVE dx -8.00 dy -0.00
+  63496.05  GCMOVE dx -9.00 dy -0.00
+  63504.38  GCMOVE dx -8.00 dy -1.00
+  63512.73  GCMOVE dx -8.00 dy -2.00
+  63521.02  GCMOVE dx -9.00 dy -3.00
+  63529.46  GCMOVE dx -8.00 dy -2.00
+  63537.76  GCMOVE dx -9.00 dy -3.00
+  63546.08  GCMOVE dx -9.00 dy -3.00
+  63554.39  GCMOVE dx -8.00 dy -3.00
+  63562.76  GCMOVE dx -8.00 dy -3.00
+  63571.10  GCMOVE dx -8.00 dy -2.00
+  63579.44  GCMOVE dx -8.00 dy -3.00
+  63587.73  GCMOVE dx -7.00 dy -3.00
+  63596.12  GCMOVE dx -7.00 dy -3.00
+  63604.47  GCMOVE dx -4.00 dy -3.00
+  63612.81  GCMOVE dx -5.00 dy -3.00
+  63621.26  GCMOVE dx -6.00 dy -4.00
+  63629.43  GCMOVE dx -5.00 dy -3.00
+  63637.76  GCMOVE dx -5.00 dy -4.00
+  63646.10  GCMOVE dx -5.00 dy -3.00
+  63654.43  GCMOVE dx -4.00 dy -4.00
+  63662.76  GCMOVE dx -3.00 dy -3.00
+  63671.11  GCMOVE dx -3.00 dy -3.00
+  63679.49  GCMOVE dx -3.00 dy -4.00
+  63687.80  GCMOVE dx -3.00 dy -3.00
+  63696.11  GCMOVE dx -1.00 dy -3.00
+  63704.46  GCMOVE dx -2.00 dy -3.00
+  63712.84  GCMOVE dx 0.00 dy -3.00
+  63721.16  GCMOVE dx 0.00 dy -3.00
+  63729.41  GCMOVE dx 0.00 dy -5.00
+  63737.87  GCMOVE dx 0.00 dy -5.00
+  63746.10  GCMOVE dx 3.00 dy -5.00
+  63754.44  GCMOVE dx 5.00 dy -5.00
+  63762.68  GCMOVE dx 5.00 dy -6.00
+  63771.17  GCMOVE dx 6.00 dy -6.00
+  63779.44  GCMOVE dx 6.00 dy -5.00
+  63787.76  GCMOVE dx 7.00 dy -6.00
+  63796.06  GCMOVE dx 7.00 dy -5.00
+  63804.37  GCMOVE dx 4.00 dy -3.00
+  63812.73  GCMOVE dx 7.00 dy -5.00
+  63821.05  GCMOVE dx 9.00 dy -5.00
+  63829.39  GCMOVE dx 4.00 dy -2.00
+  63837.70  GCMOVE dx 6.00 dy -2.00
+  63846.03  GCMOVE dx 9.00 dy -3.00
+  63854.40  GCMOVE dx 6.00 dy -1.00
+  63862.73  GCMOVE dx 7.00 dy -1.00
+  63871.09  GCMOVE dx 7.00 dy -1.00
+  63879.47  GCMOVE dx 4.00 dy -0.00
+  63887.78  GCMOVE dx 6.00 dy -0.00
+  63896.06  GCMOVE dx 6.00 dy -0.00
+  63904.41  GCMOVE dx 6.00 dy -0.00
+  63912.71  GCMOVE dx 5.00 dy 1.00
+  63921.05  GCMOVE dx 4.00 dy 2.00
+  63929.39  GCMOVE dx 4.00 dy 2.00
+  63937.77  GCMOVE dx 4.00 dy 2.00
+  63946.11  GCMOVE dx 3.00 dy 3.00
+  63954.42  GCMOVE dx 3.00 dy 2.00
+  63962.70  GCMOVE dx 2.00 dy 4.00
+  63971.06  GCMOVE dx 2.00 dy 3.00
+  63979.39  GCMOVE dx 2.00 dy 4.00
+  63987.76  GCMOVE dx 2.00 dy 4.00
+  63996.12  GCMOVE dx 1.00 dy 5.00
+  64004.37  GCMOVE dx 1.00 dy 5.00
+  64012.69  GCMOVE dx 1.00 dy 4.00
+  64021.24  GCMOVE dx 0.00 dy 5.00
+  64029.55  GCMOVE dx 0.00 dy 4.00
+  64037.81  GCMOVE dx 0.00 dy 3.00
+  64046.02  GCMOVE dx 0.00 dy 3.00
+  64054.42  GCMOVE dx 0.00 dy 2.00
+  64062.67  GCMOVE dx 0.00 dy 1.00
+  64071.05  GCMOVE dx 0.00 dy 2.00
+  64087.76  GCMOVE dx 0.00 dy 1.00
+  64154.61  GCMOVE dx 0.00 dy -0.00
+  64162.81  GCMOVE dx 0.00 dy -0.00
+  64171.12  GCMOVE dx 0.00 dy -0.00
+  64179.43  GCMOVE dx 0.00 dy -0.00
+  64196.11  GCMOVE dx 0.00 dy -0.00
+  64488.27  GCMOVE dx 0.00 dy -0.00
+  64504.85  GCMOVE dx 0.00 dy -0.00
+  64513.02  GCMOVE dx 0.00 dy -0.00
+  64521.28  GCMOVE dx 0.00 dy -0.00
+  64529.53  GCMOVE dx 0.00 dy -0.00
+  64537.76  GCMOVE dx 0.00 dy -0.00
+  64546.28  GCMOVE dx 0.00 dy -0.00
+  64554.64  GCMOVE dx 0.00 dy -0.00
+  64562.92  GCMOVE dx 0.00 dy -0.00
+  64571.34  GCMOVE dx 0.00 dy -0.00
+  64604.50  GCMOVE dx 0.00 dy -0.00
+  64612.82  GCMOVE dx 0.00 dy -0.00
+  64621.04  GCMOVE dx 0.00 dy -0.00
+  64629.41  GCMOVE dx 0.00 dy -0.00
+  64637.74  GCMOVE dx 0.00 dy -0.00
+  64646.07  GCMOVE dx 0.00 dy -0.00
+  64654.38  GCMOVE dx 0.00 dy -0.00
+  64662.69  GCMOVE dx 0.00 dy -0.00
+  64671.07  GCMOVE dx 0.00 dy -0.00
+  64679.37  GCMOVE dx 0.00 dy -0.00
+  64687.71  GCMOVE dx 0.00 dy -0.00
+  64696.00  GCMOVE dx 0.00 dy -0.00
+  64704.27  GCMOVE dx 0.00 dy -0.00
+  64712.55  GCMOVE dx 0.00 dy -0.00
+  64720.87  GCMOVE dx 0.00 dy -0.00
+  64729.21  GCMOVE dx 0.00 dy -0.00
+  64737.60  GCMOVE dx 0.00 dy -0.00
+  64745.99  GCMOVE dx 0.00 dy -0.00
+  64754.35  GCMOVE dx 0.00 dy -0.00
+  64787.86  GCMOVE dx 0.00 dy -0.00
+  64796.04  GCMOVE dx 0.00 dy -0.00
+  64804.38  GCMOVE dx 0.00 dy -0.00
+  64812.70  GCMOVE dx 0.00 dy -0.00
+  64821.05  GCMOVE dx 0.00 dy -0.00
+  64829.37  GCMOVE dx 0.00 dy -0.00
+  64837.74  GCMOVE dx 0.00 dy -0.00
+  64846.04  GCMOVE dx 0.00 dy -0.00
+  64854.31  GCMOVE dx 0.00 dy -0.00
+  64862.78  GCMOVE dx 0.00 dy -0.00
+  64871.04  GCMOVE dx 0.00 dy -0.00
+  64878.68  GCBTN right DOWN
+  64884.46  TOUCH indirectPointer began buttonMask=2 tapCount=1
+  64912.62  GCMOVE dx 0.00 dy -0.00
+  64921.07  GCMOVE dx 0.00 dy -0.00
+  64929.38  GCMOVE dx 0.00 dy -0.00
+  64937.75  GCMOVE dx 0.00 dy -0.00
+  64945.89  GCMOVE dx 0.00 dy -0.00
+  64954.27  GCMOVE dx 0.00 dy -0.00
+  64962.65  GCMOVE dx 0.00 dy -0.00
+  64970.95  GCMOVE dx 0.00 dy -0.00
+  64979.34  GCMOVE dx 0.00 dy -0.00
+  64987.67  GCMOVE dx 0.00 dy -0.00
+  64996.05  GCMOVE dx 0.00 dy -0.00
+  65004.34  GCMOVE dx 0.00 dy -0.00
+  65012.72  GCMOVE dx 0.00 dy -0.00
+  65021.14  GCMOVE dx 0.00 dy -0.00
+  65029.40  GCMOVE dx 0.00 dy -0.00
+  65037.71  GCMOVE dx 0.00 dy -0.00
+  65046.02  GCMOVE dx 0.00 dy -0.00
+  65054.38  GCMOVE dx 0.00 dy 1.00
+  65062.75  GCMOVE dx 3.00 dy 3.00
+  65069.87  GCBTN right up
+  65074.38  TAP secondary tap (locked=true) at (1111.917313969476, 365.0) ENDED
+  65079.31  GCMOVE dx 0.00 dy -0.00
+  65087.61  GCMOVE dx 0.00 dy -0.00
+  65096.01  GCMOVE dx 0.00 dy -0.00
+  65104.23  GCMOVE dx 0.00 dy -0.00
+  65112.66  GCMOVE dx 0.00 dy -0.00
+  65121.09  GCMOVE dx 0.00 dy -0.00
+  65129.44  GCMOVE dx 0.00 dy -0.00
+  65137.70  GCMOVE dx 0.00 dy -0.00
+  65146.07  GCMOVE dx 0.00 dy -0.00
+  67163.05  GCMOVE dx 0.00 dy -0.00
+  67179.69  GCMOVE dx 0.00 dy -0.00
+  67204.76  GCMOVE dx 0.00 dy -0.00
+  67213.17  GCMOVE dx 0.00 dy -0.00
+  67296.19  GCMOVE dx 0.00 dy -0.00
+  67304.46  GCMOVE dx 0.00 dy -0.00
+  67312.82  GCMOVE dx 0.00 dy -0.00
+  67337.82  GCMOVE dx 0.00 dy -0.00
+  67346.14  GCMOVE dx 0.00 dy -0.00
+  67362.86  GCMOVE dx 0.00 dy -0.00
+  67371.09  GCMOVE dx 0.00 dy -0.00
+  67379.44  GCMOVE dx 0.00 dy -0.00
+  67387.75  GCMOVE dx 0.00 dy -0.00
+  67396.12  GCMOVE dx 0.00 dy -0.00
+  67404.46  GCMOVE dx 0.00 dy -0.00
+  67412.87  GCMOVE dx 0.00 dy -0.00
+  67421.12  GCMOVE dx 0.00 dy -0.00
+  67437.83  GCMOVE dx 0.00 dy -0.00
+  67446.00  GCMOVE dx 0.00 dy -0.00
+  67454.40  GCMOVE dx 0.00 dy -0.00
+  67479.44  GCMOVE dx 0.00 dy -0.00
+  67487.68  GCMOVE dx 0.00 dy -0.00
+  67495.94  GCMOVE dx 0.00 dy -0.00
+  67504.36  GCMOVE dx 0.00 dy -0.00
+  67512.67  GCMOVE dx 0.00 dy -0.00
+  67521.02  GCMOVE dx 0.00 dy -0.00
+  67529.32  GCMOVE dx 0.00 dy -0.00
+  67537.74  GCMOVE dx 0.00 dy -0.00
+  67546.11  GCMOVE dx 0.00 dy -0.00
+  67554.47  GCMOVE dx 0.00 dy -0.00
+  67562.71  GCMOVE dx 0.00 dy -0.00
+  67571.10  GCMOVE dx 0.00 dy -0.00
+  67579.49  GCMOVE dx 0.00 dy -0.00
+  67587.65  GCMOVE dx 0.00 dy -0.00
+  67596.17  GCMOVE dx 0.00 dy -0.00
+  67604.45  GCMOVE dx 0.00 dy -0.00
+  67609.22  GCBTN right DOWN
+  67616.26  TOUCH indirectPointer began buttonMask=2 tapCount=1
+  67646.08  GCMOVE dx 0.00 dy -0.00
+  67654.43  GCMOVE dx 0.00 dy -0.00
+  67662.76  GCMOVE dx 0.00 dy -0.00
+  67671.11  GCMOVE dx 0.00 dy -0.00
+  67679.31  GCMOVE dx 0.00 dy -0.00
+  67687.66  GCMOVE dx 0.00 dy -0.00
+  67696.04  GCMOVE dx 0.00 dy -0.00
+  67704.35  GCMOVE dx 0.00 dy -0.00
+  67721.15  GCMOVE dx 0.00 dy -0.00
+  67729.45  GCMOVE dx 0.00 dy -0.00
+  67737.84  GCMOVE dx 0.00 dy -0.00
+  67746.17  GCMOVE dx 0.00 dy -0.00
+  67754.54  GCMOVE dx 0.00 dy -0.00
+  67762.78  GCMOVE dx 0.00 dy -0.00
+  67771.19  GCMOVE dx 0.00 dy -0.00
+  67779.48  GCMOVE dx 0.00 dy -0.00
+  67787.87  GCMOVE dx 0.00 dy -0.00
+  67796.16  GCMOVE dx 0.00 dy -0.00
+  67804.31  GCMOVE dx 0.00 dy -0.00
+  67812.69  GCMOVE dx 1.00 dy 2.00
+  67821.13  GCMOVE dx 2.00 dy 1.00
+  67829.38  GCMOVE dx 0.00 dy -0.00
+  67837.81  GCMOVE dx 0.00 dy 1.00
+  67846.19  GCMOVE dx 1.00 dy -0.00
+  67854.41  GCMOVE dx 0.00 dy -0.00
+  67860.07  GCBTN right up
+  67864.39  TAP secondary tap (locked=true) at (1111.917313969476, 365.0) ENDED
+  67871.04  GCMOVE dx 0.00 dy -0.00
+  67879.44  GCMOVE dx 0.00 dy -0.00
+  67887.78  GCMOVE dx 0.00 dy -0.00
+  67896.11  GCMOVE dx 0.00 dy -0.00
+  67904.41  GCMOVE dx 0.00 dy -0.00
+  67912.81  GCMOVE dx 0.00 dy -0.00
+  67921.14  GCMOVE dx 0.00 dy -0.00
+  67954.62  GCMOVE dx 0.00 dy -0.00
+  67962.82  GCMOVE dx 0.00 dy -0.00
+  67971.11  GCMOVE dx 0.00 dy -0.00
+  67979.44  GCMOVE dx 0.00 dy -0.00
+  67987.77  GCMOVE dx 0.00 dy -0.00
+  67996.16  GCMOVE dx 0.00 dy -0.00
+  68004.44  GCMOVE dx 0.00 dy -0.00
+  68012.77  GCMOVE dx 0.00 dy -0.00
+  68021.08  GCMOVE dx 0.00 dy -0.00
+  68029.42  GCMOVE dx 0.00 dy -0.00
+  68037.79  GCMOVE dx 0.00 dy -0.00
+  68046.06  GCMOVE dx 0.00 dy -0.00
+  68054.43  GCMOVE dx 0.00 dy -0.00
+  68062.77  GCMOVE dx 0.00 dy -0.00
+  68071.09  GCMOVE dx 0.00 dy -0.00
+  68079.48  GCMOVE dx 0.00 dy -0.00
+  68087.71  GCMOVE dx 0.00 dy -0.00
+  68095.99  GCMOVE dx 0.00 dy -0.00
+  68104.38  GCMOVE dx 0.00 dy -0.00
+  68112.69  GCMOVE dx 0.00 dy -0.00
+  68121.05  GCMOVE dx 0.00 dy -0.00
+  68154.56  GCMOVE dx 0.00 dy -0.00
+  68171.03  GCMOVE dx 0.00 dy -0.00
+  68287.87  GCMOVE dx 0.00 dy -0.00
+  68304.38  GCMOVE dx 0.00 dy -0.00
+  68404.70  GCMOVE dx 0.00 dy -0.00
+  68421.08  GCMOVE dx 0.00 dy -0.00
+  68446.18  GCMOVE dx 0.00 dy -0.00
+  68454.43  GCMOVE dx 0.00 dy -0.00
+  68462.67  GCMOVE dx 0.00 dy -0.00
+  68471.02  GCMOVE dx 0.00 dy -0.00
+  68479.36  GCMOVE dx 0.00 dy -0.00
+  68487.71  GCMOVE dx 0.00 dy -0.00
+  68496.02  GCMOVE dx 0.00 dy -0.00
+  68504.39  GCMOVE dx 0.00 dy -0.00
+  68537.96  GCMOVE dx 0.00 dy -0.00
+  68554.76  GCMOVE dx 0.00 dy -0.00
+  72341.32  GCMOVE dx 0.00 dy -0.00
+  72354.93  GCMOVE dx 0.00 dy -0.00
+  72371.47  GCMOVE dx 0.00 dy -0.00
+  72379.77  GCMOVE dx 0.00 dy -0.00
+  72388.14  GCMOVE dx 0.00 dy -0.00
+  72396.49  GCMOVE dx 0.00 dy -0.00
+  72404.77  GCMOVE dx 0.00 dy -0.00
+  73304.90  GCMOVE dx 0.00 dy -0.00
+  73313.00  GCMOVE dx 0.00 dy -0.00
+  73346.44  GCMOVE dx 0.00 dy -0.00
+  73354.76  GCMOVE dx 0.00 dy -0.00
+  73363.00  GCMOVE dx 0.00 dy -0.00
+  73371.29  GCMOVE dx 0.00 dy -0.00
+  73379.68  GCMOVE dx 0.00 dy -0.00
+  73871.50  GCMOVE dx 0.00 dy -0.00
+  73879.77  GCMOVE dx 0.00 dy -0.00
+  73888.11  GCMOVE dx 0.00 dy -0.00
+  73896.29  GCMOVE dx 0.00 dy -0.00
+  73904.71  GCMOVE dx 0.00 dy -0.00
+  73912.97  GCMOVE dx 0.00 dy -0.00
+  73929.78  GCMOVE dx 0.00 dy -0.00
+  73937.99  GCMOVE dx 0.00 dy -0.00
+  73946.25  GCMOVE dx 0.00 dy -0.00
+  73955.03  GCMOVE dx 0.00 dy -0.00
+  73963.01  GCMOVE dx 0.00 dy -0.00
+  73971.37  GCMOVE dx 0.00 dy -0.00
+  74038.19  GCMOVE dx 0.00 dy -0.00
+  74046.45  GCMOVE dx 0.00 dy -0.00
+  74054.63  GCMOVE dx 0.00 dy -0.00
+  74062.96  GCMOVE dx 0.00 dy -0.00
+  74079.76  GCMOVE dx 0.00 dy -0.00
+  74088.04  GCMOVE dx 0.00 dy -0.00
+  74096.29  GCMOVE dx 0.00 dy -0.00
+  74104.62  GCMOVE dx 0.00 dy -0.00
+  74113.08  GCMOVE dx 0.00 dy -0.00
+  74479.67  GCMOVE dx 0.00 dy -0.00
+  74488.05  GCMOVE dx 0.00 dy -0.00
+  74496.38  GCMOVE dx 0.00 dy -0.00
+  74504.64  GCMOVE dx 0.00 dy -0.00
+  74521.45  GCMOVE dx 0.00 dy -0.00
+  74529.68  GCMOVE dx 0.00 dy -0.00
+  74537.98  GCMOVE dx 0.00 dy -0.00
+  74546.33  GCMOVE dx 0.00 dy -0.00
+  74554.69  GCMOVE dx 0.00 dy -0.00
+  74562.91  GCMOVE dx 0.00 dy -0.00
+  74646.66  GCMOVE dx 0.00 dy -0.00
+  74655.01  GCMOVE dx 0.00 dy -0.00
+  74663.01  GCMOVE dx 0.00 dy -0.00
+  74671.55  GCMOVE dx 0.00 dy -0.00
+  74688.15  GCMOVE dx 0.00 dy -0.00
+  74696.33  GCMOVE dx 0.00 dy -0.00
+  74704.70  GCMOVE dx 0.00 dy -0.00
+  74713.10  GCMOVE dx 0.00 dy -0.00
+  74721.24  GCMOVE dx 0.00 dy -0.00
+  74804.95  GCMOVE dx 0.00 dy -0.00
+  74813.19  GCMOVE dx 0.00 dy -0.00
+  74821.41  GCMOVE dx 0.00 dy -0.00
+  74829.89  GCMOVE dx 0.00 dy -0.00
+  74832.00  GCBTN left DOWN
+  74840.33  TOUCH indirectPointer began buttonMask=1 tapCount=1
+  74854.75  GCMOVE dx 0.00 dy -0.00
+  74862.98  GCMOVE dx 0.00 dy -0.00
+  74871.30  GCMOVE dx 0.00 dy -0.00
+  74879.65  GCMOVE dx 0.00 dy -0.00
+  74887.98  GCMOVE dx 0.00 dy -0.00
+  74896.26  GCMOVE dx 0.00 dy -0.00
+  74904.66  GCMOVE dx 0.00 dy -0.00
+  74912.96  GCMOVE dx 0.00 dy -0.00
+  74938.07  GCMOVE dx 0.00 dy -0.00
+  74971.43  GCMOVE dx 0.00 dy -0.00
+  74979.59  GCMOVE dx 0.00 dy -0.00
+  74987.92  GCMOVE dx 0.00 dy -0.00
+  74990.69  GCBTN left up
+  74998.33  TAP primary tap (locked=true) at (1111.917313969476, 365.0) ENDED
+  75005.03  GCMOVE dx 0.00 dy -0.00
+  75013.07  GCMOVE dx 0.00 dy -0.00
+  75021.45  GCMOVE dx 0.00 dy -0.00
+  75029.92  GCMOVE dx 0.00 dy -0.00
+  75038.02  GCMOVE dx 0.00 dy -0.00
+  75863.28  GCMOVE dx 0.00 dy -0.00
+  75871.53  GCMOVE dx 0.00 dy -0.00
+  75879.87  GCMOVE dx 0.00 dy -0.00
+  75888.23  GCMOVE dx 0.00 dy -0.00
+  75896.53  GCMOVE dx 0.00 dy -0.00
+  75904.75  GCMOVE dx 0.00 dy -0.00
+  75913.12  GCMOVE dx 0.00 dy -0.00
+  75921.37  GCMOVE dx 0.00 dy -0.00
+  75929.77  GCMOVE dx 0.00 dy -0.00
+  75938.10  GCMOVE dx 0.00 dy -0.00
+  75946.53  GCMOVE dx 0.00 dy -0.00
+  75954.85  GCMOVE dx 0.00 dy -0.00
+  75963.13  GCMOVE dx 0.00 dy -0.00
+  75971.41  GCMOVE dx 0.00 dy -0.00
+  75979.79  GCMOVE dx 0.00 dy -0.00
+  75988.05  GCMOVE dx 0.00 dy -0.00
+  75996.32  GCMOVE dx 0.00 dy -0.00
+  76004.73  GCMOVE dx 0.00 dy -0.00
+  76013.12  GCMOVE dx 0.00 dy -0.00
+  76021.57  GCMOVE dx 0.00 dy -0.00
+  76029.74  GCMOVE dx 0.00 dy -0.00
+  76038.20  GCMOVE dx 0.00 dy -0.00
+  76046.51  GCMOVE dx 0.00 dy -0.00
+  76063.08  GCMOVE dx 0.00 dy -0.00
+  76079.82  GCMOVE dx 0.00 dy -0.00
+  76096.42  GCMOVE dx 0.00 dy -0.00
+  76104.80  GCMOVE dx 0.00 dy -0.00
+  76113.22  GCMOVE dx 0.00 dy -0.00
+  76121.46  GCMOVE dx 0.00 dy -0.00
+  76129.72  GCMOVE dx 0.00 dy -0.00
+  76138.16  GCMOVE dx 0.00 dy -0.00
+  76146.52  GCMOVE dx 0.00 dy -0.00
+  76154.88  GCMOVE dx 0.00 dy -0.00
+  76163.02  GCMOVE dx 0.00 dy -0.00
+  76171.41  GCMOVE dx 0.00 dy -0.00
+  76179.77  GCMOVE dx 0.00 dy -0.00
+  76188.09  GCMOVE dx 0.00 dy -0.00
+  76196.33  GCMOVE dx 0.00 dy -1.00
+  76213.13  GCMOVE dx 0.00 dy -1.00
+  76221.52  GCMOVE dx 0.00 dy -1.00
+  76238.20  GCMOVE dx 0.00 dy -1.00
+  76254.83  GCMOVE dx 0.00 dy -1.00
+  76262.99  GCMOVE dx 0.00 dy -0.00
+  76271.39  GCMOVE dx 1.00 dy -0.00
+  76296.39  GCMOVE dx 1.00 dy -0.00
+  76304.70  GCMOVE dx 0.00 dy -0.00
+  76354.84  GCMOVE dx 0.00 dy -0.00
+  76363.01  GCMOVE dx 0.00 dy -0.00
+  76371.31  GCMOVE dx 0.00 dy -0.00
+  76379.68  GCMOVE dx 0.00 dy -0.00
+  76429.71  GCMOVE dx 0.00 dy -0.00
+  76438.00  GCMOVE dx 0.00 dy -0.00
+  76446.36  GCMOVE dx 0.00 dy -0.00
+  76454.61  GCMOVE dx 0.00 dy -0.00
+  76462.99  GCMOVE dx 0.00 dy -0.00
+  76471.36  GCMOVE dx 0.00 dy -0.00
+  76479.71  GCMOVE dx 0.00 dy -0.00
+  76488.05  GCMOVE dx 0.00 dy -0.00
+  76496.32  GCMOVE dx 0.00 dy -0.00
+  76513.16  GCMOVE dx 0.00 dy 1.00
+  76529.71  GCMOVE dx 0.00 dy 1.00
+  76546.45  GCMOVE dx 0.00 dy 1.00
+  76563.04  GCMOVE dx 0.00 dy -0.00
+  76579.88  GCMOVE dx 0.00 dy 1.00
+  76613.16  GCMOVE dx 0.00 dy -0.00
+  76621.56  GCMOVE dx 0.00 dy -0.00
+  76663.11  GCMOVE dx 0.00 dy -0.00
+  76671.47  GCMOVE dx 0.00 dy -0.00
+  76679.87  GCMOVE dx 0.00 dy -0.00
+  76688.32  GCMOVE dx 0.00 dy -0.00
+  76696.41  GCMOVE dx 0.00 dy -0.00
+  76698.14  GCBTN left DOWN
+  76707.15  TOUCH indirectPointer began buttonMask=1 tapCount=1
+  76713.06  GCMOVE dx 0.00 dy -0.00
+  76721.42  GCMOVE dx 0.00 dy -0.00
+  76729.61  GCMOVE dx 0.00 dy -0.00
+  76737.95  GCMOVE dx 0.00 dy -0.00
+  76746.45  GCMOVE dx 0.00 dy -0.00
+  76754.65  GCMOVE dx 0.00 dy -0.00
+  76763.01  GCMOVE dx 0.00 dy -0.00
+  76771.28  GCMOVE dx 0.00 dy -0.00
+  76788.10  GCMOVE dx 0.00 dy -0.00
+  76796.35  GCMOVE dx 0.00 dy -0.00
+  76804.57  GCMOVE dx 0.00 dy -0.00
+  76813.02  GCMOVE dx 0.00 dy -0.00
+  76821.43  GCMOVE dx 0.00 dy -0.00
+  76829.60  GCMOVE dx 0.00 dy -0.00
+  76837.93  GCMOVE dx 0.00 dy -0.00
+  76846.32  GCMOVE dx 0.00 dy -0.00
+  76848.79  GCBTN left up
+  76856.27  TAP primary tap (locked=true) at (1111.917313969476, 365.0) ENDED
+  76863.24  GCMOVE dx 0.00 dy -0.00
+  76871.51  GCMOVE dx 0.00 dy -0.00
+  76880.00  GCMOVE dx 0.00 dy -0.00
+  76888.08  GCMOVE dx 0.00 dy -0.00
+  76896.63  GCMOVE dx 0.00 dy -0.00
+  76904.73  GCMOVE dx 0.00 dy -0.00
+  76913.16  GCMOVE dx 0.00 dy -0.00
+  76921.42  GCMOVE dx 0.00 dy -0.00
+  76929.73  GCMOVE dx 0.00 dy -0.00
+  76938.03  GCMOVE dx 0.00 dy -0.00
+  76954.92  GCMOVE dx 0.00 dy -0.00
+  76971.62  GCMOVE dx 0.00 dy -0.00
+  76979.71  GCMOVE dx 0.00 dy -0.00
+  76988.03  GCMOVE dx 0.00 dy -0.00
+  76996.44  GCMOVE dx 0.00 dy -0.00
+  77004.80  GCMOVE dx 0.00 dy -0.00
+  77021.41  GCMOVE dx 0.00 dy -0.00
+  77063.13  GCMOVE dx 0.00 dy -0.00
+  77071.47  GCMOVE dx 0.00 dy -0.00
+  77079.80  GCMOVE dx 0.00 dy -0.00
+  77088.20  GCMOVE dx 0.00 dy -0.00
+  77096.41  GCMOVE dx 0.00 dy -0.00
+  77104.79  GCMOVE dx 0.00 dy -0.00
+  77113.08  GCMOVE dx 0.00 dy -0.00
+  77121.36  GCMOVE dx 0.00 dy -0.00
+  77129.72  GCMOVE dx 0.00 dy -0.00
+  77146.48  GCMOVE dx 0.00 dy -0.00
+  77154.79  GCMOVE dx 0.00 dy -0.00
+  77163.10  GCMOVE dx 0.00 dy -0.00
+  77171.40  GCMOVE dx 0.00 dy -0.00
+  77179.94  GCMOVE dx 0.00 dy -0.00
+  77188.08  GCMOVE dx 0.00 dy -0.00
+  77196.43  GCMOVE dx 0.00 dy -0.00
+  77204.77  GCMOVE dx 0.00 dy -0.00
+  77213.08  GCMOVE dx 0.00 dy -0.00
+  77221.43  GCMOVE dx 0.00 dy -0.00
+  77229.77  GCMOVE dx 0.00 dy -0.00
+  77238.14  GCMOVE dx 0.00 dy -0.00
+  77246.40  GCMOVE dx 0.00 dy -0.00
+  77254.69  GCMOVE dx 0.00 dy -0.00
+  77521.75  GCMOVE dx 0.00 dy -0.00
+  77538.32  GCMOVE dx 0.00 dy -0.00
+  77546.41  GCMOVE dx 0.00 dy -0.00
+  77563.07  GCMOVE dx 0.00 dy -0.00
+  77579.91  GCMOVE dx 0.00 dy -0.00
+  77588.17  GCMOVE dx 0.00 dy -0.00
+  77596.52  GCMOVE dx 0.00 dy -0.00
+  77688.29  GCMOVE dx 0.00 dy -0.00
+  77696.47  GCMOVE dx 0.00 dy -0.00
+  77704.78  GCMOVE dx 0.00 dy -0.00
+  77713.21  GCMOVE dx 0.00 dy -0.00
+  77721.56  GCMOVE dx 0.00 dy -0.00
+  77729.79  GCMOVE dx 0.00 dy -0.00
+  77738.19  GCMOVE dx 0.00 dy -0.00
+  77746.52  GCMOVE dx 0.00 dy -0.00
+  77754.80  GCMOVE dx 0.00 dy -0.00
+  77763.03  GCMOVE dx 0.00 dy -0.00
+  78229.97  GCMOVE dx 0.00 dy -0.00
+  78238.10  GCMOVE dx 0.00 dy -0.00
+  78246.51  GCMOVE dx 0.00 dy -0.00
+  78250.73  GCBTN left DOWN
+  78257.22  TOUCH indirectPointer began buttonMask=1 tapCount=1
+  78271.40  GCMOVE dx 0.00 dy -0.00
+  78279.68  GCMOVE dx 0.00 dy -0.00
+  78284.20  GCBTN left up
+  78290.03  TAP primary tap (locked=true) at (1111.917313969476, 365.0) ENDED
+  78296.41  GCMOVE dx 0.00 dy -0.00
+  78304.83  GCMOVE dx 0.00 dy -0.00
+  78313.17  GCMOVE dx 0.00 dy -0.00
+  78413.25  GCMOVE dx 0.00 dy -0.00
+  78421.45  GCMOVE dx 0.00 dy -0.00
+  78429.71  GCMOVE dx 0.00 dy -0.00
+  78438.08  GCMOVE dx 0.00 dy -0.00
+  78446.40  GCMOVE dx 0.00 dy -0.00
+  78454.73  GCMOVE dx 0.00 dy -0.00
+  78463.02  GCMOVE dx 0.00 dy -0.00
+  78471.43  GCMOVE dx 0.00 dy -0.00
+  79196.64  GCMOVE dx 0.00 dy -0.00
+  79204.83  GCMOVE dx 0.00 dy -0.00
+  79221.56  GCMOVE dx 0.00 dy -0.00
+  79229.85  GCMOVE dx 0.00 dy -0.00
+  79238.15  GCMOVE dx 0.00 dy -0.00
+  79246.46  GCMOVE dx 0.00 dy -0.00
+  79254.77  GCMOVE dx 0.00 dy -0.00
+  79263.10  GCMOVE dx 0.00 dy -0.00
+  79271.56  GCMOVE dx 0.00 dy -0.00
+  79371.58  GCMOVE dx 0.00 dy -0.00
+  79379.83  GCMOVE dx 0.00 dy -0.00
+  79388.22  GCMOVE dx 0.00 dy -0.00
+  79404.91  GCMOVE dx 0.00 dy -0.00
+  79413.19  GCMOVE dx 0.00 dy -0.00
+  79421.51  GCMOVE dx 0.00 dy -0.00
+  79429.73  GCMOVE dx 0.00 dy -0.00
+  79438.04  GCMOVE dx 0.00 dy -0.00
+  79446.42  GCMOVE dx 0.00 dy -0.00
+  79563.17  GCMOVE dx 0.00 dy -0.00
+  79571.45  GCMOVE dx 0.00 dy -0.00
+  79579.87  GCMOVE dx 0.00 dy -0.00
+  79588.19  GCMOVE dx 0.00 dy -0.00
+  79596.46  GCMOVE dx 0.00 dy -0.00
+  79604.78  GCMOVE dx 0.00 dy -0.00
+  79613.18  GCMOVE dx 0.00 dy -0.00
+  79621.51  GCMOVE dx 0.00 dy -0.00
+  79629.81  GCMOVE dx 0.00 dy -0.00
+  79638.07  GCMOVE dx 0.00 dy -0.00
+  79729.92  GCMOVE dx 0.00 dy -0.00
+  79738.23  GCMOVE dx 0.00 dy -0.00
+  79746.63  GCMOVE dx 0.00 dy -0.00
+  79754.93  GCMOVE dx 0.00 dy -0.00
+  79763.15  GCMOVE dx 0.00 dy -0.00
+  79771.49  GCMOVE dx 0.00 dy -0.00
+  79779.76  GCMOVE dx 0.00 dy -0.00
+  79788.10  GCMOVE dx 0.00 dy -0.00
+  79796.46  GCMOVE dx 0.00 dy -0.00
+  79804.82  GCMOVE dx 0.00 dy -0.00
+  80021.49  GCMOVE dx 0.00 dy -0.00
+  80029.93  GCMOVE dx 0.00 dy -0.00
+  80038.16  GCMOVE dx 0.00 dy -0.00
+  80046.52  GCMOVE dx 0.00 dy -0.00
+  80054.91  GCMOVE dx 0.00 dy -0.00
+  80063.35  GCMOVE dx 0.00 dy -0.00
+  80071.52  GCMOVE dx 0.00 dy -0.00
+  80079.73  GCMOVE dx 0.00 dy -0.00
+  80088.20  GCMOVE dx 0.00 dy -0.00
+  80096.42  GCMOVE dx 0.00 dy -0.00
+  80104.92  GCMOVE dx 0.00 dy -0.00
+  80204.99  GCMOVE dx 0.00 dy -0.00
+  80213.19  GCMOVE dx 0.00 dy -0.00
+  80221.50  GCMOVE dx 0.00 dy -0.00
+  80229.77  GCMOVE dx 0.00 dy -0.00
+  80238.10  GCMOVE dx 0.00 dy -0.00
+  80246.47  GCMOVE dx 0.00 dy -0.00
+  80254.75  GCMOVE dx 0.00 dy -0.00
+  80263.09  GCMOVE dx 0.00 dy -0.00
+  80271.63  GCMOVE dx 0.00 dy -0.00
+  80279.99  GCMOVE dx 0.00 dy -0.00
+  80371.67  GCMOVE dx 0.00 dy -0.00
+  80379.93  GCMOVE dx 0.00 dy -0.00
+  80388.16  GCMOVE dx 0.00 dy -0.00
+  80396.45  GCMOVE dx 0.00 dy -0.00
+  80404.84  GCMOVE dx 0.00 dy -0.00
+  80413.26  GCMOVE dx 0.00 dy -0.00
+  80421.69  GCMOVE dx 0.00 dy -0.00
+  80429.83  GCMOVE dx 0.00 dy -0.00
+  80438.30  GCMOVE dx 0.00 dy -0.00
+  80446.61  GCMOVE dx 0.00 dy -0.00
+  80454.91  GCMOVE dx 0.00 dy -0.00
+  80538.35  GCMOVE dx 0.00 dy -0.00
+  80546.61  GCMOVE dx 0.00 dy -0.00
+  80554.84  GCMOVE dx 0.00 dy -0.00
+  80571.59  GCMOVE dx 0.00 dy -0.00
+  80579.80  GCMOVE dx 0.00 dy -0.00
+  80588.04  GCMOVE dx 0.00 dy -0.00
+  80596.41  GCMOVE dx 0.00 dy -0.00
+  80604.76  GCMOVE dx 0.00 dy -0.00
+  80613.15  GCMOVE dx 0.00 dy -0.00
+  80621.45  GCMOVE dx 0.00 dy -0.00
+  80988.31  GCMOVE dx 0.00 dy -0.00
+  80996.51  GCMOVE dx 0.00 dy -0.00
+  81004.79  GCMOVE dx 0.00 dy -0.00
+  81013.05  GCMOVE dx 0.00 dy -0.00
+  81021.51  GCMOVE dx 0.00 dy -0.00
+  81038.29  GCMOVE dx 0.00 dy -0.00
+  81046.42  GCMOVE dx 0.00 dy -0.00
+  81054.80  GCMOVE dx 0.00 dy -0.00
+  81063.07  GCMOVE dx 0.00 dy -0.00
+  81071.39  GCMOVE dx 0.00 dy -0.00
+  81079.83  GCMOVE dx 0.00 dy -0.00
+  81088.26  GCMOVE dx 0.00 dy -0.00
+  81179.98  GCMOVE dx 0.00 dy -0.00
+  81188.21  GCMOVE dx 0.00 dy -0.00
+  81196.44  GCMOVE dx 0.00 dy -0.00
+  81204.77  GCMOVE dx 0.00 dy -0.00
+  81213.14  GCMOVE dx 0.00 dy -0.00
+  81221.46  GCMOVE dx 0.00 dy -0.00
+  81229.77  GCMOVE dx 0.00 dy -0.00
+  81238.10  GCMOVE dx 0.00 dy -0.00
+  81246.44  GCMOVE dx 0.00 dy -0.00
+  81254.73  GCMOVE dx 0.00 dy -0.00
+  81263.14  GCMOVE dx 0.00 dy -0.00
+  81271.53  GCMOVE dx 0.00 dy -0.00
+  81279.83  GCMOVE dx 0.00 dy -0.00
+  81413.30  GCMOVE dx 0.00 dy -0.00
+  81421.45  GCMOVE dx 0.00 dy -0.00
+  81429.80  GCMOVE dx 0.00 dy -0.00
+  81438.14  GCMOVE dx 0.00 dy -0.00
+  81446.60  GCMOVE dx 0.00 dy -0.00
+  81454.84  GCMOVE dx 0.00 dy -0.00
+  81463.09  GCMOVE dx 0.00 dy -0.00
+  81471.45  GCMOVE dx 0.00 dy -0.00
+  81479.82  GCMOVE dx 0.00 dy -0.00
+  81488.19  GCMOVE dx 0.00 dy -0.00
+  81613.30  GCMOVE dx 0.00 dy -0.00
+  81621.49  GCMOVE dx 0.00 dy -0.00
+  81629.82  GCMOVE dx 0.00 dy -0.00
+  81655.00  GCMOVE dx 0.00 dy -0.00
+  81663.10  GCMOVE dx 0.00 dy -0.00
+  81679.88  GCMOVE dx 0.00 dy -0.00
+  81688.18  GCMOVE dx 0.00 dy -0.00
+  81696.44  GCMOVE dx 0.00 dy -0.00
+  81738.19  GCMOVE dx 0.00 dy -0.00
+  81746.54  GCMOVE dx 0.00 dy -0.00
+  81788.35  GCMOVE dx 0.00 dy -0.00
+  81796.45  GCMOVE dx 0.00 dy -0.00
+  81838.35  GCMOVE dx 0.00 dy -0.00
+  81846.66  GCMOVE dx 0.00 dy -0.00
+  81854.99  GCMOVE dx 0.00 dy -0.00
+  81863.19  GCMOVE dx 0.00 dy -0.00
+  81871.56  GCMOVE dx 0.00 dy -0.00
+  81879.92  GCMOVE dx 0.00 dy -0.00
+  81888.21  GCMOVE dx 0.00 dy -0.00
+  82196.65  GCMOVE dx 0.00 dy -0.00
+  82204.92  GCMOVE dx 0.00 dy -0.00
+  82213.11  GCMOVE dx 0.00 dy -0.00
+  82221.55  GCMOVE dx 0.00 dy -0.00
+  82229.77  GCMOVE dx 0.00 dy -0.00
+  82238.11  GCMOVE dx 0.00 dy -0.00
+  82246.47  GCMOVE dx 0.00 dy -0.00
+  82254.75  GCMOVE dx 0.00 dy -0.00
+  82263.08  GCMOVE dx 0.00 dy -0.00
+  82271.42  GCMOVE dx 0.00 dy -0.00
+  82280.72  GCBTN left DOWN
+  82282.24  TOUCH indirectPointer began buttonMask=1 tapCount=1
+  82288.01  GCMOVE dx 0.00 dy -0.00
+  82296.31  GCMOVE dx 0.00 dy -0.00
+  82304.64  GCMOVE dx 0.00 dy -0.00
+  82313.02  GCMOVE dx 0.00 dy -0.00
+  82321.36  GCMOVE dx 0.00 dy -0.00
+  82329.65  GCMOVE dx 0.00 dy -0.00
+  82338.04  GCMOVE dx 0.00 dy -0.00
+  82346.38  GCMOVE dx 0.00 dy -0.00
+  82354.74  GCMOVE dx 0.00 dy -0.00
+  82362.97  GCMOVE dx 0.00 dy -0.00
+  82371.35  GCMOVE dx 0.00 dy -0.00
+  82379.68  GCMOVE dx 0.00 dy -0.00
+  82388.00  GCMOVE dx 0.00 dy -0.00
+  82404.77  GCMOVE dx 0.00 dy -0.00
+  82412.98  GCMOVE dx 0.00 dy -0.00
+  82421.52  GCMOVE dx 0.00 dy -0.00
+  82429.66  GCMOVE dx 0.00 dy -0.00
+  82438.08  GCMOVE dx 0.00 dy -0.00
+  82454.77  GCMOVE dx 0.00 dy -0.00
+  82471.48  GCMOVE dx 0.00 dy -0.00
+  82488.16  GCMOVE dx 0.00 dy -0.00
+  82496.39  GCMOVE dx 0.00 dy -0.00
+  82504.73  GCMOVE dx 0.00 dy -0.00
+  82521.39  GCMOVE dx 0.00 dy -0.00
+  82529.82  GCMOVE dx 0.00 dy -0.00
+  82531.67  GCBTN left up
+  82539.82  TAP primary tap (locked=true) at (1111.917313969476, 365.0) ENDED
+  82546.62  GCMOVE dx 0.00 dy -0.00
+  82554.85  GCMOVE dx 0.00 dy -0.00
+  82563.30  GCMOVE dx 0.00 dy -0.00
+  82571.71  GCMOVE dx 0.00 dy -0.00
+  82613.26  GCMOVE dx 0.00 dy -0.00
+  82621.68  GCMOVE dx 0.00 dy -0.00
+  82788.48  GCMOVE dx 0.00 dy -0.00
+  82796.61  GCMOVE dx 0.00 dy -0.00
+  82805.04  GCMOVE dx 0.00 dy -0.00
+  82813.27  GCMOVE dx 0.00 dy -0.00
+  82821.58  GCMOVE dx 0.00 dy -0.00
+  82938.38  GCMOVE dx 0.00 dy -0.00
+  82946.53  GCMOVE dx 0.00 dy -0.00
+  82954.93  GCMOVE dx 0.00 dy -0.00
+  83063.27  GCMOVE dx 0.00 dy -0.00
+  83071.58  GCMOVE dx 0.00 dy -0.00
+  83079.85  GCMOVE dx 0.00 dy -0.00
+  83088.24  GCMOVE dx 0.00 dy -0.00
+  83096.53  GCMOVE dx 0.00 dy -0.00
+  83104.91  GCMOVE dx 0.00 dy -0.00
+  83113.19  GCMOVE dx 0.00 dy -0.00
+  83121.62  GCMOVE dx 0.00 dy -0.00
+  83129.91  GCMOVE dx 0.00 dy -0.00
+  83138.34  GCMOVE dx 0.00 dy -0.00
+  83146.61  GCMOVE dx 0.00 dy -0.00
+  83154.89  GCMOVE dx 0.00 dy -0.00
+  83163.18  GCMOVE dx 0.00 dy -0.00
+  83171.50  GCMOVE dx 0.00 dy -0.00
+  83179.84  GCMOVE dx 0.00 dy -0.00
+  83188.28  GCMOVE dx 0.00 dy -0.00
+  83192.68  GCBTN left DOWN
+  83199.04  TOUCH indirectPointer began buttonMask=1 tapCount=1
+  83204.74  GCMOVE dx 0.00 dy -0.00
+  83213.20  GCMOVE dx 0.00 dy -0.00
+  83221.56  GCMOVE dx 0.00 dy -0.00
+  83229.74  GCMOVE dx 0.00 dy -0.00
+  83238.26  GCMOVE dx 0.00 dy -0.00
+  83246.39  GCMOVE dx 0.00 dy -0.00
+  83254.75  GCMOVE dx 0.00 dy -0.00
+  83263.10  GCMOVE dx 0.00 dy -0.00
+  83271.41  GCMOVE dx 0.00 dy -0.00
+  83279.69  GCMOVE dx 0.00 dy -0.00
+  83321.55  GCMOVE dx 0.00 dy -0.00
+  83329.81  GCMOVE dx 0.00 dy -0.00
+  83338.06  GCMOVE dx 0.00 dy -0.00
+  83346.43  GCMOVE dx 0.00 dy -0.00
+  83354.85  GCMOVE dx 0.00 dy -0.00
+  83413.19  GCMOVE dx 0.00 dy -0.00
+  83454.89  GCMOVE dx 0.00 dy -0.00
+  83463.13  GCMOVE dx 0.00 dy -0.00
+  83471.49  GCMOVE dx 0.00 dy -0.00
+  83479.82  GCMOVE dx 0.00 dy -0.00
+  83488.18  GCMOVE dx 0.00 dy -0.00
+  83496.39  GCMOVE dx 0.00 dy -0.00
+  83504.80  GCMOVE dx 0.00 dy -0.00
+  83513.11  GCMOVE dx 0.00 dy -0.00
+  83521.49  GCMOVE dx 0.00 dy -0.00
+  83529.77  GCMOVE dx 0.00 dy -0.00
+  83538.17  GCMOVE dx 0.00 dy -0.00
+  83546.42  GCMOVE dx 0.00 dy -0.00
+  83554.79  GCMOVE dx 0.00 dy -0.00
+  83563.09  GCMOVE dx 0.00 dy -0.00
+  83571.43  GCMOVE dx 0.00 dy -0.00
+  83579.73  GCMOVE dx 0.00 dy -0.00
+  83588.05  GCMOVE dx 0.00 dy -0.00
+  83596.36  GCMOVE dx 0.00 dy -0.00
+  83604.70  GCMOVE dx 0.00 dy -0.00
+  83613.07  GCMOVE dx 0.00 dy -0.00
+  83621.38  GCMOVE dx 0.00 dy -0.00
+  83629.68  GCMOVE dx 0.00 dy -0.00
+  83638.00  GCMOVE dx 0.00 dy -0.00
+  83646.36  GCMOVE dx 0.00 dy -0.00
+  83654.66  GCMOVE dx 0.00 dy -0.00
+  83663.01  GCMOVE dx 0.00 dy -0.00
+  83671.36  GCMOVE dx 0.00 dy -0.00
+  83679.73  GCMOVE dx -1.00 dy -0.00
+  83688.06  GCMOVE dx 0.00 dy -0.00
+  83696.38  GCMOVE dx 0.00 dy -0.00
+  83704.67  GCMOVE dx 0.00 dy -0.00
+  83721.48  GCMOVE dx 0.00 dy -0.00
+  83729.72  GCMOVE dx 0.00 dy -1.00
+  83754.84  GCMOVE dx -1.00 dy -0.00
+  83771.49  GCMOVE dx 0.00 dy -0.00
+  83779.73  GCMOVE dx 0.00 dy -0.00
+  83788.04  GCMOVE dx 0.00 dy -0.00
+  83796.37  GCMOVE dx -1.00 dy -0.00
+  83804.72  GCMOVE dx 0.00 dy -0.00
+  83813.07  GCMOVE dx 0.00 dy -0.00
+  83821.43  GCMOVE dx 0.00 dy -0.00
+  83829.66  GCMOVE dx 0.00 dy -0.00
+  83838.04  GCMOVE dx 0.00 dy -0.00
+  83846.34  GCMOVE dx 0.00 dy -0.00
+  83854.73  GCMOVE dx 0.00 dy -0.00
+  83863.06  GCMOVE dx 0.00 dy -0.00
+  83871.42  GCMOVE dx 0.00 dy -0.00
+  83879.71  GCMOVE dx 0.00 dy -0.00
+  83888.09  GCMOVE dx 0.00 dy -0.00
+  83896.38  GCMOVE dx 0.00 dy -1.00
+  83904.72  GCMOVE dx 0.00 dy -0.00
+  83913.04  GCMOVE dx 0.00 dy -0.00
+  83921.36  GCMOVE dx -1.00 dy -0.00
+  83929.66  GCMOVE dx 0.00 dy -0.00
+  83938.03  GCMOVE dx 0.00 dy -0.00
+  83946.39  GCMOVE dx 0.00 dy -0.00
+  83954.75  GCMOVE dx 0.00 dy -0.00
+  83963.03  GCMOVE dx 0.00 dy -0.00
+  83971.33  GCMOVE dx 0.00 dy -0.00
+  83979.71  GCMOVE dx 0.00 dy -0.00
+  83987.99  GCMOVE dx 0.00 dy -0.00
+  83996.36  GCMOVE dx 0.00 dy -0.00
+  84004.55  GCBTN left up
+  84006.53  TAP primary tap (locked=true) at (1111.917313969476, 365.0) ENDED
+  84013.27  GCMOVE dx 0.00 dy -0.00
+  84021.57  GCMOVE dx 0.00 dy -0.00
+  84029.89  GCMOVE dx 0.00 dy -0.00
+  84038.31  GCMOVE dx 0.00 dy -0.00
+  84046.51  GCMOVE dx 0.00 dy -0.00
+  84054.83  GCMOVE dx 0.00 dy -0.00
+  84063.27  GCMOVE dx 0.00 dy -0.00
+  84071.51  GCMOVE dx 0.00 dy -0.00
+  84079.81  GCMOVE dx 0.00 dy -0.00
+  84088.32  GCMOVE dx 0.00 dy -0.00
+  84096.51  GCMOVE dx 0.00 dy -0.00
+  84113.34  GCMOVE dx 0.00 dy -0.00
+  84121.55  GCMOVE dx 0.00 dy -0.00
+  84129.94  GCMOVE dx 0.00 dy -0.00
+  84146.62  GCMOVE dx 0.00 dy -0.00
+  84154.96  GCMOVE dx 0.00 dy -0.00
+  84171.63  GCMOVE dx 0.00 dy -0.00
+  84179.88  GCMOVE dx 0.00 dy -0.00
+  84196.51  GCMOVE dx 0.00 dy -0.00
+  84213.26  GCMOVE dx 0.00 dy -0.00
+  84246.65  GCMOVE dx 0.00 dy -0.00
+  84254.90  GCMOVE dx 0.00 dy -0.00
+  84271.66  GCMOVE dx 0.00 dy -0.00
+  84279.87  GCMOVE dx 0.00 dy -0.00
+  84480.04  GCMOVE dx 0.00 dy -0.00
+  84488.26  GCMOVE dx 0.00 dy -0.00
+  84496.71  GCMOVE dx 0.00 dy -0.00
+  84504.84  GCMOVE dx 0.00 dy -0.00
+  84513.33  GCMOVE dx 0.00 dy -0.00
+  84521.55  GCMOVE dx 0.00 dy -0.00
+  84530.00  GCMOVE dx 0.00 dy -0.00
+  84538.23  GCMOVE dx 0.00 dy -0.00
+  84546.69  GCMOVE dx 0.00 dy -1.00
+  84555.02  GCMOVE dx 0.00 dy -0.00
+  84563.20  GCMOVE dx 0.00 dy -0.00
+  84571.65  GCMOVE dx 0.00 dy -0.00
+  84579.94  GCMOVE dx 0.00 dy -0.00
+  84588.28  GCMOVE dx 1.00 dy -0.00
+  84596.56  GCMOVE dx 2.00 dy -0.00
+  84604.89  GCMOVE dx 0.00 dy -0.00
+  85038.53  GCMOVE dx 0.00 dy -0.00
+  85046.67  GCMOVE dx 0.00 dy -0.00
+  85054.98  GCMOVE dx 0.00 dy -0.00
+  85063.23  GCMOVE dx 0.00 dy -0.00
+  85071.62  GCMOVE dx 0.00 dy -0.00
+  85088.45  GCMOVE dx 0.00 dy -0.00
+  85096.59  GCMOVE dx 0.00 dy -0.00
+  85104.90  GCMOVE dx 0.00 dy -0.00
+  85113.21  GCMOVE dx 0.00 dy -0.00
+  85121.59  GCMOVE dx 0.00 dy -0.00
+  85129.94  GCMOVE dx 0.00 dy -0.00
+  85138.21  GCMOVE dx 0.00 dy -0.00
+  85146.64  GCMOVE dx 0.00 dy -0.00
+  85229.94  GCMOVE dx 0.00 dy -0.00
+  85238.28  GCMOVE dx 0.00 dy -0.00
+  85246.53  GCMOVE dx 0.00 dy -0.00
+  85263.26  GCMOVE dx 0.00 dy -0.00
+  85271.60  GCMOVE dx 0.00 dy -0.00
+  85279.90  GCMOVE dx 0.00 dy -0.00
+  85288.32  GCMOVE dx 0.00 dy -0.00
+  85296.50  GCMOVE dx 0.00 dy -0.00
+  85413.38  GCMOVE dx 0.00 dy -0.00
+  85421.74  GCMOVE dx 0.00 dy -0.00
+  85438.45  GCMOVE dx 0.00 dy -0.00
+  85446.71  GCMOVE dx 0.00 dy -0.00
+  85455.07  GCMOVE dx 0.00 dy -0.00
+  85463.23  GCMOVE dx 0.00 dy -0.00
+  85471.63  GCMOVE dx 0.00 dy -0.00
+  85580.22  GCMOVE dx 0.00 dy -0.00
+  85588.29  GCMOVE dx 0.00 dy -0.00
+  85596.87  GCMOVE dx 0.00 dy -0.00
+  85605.05  GCMOVE dx 0.00 dy -0.00
+  85613.33  GCMOVE dx 0.00 dy -0.00
+  85621.69  GCMOVE dx 0.00 dy -0.00
+  85629.95  GCMOVE dx 0.00 dy -0.00
+  85638.28  GCMOVE dx 0.00 dy -0.00
+  85646.67  GCMOVE dx 0.00 dy -0.00
+  85755.12  GCMOVE dx 0.00 dy -0.00
+  85763.27  GCMOVE dx 0.00 dy -0.00
+  85771.70  GCMOVE dx 0.00 dy -0.00
+  85780.04  GCMOVE dx 0.00 dy -0.00
+  85788.27  GCMOVE dx 0.00 dy -0.00
+  85796.58  GCMOVE dx 0.00 dy -0.00
+  85804.99  GCMOVE dx 0.00 dy -0.00
+  85813.40  GCMOVE dx 0.00 dy -0.00
+  85929.97  GCMOVE dx 0.00 dy -0.00
+  85938.32  GCMOVE dx 0.00 dy -0.00
+  85946.64  GCMOVE dx 0.00 dy -0.00
+  85955.08  GCMOVE dx 0.00 dy -0.00
+  85963.24  GCMOVE dx 0.00 dy -0.00
+  85971.62  GCMOVE dx 0.00 dy -0.00
+  85979.89  GCMOVE dx 0.00 dy -0.00
+  85988.27  GCMOVE dx 0.00 dy -0.00
+  86121.87  GCMOVE dx 0.00 dy -0.00
+  86129.94  GCMOVE dx 0.00 dy -0.00
+  86138.39  GCMOVE dx 0.00 dy -0.00
+  86146.81  GCMOVE dx 0.00 dy -0.00
+  86171.75  GCMOVE dx 0.00 dy -0.00
+  86180.00  GCMOVE dx 0.00 dy -0.00
+  86188.33  GCMOVE dx 0.00 dy -0.00
+  86196.64  GCMOVE dx 0.00 dy -0.00
+  86204.93  GCMOVE dx 0.00 dy -0.00
+  86571.77  GCMOVE dx 0.00 dy -0.00
+  86588.43  GCMOVE dx 0.00 dy -0.00
+  86596.65  GCMOVE dx 0.00 dy -0.00
+  86604.99  GCMOVE dx 0.00 dy -0.00
+  86613.23  GCMOVE dx 0.00 dy -0.00
+  86621.65  GCMOVE dx 0.00 dy -0.00
+  86629.88  GCMOVE dx 0.00 dy -0.00
+  86638.36  GCMOVE dx 0.00 dy -0.00
+  86738.41  GCMOVE dx 0.00 dy -0.00
+  86746.63  GCMOVE dx 0.00 dy -0.00
+  86763.27  GCMOVE dx 0.00 dy -0.00
+  86771.56  GCMOVE dx 0.00 dy -0.00
+  86779.93  GCMOVE dx 0.00 dy -0.00
+  86788.33  GCMOVE dx 0.00 dy -0.00
+  86796.60  GCMOVE dx 0.00 dy -0.00
+  86804.93  GCMOVE dx 0.00 dy -0.00
+  87071.75  GCMOVE dx 0.00 dy -0.00
+  87079.90  GCMOVE dx 0.00 dy -0.00
+  87088.41  GCMOVE dx 0.00 dy -0.00
+  87113.44  GCMOVE dx 3.00 dy -0.00
+  87121.75  GCMOVE dx 7.00 dy -0.00
+  87130.09  GCMOVE dx 10.00 dy -3.00
+  87138.25  GCMOVE dx 12.00 dy -6.00
+  87146.75  GCMOVE dx 14.00 dy -7.00
+  87155.03  GCMOVE dx 20.00 dy -10.00
+  87163.24  GCMOVE dx 22.00 dy -12.00
+  87171.59  GCMOVE dx 23.00 dy -14.00
+  87180.03  GCMOVE dx 24.00 dy -16.00
+  87188.26  GCMOVE dx 24.00 dy -16.00
+  87196.56  GCMOVE dx 23.00 dy -17.00
+  87204.91  GCMOVE dx 14.00 dy -11.00
+  87213.29  GCMOVE dx 21.00 dy -15.00
+  87221.68  GCMOVE dx 19.00 dy -14.00
+  87229.86  GCMOVE dx 17.00 dy -14.00
+  87238.52  GCMOVE dx 16.00 dy -12.00
+  87246.69  GCMOVE dx 9.00 dy -6.00
+  87254.99  GCMOVE dx 14.00 dy -11.00
+  87263.23  GCMOVE dx 12.00 dy -9.00
+  87280.14  GCMOVE dx 16.00 dy -12.00
+  87296.65  GCMOVE dx 8.00 dy -5.00
+  87305.01  GCMOVE dx 11.00 dy -9.00
+  87321.73  GCMOVE dx 4.00 dy -2.00
+  87329.97  GCMOVE dx 2.00 dy -2.00
+  87338.41  GCMOVE dx 2.00 dy -1.00
+  87346.85  GCMOVE dx 1.00 dy -1.00
+  87355.12  GCMOVE dx 1.00 dy -1.00
+  87363.31  GCMOVE dx 1.00 dy -0.00
+  87480.39  GCMOVE dx 0.00 dy 1.00
+  87488.58  GCMOVE dx -4.00 dy 4.00
+  87496.72  GCMOVE dx -5.00 dy 5.00
+  87505.07  GCMOVE dx -9.00 dy 8.00
+  87513.37  GCMOVE dx -9.00 dy 8.00
+  87521.82  GCMOVE dx -9.00 dy 9.00
+  87530.06  GCMOVE dx -11.00 dy 9.00
+  87538.52  GCMOVE dx -12.00 dy 9.00
+  87546.86  GCMOVE dx -12.00 dy 9.00
+  87555.16  GCMOVE dx -13.00 dy 9.00
+  87563.29  GCMOVE dx -13.00 dy 9.00
+  87571.70  GCMOVE dx -8.00 dy 5.00
+  87580.14  GCMOVE dx -12.00 dy 8.00
+  87588.45  GCMOVE dx -11.00 dy 7.00
+  87596.87  GCMOVE dx -6.00 dy 3.00
+  87605.02  GCMOVE dx -10.00 dy 5.00
+  87613.41  GCMOVE dx -8.00 dy 4.00
+  87621.81  GCMOVE dx -6.00 dy 3.00
+  87630.01  GCMOVE dx -6.00 dy 2.00
+  87638.34  GCMOVE dx -4.00 dy 2.00
+  87646.72  GCMOVE dx -3.00 dy 1.00
+  87655.11  GCMOVE dx -2.00 dy 1.00
+  87663.35  GCMOVE dx -2.00 dy -0.00
+  87671.77  GCMOVE dx -1.00 dy -0.00
+  87696.71  GCMOVE dx 0.00 dy -0.00
+  87705.19  GCMOVE dx 0.00 dy -0.00
+  87713.45  GCMOVE dx 0.00 dy -0.00
+  87721.83  GCMOVE dx 0.00 dy -0.00
+  87729.98  GCMOVE dx 0.00 dy -0.00
+  87738.51  GCMOVE dx 0.00 dy -0.00
+  87855.13  GCMOVE dx 0.00 dy -0.00
+  87863.31  GCMOVE dx 0.00 dy -0.00
+  87871.67  GCMOVE dx 0.00 dy -0.00
+  87880.07  GCMOVE dx 0.00 dy -0.00
+  87888.38  GCMOVE dx 0.00 dy -0.00
+  87905.11  GCMOVE dx 0.00 dy -0.00
+  87913.37  GCMOVE dx 0.00 dy -0.00
+  87921.63  GCMOVE dx 0.00 dy -0.00
+  87930.07  GCMOVE dx 0.00 dy -0.00
+  87938.34  GCMOVE dx 0.00 dy -0.00
+  88030.06  GCMOVE dx 0.00 dy -0.00
+  88038.54  GCMOVE dx 0.00 dy -0.00
+  88046.69  GCMOVE dx 0.00 dy -0.00
+  88055.12  GCMOVE dx 0.00 dy -0.00
+  88071.78  GCMOVE dx 0.00 dy -0.00
+  88080.08  GCMOVE dx 0.00 dy -0.00
+  88088.44  GCMOVE dx 0.00 dy -0.00
+  88096.64  GCMOVE dx 0.00 dy -0.00
+  88104.99  GCMOVE dx 0.00 dy -0.00
+  88113.42  GCMOVE dx 0.00 dy -0.00
+  88396.82  GCMOVE dx 0.00 dy -0.00
+  88405.05  GCMOVE dx 0.00 dy -0.00
+  88413.33  GCMOVE dx 0.00 dy -0.00
+  88421.75  GCMOVE dx 0.00 dy -0.00
+  88429.92  GCMOVE dx 0.00 dy -0.00
+  88438.32  GCMOVE dx 0.00 dy -0.00
+  88446.58  GCMOVE dx 0.00 dy -0.00
+  88455.04  GCMOVE dx 0.00 dy -0.00
+  88546.80  GCMOVE dx 0.00 dy -0.00
+  88555.01  GCMOVE dx 0.00 dy -0.00
+  88563.29  GCMOVE dx 0.00 dy -0.00
+  88580.11  GCMOVE dx 0.00 dy -0.00
+  88588.51  GCMOVE dx 0.00 dy -0.00
+  88596.66  GCMOVE dx 0.00 dy -0.00
+  88605.01  GCMOVE dx 0.00 dy -0.00
+  88613.34  GCMOVE dx 0.00 dy -0.00
+  88621.69  GCMOVE dx 0.00 dy -0.00
+  88755.18  GCMOVE dx 0.00 dy -0.00
+  88763.26  GCMOVE dx 0.00 dy -0.00
+  88771.68  GCMOVE dx 0.00 dy -0.00
+  88779.97  GCMOVE dx 0.00 dy -0.00
+  88788.33  GCMOVE dx 0.00 dy -0.00
+  88805.16  GCMOVE dx 0.00 dy 2.00
+  88813.37  GCMOVE dx -2.00 dy 6.00
+  88821.76  GCMOVE dx -4.00 dy 6.00
+  88829.91  GCMOVE dx -4.00 dy 8.00
+  88838.31  GCMOVE dx -6.00 dy 8.00
+  88846.68  GCMOVE dx -8.00 dy 12.00
+  88854.94  GCMOVE dx -9.00 dy 13.00
+  88863.34  GCMOVE dx -11.00 dy 15.00
+  88871.59  GCMOVE dx -11.00 dy 16.00
+  88880.08  GCMOVE dx -11.00 dy 15.00
+  88888.40  GCMOVE dx -12.00 dy 15.00
+  88896.67  GCMOVE dx -12.00 dy 15.00
+  88904.98  GCMOVE dx -11.00 dy 14.00
+  88913.37  GCMOVE dx -7.00 dy 8.00
+  88921.65  GCMOVE dx -10.00 dy 12.00
+  88929.99  GCMOVE dx -10.00 dy 10.00
+  88938.38  GCMOVE dx -10.00 dy 10.00
+  88946.80  GCMOVE dx -9.00 dy 8.00
+  88955.16  GCMOVE dx -8.00 dy 8.00
+  88963.29  GCMOVE dx -4.00 dy 3.00
+  88971.79  GCMOVE dx -8.00 dy 6.00
+  88980.05  GCMOVE dx -6.00 dy 4.00
+  88988.39  GCMOVE dx -5.00 dy 4.00
+  88996.66  GCMOVE dx -5.00 dy 3.00
+  89005.10  GCMOVE dx -3.00 dy 2.00
+  89013.37  GCMOVE dx -3.00 dy 2.00
+  89021.72  GCMOVE dx -2.00 dy 2.00
+  89030.00  GCMOVE dx -2.00 dy -0.00
+  89038.41  GCMOVE dx -1.00 dy 1.00
+  89046.75  GCMOVE dx -1.00 dy 1.00
+  89054.97  GCMOVE dx -1.00 dy 1.00
+  89063.29  GCMOVE dx -1.00 dy -0.00
+  89080.07  GCMOVE dx -1.00 dy 1.00
+  89088.44  GCMOVE dx -1.00 dy -0.00
+  89096.60  GCMOVE dx 0.00 dy 1.00
+  89105.04  GCMOVE dx -2.00 dy -0.00
+  89113.33  GCMOVE dx 0.00 dy -0.00
+  89129.97  GCMOVE dx 0.00 dy -0.00
+  89238.53  GCMOVE dx 0.00 dy -0.00
+  89246.88  GCMOVE dx 0.00 dy -0.00
+  89263.34  GCMOVE dx 0.00 dy -0.00
+  89271.80  GCMOVE dx 0.00 dy -0.00
+  89288.61  GCMOVE dx 0.00 dy -0.00
+  89296.69  GCMOVE dx 0.00 dy -0.00
+  89305.03  GCMOVE dx 0.00 dy -0.00
+  89313.41  GCMOVE dx 0.00 dy -0.00
+  89421.86  GCMOVE dx 0.00 dy -0.00
+  89430.05  GCMOVE dx 0.00 dy -0.00
+  89438.51  GCMOVE dx 0.00 dy -0.00
+  89455.21  GCMOVE dx 0.00 dy -0.00
+  89463.41  GCMOVE dx 0.00 dy -0.00
+  89471.90  GCMOVE dx 0.00 dy -0.00
+  89480.16  GCMOVE dx 0.00 dy -0.00
+  89488.39  GCMOVE dx 0.00 dy -0.00
+  89571.85  GCMOVE dx 0.00 dy -0.00
+  89580.19  GCMOVE dx 0.00 dy -0.00
+  89588.45  GCMOVE dx 0.00 dy -0.00
+  89613.48  GCMOVE dx 0.00 dy -0.00
+  89621.76  GCMOVE dx 0.00 dy -0.00
+  89629.93  GCMOVE dx 0.00 dy -0.00
+  89638.35  GCMOVE dx 0.00 dy -0.00
+  89730.00  GCMOVE dx 0.00 dy -0.00
+  89738.43  GCMOVE dx 0.00 dy -0.00
+  89746.78  GCMOVE dx 0.00 dy -0.00
+  89755.08  GCMOVE dx 0.00 dy -0.00
+  89763.31  GCMOVE dx 0.00 dy -0.00
+  89771.66  GCMOVE dx 0.00 dy -0.00
+  89780.19  GCMOVE dx 0.00 dy -0.00
+  89788.43  GCMOVE dx 0.00 dy -0.00
+  89796.65  GCMOVE dx 0.00 dy -0.00
+  91421.87  GCMOVE dx 0.00 dy -0.00
+  91438.52  GCMOVE dx 0.00 dy -0.00
+  91455.18  GCMOVE dx 0.00 dy -0.00
+  91463.45  GCMOVE dx 0.00 dy -0.00
+  91471.80  GCMOVE dx 0.00 dy -0.00
+  91480.08  GCMOVE dx 0.00 dy -0.00
+  91488.41  GCMOVE dx 0.00 dy -0.00
+  91496.77  GCMOVE dx 0.00 dy -0.00
+  91504.99  GCMOVE dx 0.00 dy -0.00
+  91513.37  GCMOVE dx 0.00 dy -0.00
+  91579.99  GCMOVE dx 0.00 dy -0.00
+  91588.22  GCMOVE dx 0.00 dy -0.00
+  91596.55  GCMOVE dx 0.00 dy -0.00
+  91604.86  GCMOVE dx 0.00 dy -0.00
+  91613.23  GCMOVE dx 0.00 dy -0.00
+  91621.57  GCMOVE dx 0.00 dy -0.00
+  91629.85  GCMOVE dx 0.00 dy -0.00
+  91638.18  GCMOVE dx 0.00 dy -0.00
+  91646.63  GCMOVE dx 0.00 dy -0.00
+  91663.22  GCMOVE dx 0.00 dy -0.00
+  91679.95  GCMOVE dx 0.00 dy -0.00
+  91688.28  GCMOVE dx 0.00 dy -0.00
+  91696.50  GCMOVE dx 0.00 dy -0.00
+  91704.91  GCMOVE dx 0.00 dy -0.00
+  91713.25  GCMOVE dx 0.00 dy -0.00
+  91721.57  GCMOVE dx 0.00 dy -0.00
+  91729.89  GCMOVE dx 0.00 dy -0.00
+  91738.28  GCMOVE dx 0.00 dy -0.00
+  91746.56  GCMOVE dx 0.00 dy -0.00
+  91754.91  GCMOVE dx 0.00 dy -0.00
+  91763.19  GCMOVE dx 0.00 dy -0.00
+  91773.62  GCBTN right DOWN
+  91774.77  TOUCH indirectPointer began buttonMask=2 tapCount=1
+  91813.37  GCMOVE dx 0.00 dy -0.00
+  91821.74  GCMOVE dx 0.00 dy -0.00
+  91829.92  GCMOVE dx 0.00 dy -0.00
+  91838.48  GCMOVE dx 0.00 dy -0.00
+  91846.61  GCMOVE dx 0.00 dy -0.00
+  91871.73  GCMOVE dx 0.00 dy -0.00
+  91880.09  GCMOVE dx 0.00 dy -0.00
+  91888.26  GCMOVE dx 0.00 dy -0.00
+  91896.55  GCMOVE dx 0.00 dy -0.00
+  91904.90  GCMOVE dx 0.00 dy -0.00
+  91921.64  GCMOVE dx 0.00 dy -0.00
+  91923.02  GCBTN right up
+  91931.66  TAP secondary tap (locked=true) at (1111.917313969476, 365.0) ENDED
+  91938.25  GCMOVE dx 0.00 dy -0.00
+  91946.67  GCMOVE dx 0.00 dy -0.00
+  91954.97  GCMOVE dx 0.00 dy -0.00
+  91963.33  GCMOVE dx 0.00 dy -0.00
+  91971.73  GCMOVE dx 0.00 dy -0.00
+  91979.92  GCMOVE dx 0.00 dy -0.00
+  91988.33  GCMOVE dx 0.00 dy -0.00
+  91996.68  GCMOVE dx 0.00 dy -0.00
+  92004.95  GCMOVE dx 0.00 dy -0.00
+  92013.24  GCMOVE dx 0.00 dy -0.00
+  92021.70  GCMOVE dx 0.00 dy -0.00
+  92471.98  GCMOVE dx 0.00 dy -0.00
+  92480.22  GCMOVE dx 0.00 dy -0.00
+  92488.69  GCMOVE dx 0.00 dy -0.00
+  92496.75  GCMOVE dx 0.00 dy -0.00
+  92505.22  GCMOVE dx 0.00 dy -0.00
+  92513.46  GCMOVE dx 0.00 dy -0.00
+  92521.92  GCMOVE dx 0.00 dy -0.00
+  92530.20  GCMOVE dx 0.00 dy -0.00
+  92538.51  GCMOVE dx 0.00 dy -0.00
+  92546.76  GCMOVE dx 0.00 dy -0.00
+  92555.25  GCMOVE dx 0.00 dy -0.00
+  92563.38  GCMOVE dx 0.00 dy -0.00
+  92571.70  GCMOVE dx 0.00 dy -0.00
+  92580.11  GCMOVE dx 0.00 dy -0.00
+  92613.31  GCMOVE dx 0.00 dy -0.00
+  92621.65  GCMOVE dx 0.00 dy -0.00
+  92629.87  GCMOVE dx 0.00 dy -0.00
+  92638.43  GCMOVE dx 0.00 dy -0.00
+  92646.69  GCMOVE dx 0.00 dy -0.00
+  92654.94  GCMOVE dx 0.00 dy -0.00
+  92663.22  GCMOVE dx 0.00 dy -0.00
+  92671.72  GCMOVE dx 0.00 dy -0.00
+  92679.93  GCMOVE dx 0.00 dy -0.00
+  92688.29  GCMOVE dx 0.00 dy -0.00
+  92696.57  GCMOVE dx 0.00 dy -0.00
+  92704.92  GCMOVE dx 0.00 dy -0.00
+  92713.26  GCMOVE dx 0.00 dy -0.00
+  92721.62  GCMOVE dx 0.00 dy -0.00
+  92729.93  GCMOVE dx 0.00 dy -0.00
+  92738.25  GCMOVE dx 0.00 dy -0.00
+  92746.62  GCMOVE dx 0.00 dy -0.00
+  92754.96  GCMOVE dx 0.00 dy -0.00
+  92763.23  GCMOVE dx 0.00 dy -0.00
+  92771.58  GCMOVE dx 0.00 dy -0.00
+  92780.13  GCMOVE dx 0.00 dy -0.00
+  92788.33  GCMOVE dx 0.00 dy -0.00
+  92796.55  GCMOVE dx 0.00 dy -0.00
+  92813.31  GCMOVE dx 0.00 dy -0.00
+  92821.65  GCMOVE dx 0.00 dy -0.00
+  92829.89  GCMOVE dx 0.00 dy -0.00
+  92838.35  GCMOVE dx 0.00 dy -0.00
+  92846.61  GCMOVE dx 0.00 dy -0.00
+  92854.96  GCMOVE dx 0.00 dy -0.00
+  92871.70  GCMOVE dx 0.00 dy -0.00
+  92879.98  GCMOVE dx 0.00 dy -0.00
+  92938.36  GCMOVE dx 0.00 dy -0.00
+  92946.62  GCMOVE dx 0.00 dy -0.00
+  92954.96  GCMOVE dx 0.00 dy -0.00
+  92963.24  GCMOVE dx 0.00 dy -0.00
+  92971.65  GCMOVE dx 0.00 dy -0.00
+  92979.91  GCMOVE dx 0.00 dy -0.00
+  93013.32  GCMOVE dx 0.00 dy -0.00
+  93021.66  GCMOVE dx 0.00 dy -0.00
+  93029.90  GCMOVE dx 0.00 dy -0.00
+  93038.28  GCMOVE dx 0.00 dy -0.00
+  93046.75  GCMOVE dx 0.00 dy -0.00
+  93053.32  GCBTN right DOWN
+  93057.17  TOUCH indirectPointer began buttonMask=2 tapCount=1
+  93088.28  GCMOVE dx 0.00 dy -0.00
+  93096.56  GCMOVE dx 0.00 dy -0.00
+  93104.93  GCMOVE dx 0.00 dy -0.00
+  93113.32  GCMOVE dx 0.00 dy -0.00
+  93121.73  GCMOVE dx 0.00 dy -0.00
+  93130.02  GCMOVE dx 0.00 dy -0.00
+  93138.30  GCMOVE dx 0.00 dy -0.00
+  93146.68  GCMOVE dx 0.00 dy -0.00
+  93154.92  GCMOVE dx 0.00 dy -0.00
+  93163.24  GCMOVE dx 0.00 dy -0.00
+  93171.63  GCMOVE dx 0.00 dy -0.00
+  93188.30  GCMOVE dx 0.00 dy -0.00
+  93196.62  GCMOVE dx 0.00 dy -0.00
+  93204.88  GCMOVE dx 0.00 dy -0.00
+  93213.27  GCMOVE dx 0.00 dy -0.00
+  93221.58  GCMOVE dx 0.00 dy -0.00
+  93229.89  GCMOVE dx 0.00 dy -0.00
+  93238.19  GCMOVE dx 0.00 dy -0.00
+  93246.55  GCMOVE dx 0.00 dy -0.00
+  93253.87  GCBTN right up
+  93256.66  TAP secondary tap (locked=true) at (1111.917313969476, 365.0) ENDED
+  93263.33  GCMOVE dx 0.00 dy -0.00
+  93271.72  GCMOVE dx 0.00 dy -0.00
+  93280.00  GCMOVE dx 0.00 dy -0.00
+  93288.35  GCMOVE dx 0.00 dy -0.00
+  93296.55  GCMOVE dx 0.00 dy -0.00
+  93305.05  GCMOVE dx 0.00 dy -0.00
+  93313.28  GCMOVE dx 0.00 dy -0.00
+  93805.30  GCMOVE dx 0.00 dy -0.00
+  93821.98  GCMOVE dx 0.00 dy -0.00
+  93830.08  GCMOVE dx 0.00 dy -0.00
+  93838.51  GCMOVE dx 0.00 dy -0.00
+  93846.81  GCMOVE dx 0.00 dy -0.00
+  93855.04  GCMOVE dx 0.00 dy -0.00
+  93863.44  GCMOVE dx 0.00 dy -0.00
+  93871.72  GCMOVE dx 0.00 dy -0.00
+  93880.02  GCMOVE dx 0.00 dy -0.00
+  93888.49  GCMOVE dx 0.00 dy -0.00
+  93896.35  GCBTN left DOWN
+  93899.23  TOUCH indirectPointer began buttonMask=1 tapCount=1
+  93904.95  GCMOVE dx 0.00 dy -0.00
+  93913.27  GCMOVE dx 0.00 dy -0.00
+  93921.66  GCMOVE dx 0.00 dy -0.00
+  93929.91  GCMOVE dx 0.00 dy -0.00
+  93938.35  GCMOVE dx 0.00 dy -0.00
+  93946.63  GCMOVE dx 0.00 dy -0.00
+  93954.97  GCMOVE dx 0.00 dy -0.00
+  93963.26  GCMOVE dx 0.00 dy -0.00
+  93971.67  GCMOVE dx 0.00 dy -0.00
+  93979.90  GCMOVE dx 0.00 dy -0.00
+  93988.31  GCMOVE dx 0.00 dy -0.00
+  93996.63  GCMOVE dx 0.00 dy -0.00
+  94004.90  GCMOVE dx 0.00 dy -0.00
+  94013.26  GCMOVE dx 0.00 dy -0.00
+  94021.64  GCMOVE dx 0.00 dy -0.00
+  94029.92  GCMOVE dx 0.00 dy -0.00
+  94038.24  GCMOVE dx 0.00 dy -0.00
+  94046.63  GCMOVE dx 0.00 dy -0.00
+  94054.97  GCMOVE dx 0.00 dy -0.00
+  94063.06  GCBTN left up
+  94064.96  TAP primary tap (locked=true) at (1111.917313969476, 365.0) ENDED
+  94071.67  GCMOVE dx 0.00 dy -0.00
+  94080.00  GCMOVE dx 0.00 dy -0.00
+  94088.34  GCMOVE dx 0.00 dy -0.00
+  94096.53  GCMOVE dx 0.00 dy -0.00
+  94105.07  GCMOVE dx 0.00 dy -0.00
+  94113.33  GCMOVE dx 0.00 dy -0.00
+  94121.73  GCMOVE dx 0.00 dy -0.00
+  94130.03  GCMOVE dx 0.00 dy -0.00
+  94138.34  GCMOVE dx 0.00 dy -0.00
+  94146.64  GCMOVE dx 0.00 dy -0.00
+  94155.06  GCMOVE dx 0.00 dy -0.00
+  94171.76  GCMOVE dx 0.00 dy -0.00
+ 119992.98  GCMOVE dx 0.00 dy -0.00
+ 120006.24  GCMOVE dx 0.00 dy -0.00
+ 120014.52  GCMOVE dx 0.00 dy -0.00
+ 120022.87  GCMOVE dx 0.00 dy -0.00
+ 120031.18  GCMOVE dx 0.00 dy -0.00
+ 120039.39  GCMOVE dx 0.00 dy -0.00
+ 120057.12  PINCH began scale 0.980 v -2.36
+ 120065.30  PINCH changed scale 0.961 v -2.34
+ 120073.59  PINCH changed scale 0.948 v -2.11
+ 120098.63  PINCH changed scale 0.900 v -1.71
+ 120106.86  PINCH changed scale 0.889 v -1.75
+ 120115.18  PINCH changed scale 0.876 v -1.31
+ 120123.68  PINCH changed scale 0.859 v -1.68
+ 120132.00  PINCH changed scale 0.842 v -2.09
+ 120140.27  PINCH changed scale 0.828 v -1.96
+ 120148.63  PINCH changed scale 0.812 v -1.76
+ 120157.03  PINCH changed scale 0.792 v -2.06
+ 120165.32  PINCH changed scale 0.774 v -2.32
+ 120173.73  PINCH changed scale 0.752 v -2.23
+ 120181.94  PINCH changed scale 0.728 v -2.75
+ 120190.43  PINCH changed scale 0.706 v -2.79
+ 120198.66  PINCH changed scale 0.683 v -2.70
+ 120207.04  PINCH changed scale 0.660 v -2.76
+ 120215.34  PINCH changed scale 0.639 v -2.71
+ 120223.62  PINCH changed scale 0.618 v -2.46
+ 120232.02  PINCH changed scale 0.597 v -2.50
+ 120240.31  PINCH changed scale 0.579 v -2.45
+ 120248.70  PINCH changed scale 0.561 v -2.19
+ 120256.95  PINCH changed scale 0.545 v -2.07
+ 120265.34  PINCH changed scale 0.530 v -1.93
+ 120273.63  PINCH changed scale 0.516 v -1.73
+ 120282.02  PINCH changed scale 0.504 v -1.62
+ 120290.38  PINCH changed scale 0.493 v -1.43
+ 120298.70  PINCH changed scale 0.487 v -1.17
+ 120307.05  PINCH changed scale 0.477 v -0.88
+ 120315.30  PINCH changed scale 0.469 v -1.07
+ 120323.67  PINCH changed scale 0.462 v -0.96
+ 120331.92  PINCH changed scale 0.456 v -0.88
+ 120340.36  PINCH changed scale 0.449 v -0.73
+ 120348.67  PINCH changed scale 0.444 v -0.74
+ 120357.01  PINCH changed scale 0.439 v -0.60
+ 120365.33  PINCH changed scale 0.434 v -0.63
+ 120373.65  PINCH changed scale 0.430 v -0.53
+ 120381.98  PINCH changed scale 0.426 v -0.47
+ 120390.28  PINCH changed scale 0.422 v -0.51
+ 120398.59  PINCH changed scale 0.419 v -0.44
+ 120406.98  PINCH changed scale 0.416 v -0.41
+ 120415.33  PINCH changed scale 0.413 v -0.34
+ 120423.69  PINCH changed scale 0.410 v -0.35
+ 120431.98  PINCH changed scale 0.408 v -0.37
+ 120440.32  PINCH changed scale 0.404 v -0.28
+ 120448.62  PINCH changed scale 0.402 v -0.38
+ 120456.96  PINCH changed scale 0.398 v -0.34
+ 120465.27  PINCH changed scale 0.395 v -0.39
+ 120473.59  PINCH changed scale 0.392 v -0.39
+ 120481.99  PINCH changed scale 0.388 v -0.40
+ 120490.30  PINCH changed scale 0.385 v -0.45
+ 120498.76  PINCH changed scale 0.380 v -0.46
+ 120506.98  PINCH changed scale 0.376 v -0.50
+ 120515.32  PINCH changed scale 0.372 v -0.49
+ 120523.62  PINCH changed scale 0.369 v -0.47
+ 120532.00  PINCH changed scale 0.365 v -0.42
+ 120540.29  PINCH changed scale 0.361 v -0.47
+ 120548.71  PINCH changed scale 0.358 v -0.44
+ 120557.05  PINCH changed scale 0.355 v -0.38
+ 120565.30  PINCH changed scale 0.352 v -0.38
+ 120573.65  PINCH changed scale 0.349 v -0.36
+ 120581.96  PINCH changed scale 0.346 v -0.31
+ 120590.31  PINCH changed scale 0.344 v -0.29
+ 120598.69  PINCH changed scale 0.342 v -0.24
+ 120607.00  PINCH changed scale 0.341 v -0.22
+ 120615.31  PINCH changed scale 0.339 v -0.19
+ 120623.64  PINCH changed scale 0.337 v -0.23
+ 120631.94  PINCH changed scale 0.336 v -0.20
+ 120640.30  PINCH changed scale 0.334 v -0.14
+ 120648.64  PINCH changed scale 0.333 v -0.20
+ 120656.96  PINCH changed scale 0.332 v -0.11
+ 120665.27  PINCH changed scale 0.332 v -0.10
+ 120673.71  PINCH changed scale 0.331 v -0.08
+ 120680.52  GCMOVE dx 0.00 dy -0.00
+ 120690.33  PINCH changed scale 0.330 v -0.14
+ 120697.17  GCMOVE dx 0.00 dy -0.00
+ 120706.99  PINCH changed scale 0.329 v -0.05
+ 120715.35  PINCH changed scale 0.328 v -0.05
+ 120723.64  PINCH changed scale 0.328 v -0.05
+ 120732.01  PINCH changed scale 0.327 v -0.07
+ 120738.97  GCMOVE dx 0.00 dy -0.00
+ 120748.65  PINCH changed scale 0.327 v -0.09
+ 120765.37  PINCH changed scale 0.325 v -0.04
+ 120782.05  PINCH changed scale 0.325 v -0.07
+ 120790.34  PINCH changed scale 0.324 v -0.03
+ 120798.67  PINCH changed scale 0.324 v -0.05
+ 120806.90  PINCH changed scale 0.323 v -0.05
+ 120815.36  PINCH changed scale 0.323 v -0.05
+ 120830.64  GCMOVE dx 0.00 dy -0.00
+ 120838.86  GCMOVE dx 0.00 dy -0.00
+ 120848.73  PINCH changed scale 0.323 v -0.04
+ 120855.70  GCMOVE dx 0.00 dy -0.00
+ 120863.91  GCMOVE dx 0.00 dy -0.00
+ 120873.72  PINCH changed scale 0.323 v -0.01
+ 120882.06  PINCH changed scale 0.323 v -0.01
+ 120890.36  PINCH ENDED scale 0.323 v -0.01
+ 120897.32  GCMOVE dx 0.00 dy -0.00
+ 121414.22  GCMOVE dx 0.00 dy -0.00
+ 121547.36  GCMOVE dx 0.00 dy -0.00
+ 121597.39  GCMOVE dx 0.00 dy -0.00
+ 121605.74  GCMOVE dx 0.00 dy -0.00
+ 121614.10  GCMOVE dx 0.00 dy -0.00
+ 121622.37  GCMOVE dx 0.00 dy -0.00
+ 121630.62  GCMOVE dx 0.00 dy -0.00
+ 121647.44  GCMOVE dx 0.00 dy -0.00
+ 121655.73  GCMOVE dx 0.00 dy -0.00
+ 121663.98  GCMOVE dx 0.00 dy -0.00
+ 121672.34  GCMOVE dx 0.00 dy -0.00
+ 121680.66  GCMOVE dx 0.00 dy -0.00
+ 121689.03  GCMOVE dx 0.00 dy -0.00
+ 121697.24  GCMOVE dx 0.00 dy -0.00
+ 121705.72  GCMOVE dx 0.00 dy -0.00
+ 121714.01  GCMOVE dx 0.00 dy -0.00
+ 121722.44  GCMOVE dx 0.00 dy -0.00
+ 121755.55  GCMOVE dx 0.00 dy -0.00
+ 121773.69  PINCH began scale 1.028 v 3.36
+ 121781.97  PINCH changed scale 1.054 v 3.30
+ 121790.23  PINCH changed scale 1.084 v 3.24
+ 121798.65  PINCH changed scale 1.114 v 3.60
+ 121807.03  PINCH changed scale 1.146 v 3.66
+ 121831.89  PINCH changed scale 1.216 v 3.92
+ 121831.97  PINCH changed scale 1.250 v 4.17
+ 121840.22  PINCH changed scale 1.286 v 4.14
+ 121848.76  PINCH changed scale 1.320 v 4.25
+ 121857.04  PINCH changed scale 1.354 v 4.07
+ 121865.33  PINCH changed scale 1.388 v 4.09
+ 121873.63  PINCH changed scale 1.420 v 4.02
+ 121881.97  PINCH changed scale 1.452 v 3.84
+ 121890.40  PINCH changed scale 1.484 v 3.84
+ 121898.84  PINCH changed scale 1.514 v 3.77
+ 121906.97  PINCH changed scale 1.538 v 3.42
+ 121915.31  PINCH changed scale 1.570 v 3.12
+ 121923.76  PINCH changed scale 1.598 v 3.72
+ 121932.08  PINCH changed scale 1.626 v 3.36
+ 121940.42  PINCH changed scale 1.654 v 3.36
+ 121948.77  PINCH changed scale 1.680 v 3.29
+ 121957.01  PINCH changed scale 1.704 v 3.06
+ 121965.41  PINCH changed scale 1.730 v 2.94
+ 121973.72  PINCH changed scale 1.754 v 3.06
+ 121982.10  PINCH changed scale 1.774 v 2.76
+ 121990.40  PINCH changed scale 1.800 v 2.58
+ 121998.61  PINCH changed scale 1.822 v 3.00
+ 122006.95  PINCH changed scale 1.844 v 2.64
+ 122015.41  PINCH changed scale 1.866 v 2.64
+ 122023.65  PINCH changed scale 1.888 v 2.64
+ 122032.05  PINCH changed scale 1.908 v 2.58
+ 122040.38  PINCH changed scale 1.928 v 2.40
+ 122048.70  PINCH changed scale 1.948 v 2.40
+ 122057.03  PINCH changed scale 1.968 v 2.40
+ 122065.39  PINCH changed scale 1.986 v 2.34
+ 122073.68  PINCH changed scale 2.004 v 2.16
+ 122081.98  PINCH changed scale 2.020 v 2.10
+ 122090.29  PINCH changed scale 2.038 v 1.98
+ 122098.69  PINCH changed scale 2.056 v 2.16
+ 122107.02  PINCH changed scale 2.070 v 2.04
+ 122115.34  PINCH changed scale 2.088 v 1.80
+ 122123.63  PINCH changed scale 2.102 v 2.04
+ 122131.93  PINCH changed scale 2.120 v 1.80
+ 122140.42  PINCH changed scale 2.138 v 2.16
+ 122148.72  PINCH changed scale 2.152 v 2.04
+ 122157.04  PINCH changed scale 2.170 v 1.80
+ 122165.33  PINCH changed scale 2.186 v 2.10
+ 122173.69  PINCH changed scale 2.202 v 1.92
+ 122182.00  PINCH changed scale 2.218 v 1.92
+ 122190.33  PINCH changed scale 2.236 v 1.98
+ 122198.71  PINCH changed scale 2.256 v 2.22
+ 122207.03  PINCH changed scale 2.276 v 2.40
+ 122215.34  PINCH changed scale 2.294 v 2.34
+ 122223.66  PINCH changed scale 2.308 v 2.04
+ 122232.00  PINCH changed scale 2.326 v 1.80
+ 122240.32  PINCH changed scale 2.346 v 2.22
+ 122248.65  PINCH changed scale 2.358 v 2.16
+ 122257.03  PINCH changed scale 2.374 v 1.56
+ 122265.33  PINCH changed scale 2.382 v 1.68
+ 122273.71  PINCH changed scale 2.396 v 1.14
+ 122281.97  PINCH changed scale 2.408 v 1.62
+ 122290.28  PINCH changed scale 2.413 v 1.26
+ 122298.66  PINCH changed scale 2.417 v 0.66
+ 122306.94  PINCH changed scale 2.417 v 0.48
+ 122315.26  PINCH changed scale 2.417 v 0.48
+ 122323.70  PINCH changed scale 2.417 v 0.48
+ 122332.12  PINCH changed scale 2.417 v 0.48
+ 122332.26  ROTATE began rot -0.022 v -2.61
+ 122340.46  PINCH changed scale 2.417 v 0.48
+ 122340.60  ROTATE changed rot -0.026 v -2.09
+ 122365.23  PINCH changed scale 2.417 v 0.48
+ 122365.27  ROTATE changed rot -0.033 v -0.60
+ 122365.33  PINCH changed scale 2.417 v 0.48
+ 122365.38  ROTATE changed rot -0.038 v -0.78
+ 122365.44  PINCH changed scale 2.417 v 0.48
+ 122365.46  ROTATE changed rot -0.043 v -0.62
+ 122373.55  PINCH changed scale 2.417 v 0.48
+ 122373.57  ROTATE changed rot -0.049 v -0.62
+ 122381.88  PINCH changed scale 2.417 v 0.48
+ 122381.91  ROTATE changed rot -0.055 v -0.65
+ 122390.41  PINCH changed scale 2.417 v 0.48
+ 122390.55  ROTATE changed rot -0.062 v -0.76
+ 122398.65  PINCH changed scale 2.417 v 0.48
+ 122398.75  ROTATE changed rot -0.069 v -0.84
+ 122406.97  PINCH changed scale 2.417 v 0.48
+ 122407.08  ROTATE changed rot -0.077 v -0.87
+ 122415.33  PINCH changed scale 2.417 v 0.48
+ 122415.41  ROTATE changed rot -0.087 v -1.02
+ 122423.62  PINCH changed scale 2.417 v 0.48
+ 122423.70  ROTATE changed rot -0.095 v -1.19
+ 122432.06  PINCH changed scale 2.417 v 0.48
+ 122432.23  ROTATE changed rot -0.107 v -1.06
+ 122440.41  PINCH changed scale 2.417 v 0.48
+ 122440.56  ROTATE changed rot -0.115 v -1.30
+ 122448.73  PINCH changed scale 2.417 v 0.48
+ 122448.90  ROTATE changed rot -0.128 v -1.17
+ 122457.04  PINCH changed scale 2.417 v 0.48
+ 122457.20  ROTATE changed rot -0.140 v -1.48
+ 122465.37  PINCH changed scale 2.417 v 0.48
+ 122465.51  ROTATE changed rot -0.151 v -1.40
+ 122473.69  PINCH changed scale 2.417 v 0.48
+ 122473.81  ROTATE changed rot -0.164 v -1.44
+ 122482.03  PINCH changed scale 2.417 v 0.48
+ 122482.17  ROTATE changed rot -0.177 v -1.53
+ 122490.39  PINCH changed scale 2.417 v 0.48
+ 122490.55  ROTATE changed rot -0.192 v -1.60
+ 122498.71  PINCH changed scale 2.417 v 0.48
+ 122498.86  ROTATE changed rot -0.208 v -1.81
+ 122507.04  PINCH changed scale 2.417 v 0.48
+ 122507.19  ROTATE changed rot -0.223 v -1.89
+ 122515.38  PINCH changed scale 2.417 v 0.48
+ 122515.54  ROTATE changed rot -0.240 v -1.89
+ 122523.75  PINCH changed scale 2.417 v 0.48
+ 122523.92  ROTATE changed rot -0.255 v -1.99
+ 122532.07  PINCH changed scale 2.417 v 0.48
+ 122532.22  ROTATE changed rot -0.272 v -1.82
+ 122540.40  PINCH changed scale 2.417 v 0.48
+ 122540.56  ROTATE changed rot -0.286 v -1.93
+ 122548.76  PINCH changed scale 2.417 v 0.48
+ 122548.90  ROTATE changed rot -0.301 v -1.73
+ 122557.03  PINCH changed scale 2.417 v 0.48
+ 122557.19  ROTATE changed rot -0.314 v -1.78
+ 122565.42  PINCH changed scale 2.417 v 0.48
+ 122565.57  ROTATE changed rot -0.325 v -1.53
+ 122573.72  PINCH changed scale 2.389 v -0.48
+ 122573.90  ROTATE changed rot -0.325 v -1.26
+ 122582.04  PINCH changed scale 2.361 v -3.36
+ 122582.25  ROTATE changed rot -0.325 v -1.26
+ 122590.38  PINCH changed scale 2.338 v -3.24
+ 122590.52  ROTATE changed rot -0.325 v -1.26
+ 122598.69  PINCH changed scale 2.316 v -2.82
+ 122598.82  ROTATE changed rot -0.325 v -1.26
+ 122607.02  PINCH changed scale 2.290 v -2.76
+ 122607.17  ROTATE changed rot -0.325 v -1.26
+ 122615.36  PINCH changed scale 2.276 v -2.76
+ 122615.51  ROTATE changed rot -0.325 v -1.26
+ 122623.73  PINCH changed scale 2.248 v -2.10
+ 122623.89  ROTATE changed rot -0.325 v -1.26
+ 122640.37  PINCH changed scale 2.214 v -3.03
+ 122640.52  ROTATE changed rot -0.325 v -1.26
+ 122648.72  PINCH changed scale 2.214 v -2.04
+ 122648.90  ROTATE changed rot -0.338 v -1.33
+ 122665.37  PINCH changed scale 2.214 v -2.04
+ 122665.51  ROTATE changed rot -0.369 v -1.64
+ 122682.00  PINCH changed scale 2.214 v -2.04
+ 122682.12  ROTATE changed rot -0.403 v -1.93
+ 122690.32  PINCH changed scale 2.214 v -2.04
+ 122690.42  ROTATE changed rot -0.422 v -2.07
+ 122707.07  PINCH changed scale 2.214 v -2.04
+ 122707.17  ROTATE changed rot -0.458 v -2.24
+ 122723.78  PINCH changed scale 2.214 v -2.04
+ 122723.93  ROTATE changed rot -0.476 v -1.88
+ 122732.07  PINCH changed scale 2.214 v -2.04
+ 122732.16  ROTATE changed rot -0.497 v -1.46
+ 122740.53  PINCH changed scale 2.214 v -2.04
+ 122740.70  ROTATE changed rot -0.515 v -2.43
+ 122748.76  PINCH changed scale 2.214 v -2.04
+ 122748.89  ROTATE changed rot -0.534 v -2.13
+ 122757.12  PINCH changed scale 2.214 v -2.04
+ 122757.29  ROTATE changed rot -0.551 v -2.24
+ 122765.41  PINCH changed scale 2.214 v -2.04
+ 122765.57  ROTATE changed rot -0.569 v -2.14
+ 122773.75  PINCH changed scale 2.214 v -2.04
+ 122773.91  ROTATE changed rot -0.588 v -2.17
+ 122782.05  PINCH changed scale 2.214 v -2.04
+ 122782.21  ROTATE changed rot -0.606 v -2.20
+ 122790.38  PINCH changed scale 2.214 v -2.04
+ 122790.54  ROTATE changed rot -0.626 v -2.27
+ 122798.70  PINCH changed scale 2.214 v -2.04
+ 122798.85  ROTATE changed rot -0.645 v -2.39
+ 122807.07  PINCH changed scale 2.214 v -2.04
+ 122807.22  ROTATE changed rot -0.668 v -2.39
+ 122815.30  PINCH changed scale 2.214 v -2.04
+ 122815.39  ROTATE changed rot -0.692 v -2.74
+ 122823.77  PINCH changed scale 2.214 v -2.04
+ 122823.98  ROTATE changed rot -0.715 v -2.87
+ 122832.07  PINCH changed scale 2.214 v -2.04
+ 122832.23  ROTATE changed rot -0.740 v -2.82
+ 122840.37  PINCH changed scale 2.214 v -2.04
+ 122840.52  ROTATE changed rot -0.765 v -3.01
+ 122848.74  PINCH changed scale 2.214 v -2.04
+ 122848.89  ROTATE changed rot -0.793 v -3.10
+ 122857.05  PINCH changed scale 2.214 v -2.04
+ 122857.20  ROTATE changed rot -0.819 v -3.24
+ 122865.40  PINCH changed scale 2.214 v -2.04
+ 122865.54  ROTATE changed rot -0.847 v -3.19
+ 122873.71  PINCH changed scale 2.214 v -2.04
+ 122873.87  ROTATE changed rot -0.868 v -3.17
+ 122882.08  PINCH changed scale 2.214 v -2.04
+ 122882.24  ROTATE changed rot -0.894 v -2.70
+ 122890.40  PINCH changed scale 2.214 v -2.04
+ 122890.55  ROTATE changed rot -0.919 v -3.03
+ 122898.71  PINCH changed scale 2.214 v -2.04
+ 122898.86  ROTATE changed rot -0.943 v -3.00
+ 122907.05  PINCH changed scale 2.214 v -2.04
+ 122907.19  ROTATE changed rot -0.970 v -2.98
+ 122915.38  PINCH changed scale 2.214 v -2.04
+ 122915.53  ROTATE changed rot -0.998 v -3.31
+ 122923.68  PINCH changed scale 2.214 v -2.04
+ 122923.83  ROTATE changed rot -1.021 v -3.19
+ 122932.03  PINCH changed scale 2.214 v -2.04
+ 122932.16  ROTATE changed rot -1.048 v -2.85
+ 122940.38  PINCH changed scale 2.214 v -2.04
+ 122940.53  ROTATE changed rot -1.077 v -3.27
+ 122948.74  PINCH changed scale 2.214 v -2.04
+ 122948.90  ROTATE changed rot -1.106 v -3.46
+ 122957.04  PINCH changed scale 2.214 v -2.04
+ 122957.19  ROTATE changed rot -1.139 v -3.61
+ 122965.39  PINCH changed scale 2.214 v -2.04
+ 122965.53  ROTATE changed rot -1.172 v -4.00
+ 122973.69  PINCH changed scale 2.214 v -2.04
+ 122973.82  ROTATE changed rot -1.208 v -4.10
+ 122982.09  PINCH changed scale 2.214 v -2.04
+ 122982.26  ROTATE changed rot -1.254 v -4.61
+ 122990.41  PINCH changed scale 2.214 v -2.04
+ 122990.58  ROTATE changed rot -1.299 v -5.47
+ 122998.73  PINCH changed scale 2.214 v -2.04
+ 122998.89  ROTATE changed rot -1.344 v -5.38
+ 123006.99  PINCH changed scale 2.214 v -2.04
+ 123007.11  ROTATE changed rot -1.392 v -5.49
+ 123015.29  PINCH changed scale 2.214 v -2.04
+ 123015.40  ROTATE changed rot -1.440 v -5.73
+ 123023.63  PINCH changed scale 2.214 v -2.04
+ 123023.82  ROTATE changed rot -1.478 v -5.47
+ 123032.02  PINCH changed scale 2.214 v -2.04
+ 123032.15  ROTATE changed rot -1.529 v -4.97
+ 123040.43  PINCH changed scale 2.214 v -2.04
+ 123040.57  ROTATE changed rot -1.576 v -5.98
+ 123048.73  PINCH changed scale 2.214 v -2.04
+ 123048.87  ROTATE changed rot -1.621 v -5.58
+ 123057.17  PINCH changed scale 2.214 v -2.04
+ 123057.37  ROTATE changed rot -1.666 v -5.42
+ 123065.43  PINCH changed scale 2.214 v -2.04
+ 123065.58  ROTATE changed rot -1.707 v -5.30
+ 123073.74  PINCH changed scale 2.214 v -2.04
+ 123073.90  ROTATE changed rot -1.747 v -4.88
+ 123082.04  PINCH changed scale 2.214 v -2.04
+ 123082.20  ROTATE changed rot -1.786 v -4.71
+ 123090.41  PINCH changed scale 2.214 v -2.04
+ 123090.57  ROTATE changed rot -1.823 v -4.65
+ 123098.70  PINCH changed scale 2.214 v -2.04
+ 123098.83  ROTATE changed rot -1.852 v -4.22
+ 123107.03  PINCH changed scale 2.214 v -2.04
+ 123107.18  ROTATE changed rot -1.885 v -3.61
+ 123115.40  PINCH changed scale 2.214 v -2.04
+ 123115.58  ROTATE changed rot -1.919 v -3.98
+ 123123.75  PINCH changed scale 2.214 v -2.04
+ 123123.93  ROTATE changed rot -1.948 v -3.86
+ 123132.11  PINCH changed scale 2.214 v -2.04
+ 123132.27  ROTATE changed rot -1.979 v -3.55
+ 123140.36  PINCH changed scale 2.214 v -2.04
+ 123140.49  ROTATE changed rot -2.008 v -3.67
+ 123148.70  PINCH changed scale 2.214 v -2.04
+ 123148.81  ROTATE changed rot -2.030 v -3.30
+ 123156.97  PINCH changed scale 2.214 v -2.04
+ 123157.07  ROTATE changed rot -2.055 v -2.79
+ 123165.43  PINCH changed scale 2.214 v -2.04
+ 123165.57  ROTATE changed rot -2.078 v -2.93
+ 123173.75  PINCH changed scale 2.214 v -2.04
+ 123173.91  ROTATE changed rot -2.101 v -2.74
+ 123182.18  PINCH changed scale 2.214 v -2.04
+ 123182.36  ROTATE changed rot -2.120 v -2.63
+ 123190.42  PINCH changed scale 2.214 v -2.04
+ 123190.57  ROTATE changed rot -2.141 v -2.33
+ 123198.73  PINCH changed scale 2.214 v -2.04
+ 123198.88  ROTATE changed rot -2.162 v -2.55
+ 123207.09  PINCH changed scale 2.214 v -2.04
+ 123207.23  ROTATE changed rot -2.178 v -2.38
+ 123215.43  PINCH changed scale 2.214 v -2.04
+ 123215.60  ROTATE changed rot -2.195 v -1.88
+ 123223.74  PINCH changed scale 2.214 v -2.04
+ 123223.91  ROTATE changed rot -2.206 v -1.89
+ 123232.07  PINCH changed scale 2.214 v -2.04
+ 123232.23  ROTATE changed rot -2.221 v -1.45
+ 123240.40  PINCH changed scale 2.214 v -2.04
+ 123240.55  ROTATE changed rot -2.232 v -1.71
+ 123248.76  PINCH changed scale 2.214 v -2.04
+ 123248.90  ROTATE changed rot -2.241 v -1.26
+ 123257.07  PINCH changed scale 2.214 v -2.04
+ 123257.22  ROTATE changed rot -2.245 v -0.93
+ 123265.50  PINCH changed scale 2.214 v -2.04
+ 123265.72  ROTATE changed rot -2.250 v -0.53
+ 123273.74  PINCH changed scale 2.214 v -2.04
+ 123273.97  ROTATE changed rot -2.252 v -0.46
+ 123282.12  PINCH ENDED scale 2.214 v -2.04
+ 123282.32  ROTATE ENDED rot -2.252 v -0.46
+ 123289.39  GCMOVE dx 0.00 dy -0.00
+ 123297.62  GCMOVE dx 0.00 dy -0.00
+ 123305.92  GCMOVE dx 0.00 dy -0.00
+ 123314.08  GCMOVE dx 0.00 dy -0.00
+ 156071.93  GCMOVE dx 0.00 dy -0.00
+ 156089.75  GCMOVE dx 11.00 dy 2.00
+ 156098.04  GCMOVE dx 6.00 dy 2.00
+ 156106.54  GCMOVE dx 6.00 dy 3.00
+ 156114.86  GCMOVE dx 6.00 dy 3.00
+ 156123.02  GCMOVE dx 6.00 dy 4.00
+ 156131.26  GCMOVE dx 5.00 dy 3.00
+ 156139.55  GCMOVE dx 5.00 dy 3.00
+ 156147.92  GCMOVE dx 5.00 dy 3.00
+ 156156.28  GCMOVE dx 6.00 dy 3.00
+ 156164.56  GCMOVE dx 5.00 dy 2.00
+ 156172.79  GCMOVE dx 8.00 dy 4.00
+ 156181.15  GCMOVE dx 8.00 dy 3.00
+ 156189.50  GCMOVE dx 8.00 dy 3.00
+ 156197.84  GCMOVE dx 8.00 dy 3.00
+ 156206.17  GCMOVE dx 8.00 dy 2.00
+ 156214.54  GCMOVE dx 5.00 dy 1.00
+ 156222.87  GCMOVE dx 7.00 dy 2.00
+ 156231.27  GCMOVE dx 9.00 dy 3.00
+ 156239.41  GCMOVE dx 7.00 dy 1.00
+ 156247.82  GCMOVE dx 7.00 dy 1.00
+ 156256.18  GCMOVE dx 8.00 dy 1.00
+ 156264.52  GCMOVE dx 7.00 dy -0.00
+ 156273.00  GCMOVE dx 9.00 dy -0.00
+ 156281.15  GCMOVE dx 9.00 dy -0.00
+ 156289.61  GCMOVE dx 10.00 dy -0.00
+ 156297.90  GCMOVE dx 11.00 dy -1.00
+ 156314.58  GCMOVE dx 22.00 dy -5.00
+ 156322.76  GCMOVE dx 10.00 dy -3.00
+ 156331.07  GCMOVE dx 11.00 dy -3.00
+ 156339.42  GCMOVE dx 6.00 dy -1.00
+ 156347.74  GCMOVE dx 8.00 dy -2.00
+ 156356.09  GCMOVE dx 12.00 dy -4.00
+ 156364.40  GCMOVE dx 8.00 dy -2.00
+ 156372.72  GCMOVE dx 8.00 dy -3.00
+ 156381.05  GCMOVE dx 9.00 dy -4.00
+ 156389.49  GCMOVE dx 8.00 dy -4.00
+ 156397.92  GCMOVE dx 8.00 dy -4.00
+ 156406.06  GCMOVE dx 9.00 dy -4.00
+ 156414.55  GCMOVE dx 8.00 dy -5.00
+ 156422.87  GCMOVE dx 6.00 dy -2.00
+ 156431.06  GCMOVE dx 8.00 dy -4.00
+ 156439.41  GCMOVE dx 7.00 dy -2.00
+ 156447.74  GCMOVE dx 5.00 dy -3.00
+ 156456.08  GCMOVE dx 5.00 dy -2.00
+ 156464.42  GCMOVE dx 4.00 dy -1.00
+ 156481.07  GCMOVE dx 5.00 dy -2.00
+ 156489.41  GCMOVE dx 2.00 dy -1.00
+ 156506.14  GCMOVE dx 1.00 dy -0.00
+ 156514.47  GCMOVE dx 1.00 dy -1.00
+ 156522.80  GCMOVE dx 0.00 dy -0.00
+ 156531.15  GCMOVE dx 0.00 dy -0.00
+ 156539.49  GCMOVE dx 0.00 dy -1.00
+ 156547.82  GCMOVE dx 0.00 dy -0.00
+ 156556.19  GCMOVE dx 0.00 dy -1.00
+ 156564.57  GCMOVE dx 0.00 dy -1.00
+ 156572.88  GCMOVE dx -2.00 dy -1.00
+ 156581.15  GCMOVE dx -2.00 dy -1.00
+ 156589.53  GCMOVE dx -3.00 dy -1.00
+ 156598.05  GCMOVE dx -3.00 dy -1.00
+ 156606.18  GCMOVE dx -2.00 dy -1.00
+ 156614.56  GCMOVE dx -3.00 dy -1.00
+ 156622.95  GCMOVE dx -4.00 dy -1.00
+ 156631.17  GCMOVE dx -4.00 dy -1.00
+ 156639.61  GCMOVE dx -4.00 dy -1.00
+ 156647.92  GCMOVE dx -4.00 dy -1.00
+ 156656.21  GCMOVE dx -4.00 dy -1.00
+ 156664.51  GCMOVE dx 0.00 dy -0.00
+ 156856.76  GCMOVE dx 0.00 dy -0.00
+ 156864.75  GCMOVE dx 0.00 dy -0.00
+ 156873.15  GCMOVE dx 0.00 dy -0.00
+ 156881.54  GCMOVE dx 0.00 dy -0.00
+ 156889.88  GCMOVE dx 0.00 dy -0.00
+ 156898.15  GCMOVE dx 4.00 dy -7.00
+ 156906.56  GCMOVE dx 6.00 dy -9.00
+ 156914.54  GCMOVE dx 6.00 dy -8.00
+ 156923.16  GCMOVE dx 5.00 dy -8.00
+ 156931.47  GCMOVE dx 4.00 dy -8.00
+ 156939.78  GCMOVE dx 4.00 dy -8.00
+ 156948.25  GCMOVE dx 7.00 dy -13.00
+ 156956.37  GCMOVE dx 6.00 dy -13.00
+ 156964.68  GCMOVE dx 6.00 dy -14.00
+ 156972.95  GCMOVE dx 5.00 dy -14.00
+ 156981.23  GCMOVE dx 5.00 dy -15.00
+ 156989.62  GCMOVE dx 3.00 dy -10.00
+ 156997.93  GCMOVE dx 4.00 dy -15.00
+ 157006.18  GCMOVE dx 4.00 dy -14.00
+ 157014.47  GCMOVE dx 3.00 dy -13.00
+ 157022.83  GCMOVE dx 1.00 dy -7.00
+ 157031.18  GCMOVE dx 2.00 dy -10.00
+ 157039.55  GCMOVE dx 2.00 dy -9.00
+ 157047.85  GCMOVE dx 1.00 dy -7.00
+ 157056.27  GCMOVE dx 1.00 dy -6.00
+ 157064.64  GCMOVE dx 1.00 dy -4.00
+ 157073.00  GCMOVE dx 1.00 dy -3.00
+ 157081.23  GCMOVE dx 0.00 dy -2.00
+ 157089.59  GCMOVE dx 1.00 dy -2.00
+ 157098.04  GCMOVE dx 0.00 dy -1.00
+ 157106.35  GCMOVE dx 0.00 dy -1.00
+ 157131.44  GCMOVE dx 0.00 dy -0.00
+ 157139.60  GCMOVE dx 0.00 dy -0.00
+ 157148.03  GCMOVE dx 0.00 dy -0.00
+ 157156.37  GCMOVE dx 0.00 dy -0.00
+ 157264.63  GCMOVE dx 0.00 dy -0.00
+ 157272.79  GCMOVE dx 0.00 dy -0.00
+ 157281.39  GCMOVE dx 7.00 dy -0.00
+ 157289.64  GCMOVE dx 13.00 dy -2.00
+ 157297.96  GCMOVE dx 13.00 dy -5.00
+ 157306.10  GCMOVE dx 14.00 dy -7.00
+ 157314.66  GCMOVE dx 15.00 dy -5.00
+ 157322.97  GCMOVE dx 14.00 dy -6.00
+ 157331.27  GCMOVE dx 13.00 dy -4.00
+ 157339.59  GCMOVE dx 10.00 dy -4.00
+ 157347.97  GCMOVE dx 9.00 dy -3.00
+ 157356.32  GCMOVE dx 9.00 dy -3.00
+ 157364.57  GCMOVE dx 13.00 dy -4.00
+ 157372.95  GCMOVE dx 12.00 dy -4.00
+ 157381.48  GCMOVE dx 5.00 dy -3.00
+ 157389.49  GCMOVE dx 12.00 dy -5.00
+ 157397.75  GCMOVE dx 0.00 dy -0.00
+ 158170.68  GCBTN left DOWN
+ 158172.69  TOUCH indirectPointer began buttonMask=1 tapCount=1
+ 158181.36  GCMOVE dx 0.00 dy -0.00
+ 158189.64  GCMOVE dx 0.00 dy -0.00
+ 158198.03  GCMOVE dx 0.00 dy -0.00
+ 158206.39  GCMOVE dx 0.00 dy -0.00
+ 158214.54  GCMOVE dx 0.00 dy -0.00
+ 158222.86  GCMOVE dx 0.00 dy -0.00
+ 158231.59  GCMOVE dx 0.00 dy -0.00
+ 158239.55  GCMOVE dx 0.00 dy -0.00
+ 158247.95  GCMOVE dx 0.00 dy -0.00
+ 158256.25  GCMOVE dx 0.00 dy -0.00
+ 158281.40  GCMOVE dx 0.00 dy -0.00
+ 158289.60  GCMOVE dx 0.00 dy -0.00
+ 158297.88  GCMOVE dx 0.00 dy -0.00
+ 158306.22  GCMOVE dx 0.00 dy -0.00
+ 158314.55  GCMOVE dx 0.00 dy -0.00
+ 158322.92  GCMOVE dx 0.00 dy -0.00
+ 158331.30  GCMOVE dx 0.00 dy -0.00
+ 158339.64  GCMOVE dx 0.00 dy -0.00
+ 158347.95  GCMOVE dx 0.00 dy -0.00
+ 158428.26  GCBTN left up
+ 158428.66  TAP primary tap (locked=true) at (1111.917313969476, 365.0) ENDED
+ 161078.33  GCBTN left DOWN
+ 161084.93  TOUCH indirectPointer began buttonMask=1 tapCount=1
+ 161089.69  GCMOVE dx 0.00 dy -0.00
+ 161097.97  GCMOVE dx 0.00 dy -0.00
+ 161106.49  GCMOVE dx 0.00 dy -0.00
+ 161114.82  GCMOVE dx 0.00 dy -0.00
+ 161123.18  GCMOVE dx 0.00 dy -0.00
+ 161131.41  GCMOVE dx 0.00 dy -0.00
+ 161139.78  GCMOVE dx 0.00 dy -0.00
+ 161147.96  GCMOVE dx 0.00 dy -0.00
+ 161156.26  GCMOVE dx 0.00 dy -0.00
+ 161164.66  GCMOVE dx 0.00 dy -0.00
+ 161173.04  GCMOVE dx 0.00 dy -0.00
+ 161181.38  GCMOVE dx 0.00 dy -0.00
+ 161189.64  GCMOVE dx 0.00 dy -0.00
+ 161231.32  GCMOVE dx 0.00 dy -0.00
+ 161239.67  GCMOVE dx 0.00 dy -0.00
+ 161248.04  GCMOVE dx 0.00 dy -0.00
+ 161256.46  GCMOVE dx 0.00 dy -0.00
+ 161264.82  GCMOVE dx 0.00 dy -0.00
+ 161494.67  GCBTN left up
+ 161495.51  TAP primary tap (locked=true) at (1111.917313969476, 365.0) ENDED
+ 162823.30  GCMOVE dx 0.00 dy -0.00
+ 162831.68  GCMOVE dx 0.00 dy -0.00
+ 162840.03  GCMOVE dx 0.00 dy -0.00
+ 162848.36  GCMOVE dx 0.00 dy -0.00
+ 162856.66  GCMOVE dx 0.00 dy -0.00
+ 162864.98  GCMOVE dx 0.00 dy -0.00
+ 162889.90  GCMOVE dx 0.00 dy -0.00
+ 162898.27  GCMOVE dx 0.00 dy -0.00
+ 162906.62  GCMOVE dx 0.00 dy -0.00
+ 162940.06  GCMOVE dx 0.00 dy -0.00
+ 162948.19  GCMOVE dx 0.00 dy -0.00
+ 162956.56  GCMOVE dx 0.00 dy -0.00
+ 162964.82  GCMOVE dx 0.00 dy -0.00
+ 162973.08  GCMOVE dx 0.00 dy -0.00
+ 162981.48  GCMOVE dx 0.00 dy -0.00
+ 162998.13  GCMOVE dx 0.00 dy -0.00
+ 163006.47  GCMOVE dx 0.00 dy -0.00
+ 163014.73  GCMOVE dx 0.00 dy -0.00
+ 163023.05  GCMOVE dx 0.00 dy -0.00
+ 163148.10  GCMOVE dx 0.00 dy -0.00
+ 163156.37  GCMOVE dx 0.00 dy -0.00
+ 163164.70  GCMOVE dx 0.00 dy -0.00
+ 163173.10  GCMOVE dx 0.00 dy -0.00
+ 163181.35  GCMOVE dx 0.00 dy -0.00
+ 163189.82  GCMOVE dx 0.00 dy -0.00
+ 163198.13  GCMOVE dx 0.00 dy -0.00
+ 163206.50  GCMOVE dx -5.00 dy -0.00
+ 163214.81  GCMOVE dx -7.00 dy -0.00
+ 163223.22  GCMOVE dx -8.00 dy -0.00
+ 163231.38  GCMOVE dx -10.00 dy -1.00
+ 163239.74  GCMOVE dx -14.00 dy -3.00
+ 163248.11  GCMOVE dx -22.00 dy -3.00
+ 163256.53  GCMOVE dx -20.00 dy -4.00
+ 163264.89  GCMOVE dx -22.00 dy -5.00
+ 163273.05  GCMOVE dx -23.00 dy -6.00
+ 163281.44  GCMOVE dx -23.00 dy -8.00
+ 163289.70  GCMOVE dx -16.00 dy -6.00
+ 163297.96  GCMOVE dx -23.00 dy -8.00
+ 163306.37  GCMOVE dx -22.00 dy -9.00
+ 163314.73  GCMOVE dx -21.00 dy -9.00
+ 163323.02  GCMOVE dx -19.00 dy -9.00
+ 163331.28  GCMOVE dx -11.00 dy -5.00
+ 163339.63  GCMOVE dx -17.00 dy -7.00
+ 163348.01  GCMOVE dx -14.00 dy -6.00
+ 163356.35  GCMOVE dx -7.00 dy -2.00
+ 163364.68  GCMOVE dx -11.00 dy -4.00
+ 163373.02  GCMOVE dx -7.00 dy -3.00
+ 163381.45  GCMOVE dx -6.00 dy -2.00
+ 163389.76  GCMOVE dx -4.00 dy -1.00
+ 163398.01  GCMOVE dx -3.00 dy -1.00
+ 163406.39  GCMOVE dx -1.00 dy -1.00
+ 163414.67  GCMOVE dx -1.00 dy -0.00
+ 163423.00  GCMOVE dx 0.00 dy -0.00
+ 163431.30  GCMOVE dx 0.00 dy -0.00
+ 163481.46  GCMOVE dx 0.00 dy -0.00
+ 163489.70  GCMOVE dx 0.00 dy -0.00
+ 163497.98  GCMOVE dx 0.00 dy -0.00
+ 163506.36  GCMOVE dx 0.00 dy -0.00
+ 163514.66  GCMOVE dx 0.00 dy -0.00
+ 163522.99  GCMOVE dx 1.00 dy 1.00
+ 163531.30  GCMOVE dx 0.00 dy 2.00
+ 163539.69  GCMOVE dx 0.00 dy 3.00
+ 163547.99  GCMOVE dx 0.00 dy 4.00
+ 163556.34  GCMOVE dx 0.00 dy -0.00
+ 163573.10  GCMOVE dx 0.00 dy -0.00
+ 170455.75  GCMOVE dx 0.00 dy -0.00
+ 170473.52  GCMOVE dx 56.00 dy -0.00
+ 170481.77  GCMOVE dx 23.00 dy -2.00
+ 170490.23  GCMOVE dx 20.00 dy -3.00
+ 170498.51  GCMOVE dx 19.00 dy -4.00
+ 170507.05  GCMOVE dx 18.00 dy -4.00
+ 170515.34  GCMOVE dx 18.00 dy -4.00
+ 170523.65  GCMOVE dx 17.00 dy -5.00
+ 170531.83  GCMOVE dx 17.00 dy -7.00
+ 170540.13  GCMOVE dx 26.00 dy -9.00
+ 170548.42  GCMOVE dx 15.00 dy -7.00
+ 170556.59  GCMOVE dx 22.00 dy -9.00
+ 170564.98  GCMOVE dx 12.00 dy -6.00
+ 170573.31  GCMOVE dx 17.00 dy -8.00
+ 170581.63  GCMOVE dx 9.00 dy -4.00
+ 170589.89  GCMOVE dx 13.00 dy -5.00
+ 170598.27  GCMOVE dx 10.00 dy -5.00
+ 170606.57  GCMOVE dx 7.00 dy -3.00
+ 170614.90  GCMOVE dx 6.00 dy -2.00
+ 170623.14  GCMOVE dx 3.00 dy -1.00
+ 170631.53  GCMOVE dx 2.00 dy -1.00
+ 170639.94  GCMOVE dx 1.00 dy -0.00
+ 170664.86  GCMOVE dx -3.00 dy 1.00
+ 170673.19  GCMOVE dx -5.00 dy 3.00
+ 170681.81  GCMOVE dx -6.00 dy 3.00
+ 170689.95  GCMOVE dx -7.00 dy 4.00
+ 170698.16  GCMOVE dx -9.00 dy 5.00
+ 170706.54  GCMOVE dx -10.00 dy 4.00
+ 170714.85  GCMOVE dx -10.00 dy 3.00
+ 170723.25  GCMOVE dx -15.00 dy 4.00
+ 170731.47  GCMOVE dx -13.00 dy 2.00
+ 170739.88  GCMOVE dx -15.00 dy 1.00
+ 170748.21  GCMOVE dx -15.00 dy -0.00
+ 170756.59  GCMOVE dx -16.00 dy -0.00
+ 170764.79  GCMOVE dx -16.00 dy -0.00
+ 170773.23  GCMOVE dx -16.00 dy -3.00
+ 170781.58  GCMOVE dx -16.00 dy -4.00
+ 170789.86  GCMOVE dx -16.00 dy -4.00
+ 170798.16  GCMOVE dx -10.00 dy -3.00
+ 170806.52  GCMOVE dx -14.00 dy -4.00
+ 170814.90  GCMOVE dx -13.00 dy -5.00
+ 170823.20  GCMOVE dx -12.00 dy -4.00
+ 170831.44  GCMOVE dx -11.00 dy -5.00
+ 170839.91  GCMOVE dx 0.00 dy -0.00
+ 170848.26  GCMOVE dx 0.00 dy -0.00
+ 170964.86  GCMOVE dx 0.00 dy -0.00
+ 170973.27  GCMOVE dx 0.00 dy -0.00
+ 170981.63  GCMOVE dx 0.00 dy -0.00
+ 170990.32  GCMOVE dx 0.00 dy -0.00
+ 170998.41  GCMOVE dx 0.00 dy -0.00
+ 171006.88  GCMOVE dx 0.00 dy -0.00
+ 171015.30  GCMOVE dx 0.00 dy -0.00
+ 171023.63  GCMOVE dx 0.00 dy -0.00
+ 171031.74  GCMOVE dx 0.00 dy -0.00
+ 171039.70  SCENE willResignActive
+ 171039.95  GCMOVE dx 0.00 dy -0.00
+ 171045.92  LOCK isLocked=false (wanted=true)
+ 171048.27  GCMOVE dx 0.00 dy -0.00
+ 172351.70  SCENE didEnterBackground
+ 193132.33  GCMOVE dx 0.00 dy -0.00
+ 193133.97  HOVER began at (1241, 379)
+ 193140.51  GCMOVE dx 0.00 dy -0.00
+ 193148.86  GCMOVE dx 0.00 dy -0.00
+ 193157.17  GCMOVE dx 0.00 dy -7.00
+ 193165.43  GCMOVE dx 3.00 dy -7.00
+ 193173.86  GCMOVE dx 2.00 dy -6.00
+ 193182.14  GCMOVE dx 1.00 dy -5.00
+ 193190.61  GCMOVE dx 1.00 dy -4.00
+ 193198.91  GCMOVE dx 0.00 dy -4.00
+ 193207.26  GCMOVE dx 0.00 dy -4.00
+ 193215.51  GCMOVE dx 0.00 dy -3.00
+ 193223.96  GCMOVE dx -1.00 dy -4.00
+ 193230.54  SCENE didBecomeActive
+ 193232.20  GCMOVE dx -4.00 dy -5.00
+ 193232.48  HOVER CANCELLED at (0, 0)
+ 193232.73  LOCK isLocked=true (wanted=true)
+ 193240.63  GCMOVE dx -4.00 dy -5.00
+ 193249.10  GCMOVE dx -6.00 dy -5.00
+ 193257.34  GCMOVE dx -7.00 dy -4.00
+ 193265.62  GCMOVE dx -8.00 dy -5.00
+ 193273.93  GCMOVE dx -9.00 dy -6.00
+ 193282.21  GCMOVE dx -12.00 dy -8.00
+ 193290.50  GCMOVE dx -10.00 dy -8.00
+ 193298.77  GCMOVE dx -10.00 dy -10.00
+ 193307.15  GCMOVE dx -10.00 dy -11.00
+ 193315.41  GCMOVE dx -11.00 dy -14.00
+ 193323.92  GCMOVE dx -10.00 dy -16.00
+ 193332.24  GCMOVE dx -11.00 dy -16.00
+ 193340.60  GCMOVE dx -11.00 dy -18.00
+ 193348.92  GCMOVE dx -12.00 dy -17.00
+ 193357.25  GCMOVE dx -11.00 dy -17.00
+ 193365.60  GCMOVE dx -12.00 dy -15.00
+ 193373.91  GCMOVE dx -13.00 dy -14.00
+ 193382.23  GCMOVE dx -8.00 dy -7.00
+ 193390.56  GCMOVE dx -12.00 dy -10.00
+ 193398.90  GCMOVE dx -11.00 dy -9.00
+ 193407.22  GCMOVE dx -10.00 dy -6.00
+ 193415.51  GCMOVE dx -6.00 dy -2.00
+ 193423.86  GCMOVE dx -8.00 dy -4.00
+ 193432.43  GCMOVE dx -8.00 dy -2.00
+ 193441.04  GCMOVE dx -6.00 dy -1.00
+ 193448.74  GCMOVE dx -9.00 dy -0.00
+ 193457.11  GCMOVE dx -7.00 dy -0.00
+ 193465.45  GCMOVE dx -8.00 dy 1.00
+ 193473.75  GCMOVE dx -8.00 dy 4.00
+ 193482.12  GCMOVE dx -13.00 dy 5.00
+ 193490.45  GCMOVE dx -8.00 dy 3.00
+ 193499.00  GCMOVE dx -12.00 dy 3.00
+ 193507.17  GCMOVE dx -12.00 dy 3.00
+ 193515.47  GCMOVE dx -11.00 dy 2.00
+ 193523.68  GCMOVE dx -11.00 dy 1.00
+ 193531.98  GCMOVE dx -6.00 dy 1.00
+ 193540.30  GCMOVE dx -9.00 dy -0.00
+ 193548.62  GCMOVE dx -8.00 dy 1.00
+ 193557.13  GCMOVE dx -5.00 dy 1.00
+ 193565.45  GCMOVE dx -5.00 dy -0.00
+ 193573.80  GCMOVE dx -3.00 dy -0.00
+ 193582.10  GCMOVE dx -1.00 dy 1.00
+ 193590.44  GCMOVE dx -1.00 dy -0.00
+ 193598.74  GCMOVE dx 0.00 dy 1.00
+ 193607.08  GCMOVE dx 0.00 dy 1.00
+ 193615.66  GCMOVE dx 0.00 dy 2.00
+ 193624.00  GCMOVE dx 5.00 dy 1.00
+ 193632.23  GCMOVE dx 6.00 dy 2.00
+ 193640.85  GCMOVE dx 8.00 dy 2.00
+ 193648.74  GCMOVE dx 10.00 dy 1.00
+ 193657.18  GCMOVE dx 11.00 dy 3.00
+ 193665.41  GCMOVE dx 16.00 dy 3.00
+ 193673.73  GCMOVE dx 13.00 dy 4.00
+ 193682.04  GCMOVE dx 14.00 dy 5.00
+ 193690.42  GCMOVE dx 14.00 dy 6.00
+ 193698.74  GCMOVE dx 13.00 dy 7.00
+ 193707.01  GCMOVE dx 13.00 dy 7.00
+ 193715.34  GCMOVE dx 8.00 dy 6.00
+ 193723.66  GCMOVE dx 12.00 dy 8.00
+ 193732.03  GCMOVE dx 12.00 dy 8.00
+ 193740.38  GCMOVE dx 10.00 dy 8.00
+ 193748.70  GCMOVE dx 10.00 dy 7.00
+ 193757.01  GCMOVE dx 9.00 dy 6.00
+ 193765.47  GCMOVE dx 8.00 dy 5.00
+ 193773.81  GCMOVE dx 7.00 dy 6.00
+ 193782.03  GCMOVE dx 8.00 dy 5.00
+ 193790.36  GCMOVE dx 6.00 dy 5.00
+ 193798.68  GCMOVE dx 7.00 dy 5.00
+ 193806.99  GCMOVE dx 6.00 dy 6.00
+ 193815.37  GCMOVE dx 6.00 dy 7.00
+ 193823.70  GCMOVE dx 6.00 dy 6.00
+ 193832.04  GCMOVE dx 3.00 dy 4.00
+ 193840.34  GCMOVE dx 5.00 dy 5.00
+ 193848.70  GCMOVE dx 4.00 dy 5.00
+ 193857.00  GCMOVE dx 4.00 dy 4.00
+ 193865.38  GCMOVE dx 2.00 dy 3.00
+ 193873.98  GCMOVE dx 2.00 dy 2.00
+ 193882.12  GCMOVE dx 2.00 dy 2.00
+ 193890.36  GCMOVE dx 1.00 dy -0.00
+ 193898.70  GCMOVE dx 1.00 dy -0.00
+ 193907.02  GCMOVE dx 0.00 dy -0.00
+ 193915.35  GCMOVE dx 0.00 dy -0.00
+ 193923.68  GCMOVE dx 0.00 dy -0.00
+ 194257.05  GCMOVE dx 0.00 dy -0.00
+ 194265.36  GCMOVE dx 0.00 dy -0.00
+ 194273.71  GCMOVE dx 0.00 dy -0.00
+ 194282.07  GCMOVE dx 0.00 dy -0.00
+ 194290.41  GCMOVE dx 0.00 dy -0.00
+ 194307.07  GCMOVE dx 0.00 dy -0.00
+ 194315.36  GCMOVE dx 0.00 dy -0.00
+ 194323.71  GCMOVE dx 0.00 dy -0.00
+ 194332.07  GCMOVE dx 0.00 dy -0.00
+ 194332.32  GCBTN left DOWN
+ 194332.50  GCBTN left up
+ 194334.38  TOUCH indirectPointer began buttonMask=1 tapCount=1
+ 194334.86  TAP primary tap (locked=true) at (1242.7962987629398, 402.3499717328766) ENDED
+ 194340.33  GCMOVE dx 0.00 dy -0.00
+ 195265.74  GCMOVE dx 0.00 dy -0.00
+ 195274.07  GCMOVE dx 0.00 dy -0.00
+ 195282.44  GCMOVE dx 0.00 dy -0.00
+ 195298.90  GCMOVE dx 0.00 dy -0.00
+ 195307.39  GCMOVE dx 0.00 dy -0.00
+ 195315.66  GCMOVE dx 0.00 dy -0.00
+ 195324.03  GCMOVE dx 0.00 dy -0.00
+ 195332.36  GCMOVE dx 0.00 dy -0.00
+ 195337.24  GCBTN left DOWN
+ 195337.49  GCBTN left up
+ 195342.74  TOUCH indirectPointer began buttonMask=1 tapCount=1
+ 195343.20  TAP primary tap (locked=true) at (1242.7962987629398, 402.3499717328766) ENDED
+ 195348.88  GCMOVE dx 0.00 dy -0.00
+ 195824.15  GCMOVE dx 0.00 dy -0.00
+ 195832.45  GCMOVE dx 0.00 dy -0.00
+ 195840.74  GCMOVE dx 0.00 dy -0.00
+ 195849.06  GCMOVE dx 0.00 dy -0.00
+ 195857.46  GCMOVE dx 0.00 dy -0.00
+ 195865.71  GCMOVE dx 0.00 dy -0.00
+ 195874.09  GCMOVE dx 0.00 dy -0.00
+ 195877.28  GCBTN left DOWN
+ 195877.51  GCBTN left up
+ 195884.89  TOUCH indirectPointer began buttonMask=1 tapCount=1
+ 195885.46  TAP primary tap (locked=true) at (1242.7962987629398, 402.3499717328766) ENDED
+ 195890.76  GCMOVE dx 0.00 dy -0.00
+ 196024.07  GCMOVE dx 0.00 dy -0.00
+ 196032.35  GCMOVE dx 0.00 dy -0.00
+ 196049.08  GCMOVE dx 0.00 dy -0.00
+ 196057.21  GCMOVE dx 0.00 dy -0.00
+ 196065.74  GCMOVE dx 0.00 dy -0.00
+ 196069.58  GCBTN left DOWN
+ 196069.79  GCBTN left up
+ 196076.60  TOUCH indirectPointer began buttonMask=1 tapCount=2
+ 196077.07  TAP primary tap (locked=true) at (1242.7962987629398, 402.3499717328766) ENDED
+ 196082.39  GCMOVE dx 0.00 dy -0.00
+ 196224.13  GCMOVE dx 0.00 dy -0.00
+ 196232.37  GCMOVE dx 0.00 dy -0.00
+ 196249.04  GCMOVE dx 0.00 dy -0.00
+ 196257.49  GCMOVE dx 0.00 dy -0.00
+ 196265.78  GCMOVE dx 0.00 dy -0.00
+ 196270.59  GCBTN left DOWN
+ 196270.80  GCBTN left up
+ 196276.40  TOUCH indirectPointer began buttonMask=1 tapCount=3
+ 196276.85  TAP primary tap (locked=true) at (1242.7962987629398, 402.3499717328766) ENDED
+ 196282.43  GCMOVE dx 0.00 dy -0.00
+ 196848.99  GCMOVE dx 0.00 dy -0.00
+ 196857.27  GCMOVE dx 0.00 dy -0.00
+ 196865.56  GCMOVE dx 0.00 dy -0.00
+ 196873.92  GCMOVE dx 0.00 dy -0.00
+ 196882.12  GCMOVE dx 0.00 dy -0.00
+ 196890.54  GCMOVE dx 2.00 dy -0.00
+ 196898.74  GCMOVE dx 5.00 dy -0.00
+ 196907.10  GCMOVE dx 8.00 dy 1.00
+ 196915.40  GCMOVE dx 8.00 dy 1.00
+ 196923.88  GCMOVE dx 8.00 dy 1.00
+ 196932.19  GCMOVE dx 9.00 dy 2.00
+ 196940.40  GCMOVE dx 14.00 dy 2.00
+ 196948.76  GCMOVE dx 14.00 dy 2.00
+ 196957.21  GCMOVE dx 9.00 dy 2.00
+ 196965.42  GCMOVE dx 14.00 dy 2.00
+ 196973.76  GCMOVE dx 14.00 dy 2.00
+ 196982.17  GCMOVE dx 13.00 dy 2.00
+ 196990.55  GCMOVE dx 12.00 dy 2.00
+ 196998.83  GCMOVE dx 11.00 dy 1.00
+ 197007.26  GCMOVE dx 10.00 dy 2.00
+ 197015.70  GCMOVE dx 5.00 dy 1.00
+ 197024.10  GCMOVE dx 9.00 dy 1.00
+ 197032.19  GCMOVE dx 7.00 dy 1.00
+ 197040.55  GCMOVE dx 6.00 dy 2.00
+ 197057.32  GCMOVE dx 12.00 dy 3.00
+ 197065.54  GCMOVE dx 4.00 dy 1.00
+ 197073.99  GCMOVE dx 5.00 dy 1.00
+ 197090.72  GCMOVE dx 4.00 dy 1.00
+ 197098.90  GCMOVE dx 4.00 dy 1.00
+ 197107.29  GCMOVE dx 4.00 dy 1.00
+ 197115.72  GCMOVE dx 4.00 dy 1.00
+ 197124.04  GCMOVE dx 4.00 dy 1.00
+ 197132.25  GCMOVE dx 3.00 dy 1.00
+ 197140.72  GCMOVE dx 4.00 dy 1.00
+ 197148.98  GCMOVE dx 3.00 dy 2.00
+ 197157.39  GCMOVE dx 4.00 dy 1.00
+ 197165.52  GCMOVE dx 3.00 dy 1.00
+ 197174.04  GCMOVE dx 2.00 dy 1.00
+ 197182.45  GCMOVE dx 2.00 dy 1.00
+ 197190.57  GCMOVE dx 2.00 dy 1.00
+ 197198.97  GCMOVE dx 1.00 dy -0.00
+ 197207.34  GCMOVE dx 1.00 dy 1.00
+ 197215.71  GCMOVE dx 1.00 dy -0.00
+ 197224.02  GCMOVE dx 0.00 dy -0.00
+ 197232.24  GCMOVE dx 0.00 dy -0.00
+ 197240.60  GCMOVE dx 0.00 dy -0.00
+ 197249.14  GCMOVE dx 0.00 dy -0.00
+ 197257.30  GCMOVE dx 0.00 dy -0.00
+ 197365.90  GCMOVE dx 0.00 dy -0.00
+ 197374.17  GCMOVE dx 0.00 dy -0.00
+ 197382.50  GCMOVE dx 0.00 dy -0.00
+ 197407.56  GCMOVE dx 0.00 dy -0.00
+ 197415.87  GCMOVE dx 0.00 dy -0.00
+ 197424.22  GCMOVE dx 0.00 dy -0.00
+ 197432.33  GCMOVE dx 0.00 dy -0.00
+ 197433.65  GCBTN left DOWN
+ 197433.79  GCBTN left up
+ 197443.15  TOUCH indirectPointer began buttonMask=1 tapCount=1
+ 197443.66  TAP primary tap (locked=true) at (1242.7962987629398, 402.3499717328766) ENDED
+ 197449.12  GCMOVE dx 0.00 dy -0.00
+ 334804.24  GCMOVE dx 0.00 dy -0.00
+ 334826.82  GCMOVE dx 0.00 dy -0.00
+ 334839.20  GCMOVE dx 0.00 dy -0.00
+ 334847.65  GCMOVE dx 0.00 dy -0.00
+ 334855.76  GCMOVE dx 0.00 dy -0.00
+ 334864.09  GCMOVE dx 0.00 dy -0.00
+ 334889.20  GCMOVE dx 0.00 dy -0.00
+ 334897.43  GCMOVE dx 0.00 dy -0.00
+ 334905.87  GCMOVE dx -1.00 dy -3.00
+ 334914.12  GCMOVE dx -4.00 dy -6.00
+ 334922.36  GCMOVE dx -4.00 dy -6.00
+ 334930.68  GCMOVE dx -3.00 dy -6.00
+ 334939.12  GCMOVE dx -4.00 dy -6.00
+ 334947.42  GCMOVE dx -3.00 dy -7.00
+ 334955.94  GCMOVE dx -4.00 dy -7.00
+ 334964.21  GCMOVE dx -3.00 dy -7.00
+ 334972.50  GCMOVE dx -2.00 dy -8.00
+ 334980.78  GCMOVE dx -3.00 dy -7.00
+ 334989.07  GCMOVE dx -2.00 dy -5.00
+ 334997.45  GCMOVE dx -3.00 dy -7.00
+ 335005.71  GCMOVE dx -2.00 dy -6.00
+ 335014.07  GCMOVE dx -3.00 dy -6.00
+ 335022.68  GCMOVE dx -2.00 dy -6.00
+ 335030.72  GCMOVE dx -3.00 dy -5.00
+ 335039.05  GCMOVE dx -2.00 dy -5.00
+ 335047.36  GCMOVE dx -2.00 dy -4.00
+ 335055.69  GCMOVE dx -2.00 dy -5.00
+ 335063.99  GCMOVE dx -3.00 dy -4.00
+ 335072.34  GCMOVE dx -2.00 dy -5.00
+ 335080.66  GCMOVE dx -2.00 dy -5.00
+ 335089.05  GCMOVE dx -2.00 dy -4.00
+ 335097.32  GCMOVE dx -2.00 dy -5.00
+ 335105.66  GCMOVE dx -2.00 dy -4.00
+ 335114.06  GCMOVE dx -2.00 dy -4.00
+ 335122.38  GCMOVE dx -1.00 dy -4.00
+ 335130.62  GCMOVE dx -1.00 dy -3.00
+ 335138.95  GCMOVE dx 0.00 dy -2.00
+ 335147.36  GCMOVE dx -1.00 dy -2.00
+ 335155.79  GCMOVE dx 0.00 dy -1.00
+ 335163.97  GCMOVE dx 0.00 dy -1.00
+ 335172.28  GCMOVE dx 0.00 dy -1.00
+ 335180.62  GCMOVE dx 0.00 dy -1.00
+ 335188.93  GCMOVE dx 1.00 dy -0.00
+ 335197.35  GCMOVE dx 2.00 dy -1.00
+ 335205.76  GCMOVE dx 2.00 dy -0.00
+ 335213.92  GCMOVE dx 3.00 dy -1.00
+ 335222.30  GCMOVE dx 3.00 dy -1.00
+ 335230.54  GCMOVE dx 3.00 dy -1.00
+ 335238.90  GCMOVE dx 4.00 dy -0.00
+ 335247.22  GCMOVE dx 4.00 dy -1.00
+ 335255.58  GCMOVE dx 4.00 dy -0.00
+ 335263.90  GCMOVE dx 4.00 dy -1.00
+ 335272.27  GCMOVE dx 5.00 dy -0.00
+ 335280.59  GCMOVE dx 4.00 dy -0.00
+ 335288.99  GCMOVE dx 4.00 dy -0.00
+ 335305.69  GCMOVE dx 3.00 dy -0.00
+ 335313.98  GCMOVE dx 3.00 dy -0.00
+ 335322.20  GCMOVE dx 6.00 dy 1.00
+ 335339.04  GCMOVE dx 2.00 dy 2.00
+ 335347.29  GCMOVE dx 3.00 dy 5.00
+ 335355.66  GCMOVE dx 1.00 dy 4.00
+ 335372.42  GCMOVE dx 0.00 dy 6.00
+ 335380.93  GCMOVE dx 0.00 dy 5.00
+ 335389.14  GCMOVE dx 0.00 dy 6.00
+ 335397.31  GCMOVE dx -3.00 dy 6.00
+ 335405.72  GCMOVE dx -4.00 dy 7.00
+ 335414.00  GCMOVE dx -6.00 dy 7.00
+ 335422.36  GCMOVE dx -7.00 dy 6.00
+ 335430.64  GCMOVE dx -7.00 dy 7.00
+ 335439.02  GCMOVE dx -8.00 dy 7.00
+ 335447.36  GCMOVE dx -9.00 dy 7.00
+ 335455.67  GCMOVE dx -9.00 dy 7.00
+ 335463.99  GCMOVE dx -9.00 dy 6.00
+ 335472.34  GCMOVE dx -8.00 dy 6.00
+ 335480.69  GCMOVE dx -9.00 dy 6.00
+ 335489.10  GCMOVE dx -8.00 dy 5.00
+ 335497.31  GCMOVE dx -8.00 dy 5.00
+ 335505.71  GCMOVE dx -8.00 dy 5.00
+ 335513.99  GCMOVE dx -8.00 dy 4.00
+ 335522.36  GCMOVE dx -8.00 dy 4.00
+ 335530.63  GCMOVE dx -7.00 dy 4.00
+ 335539.04  GCMOVE dx -8.00 dy 4.00
+ 335547.29  GCMOVE dx -8.00 dy 3.00
+ 335555.74  GCMOVE dx -8.00 dy 3.00
+ 335564.03  GCMOVE dx -7.00 dy 3.00
+ 335572.28  GCMOVE dx -7.00 dy 3.00
+ 335580.68  GCMOVE dx -5.00 dy 1.00
+ 335589.03  GCMOVE dx -6.00 dy 2.00
+ 335597.34  GCMOVE dx -9.00 dy 4.00
+ 335605.66  GCMOVE dx -7.00 dy 2.00
+ 335614.02  GCMOVE dx -6.00 dy 3.00
+ 335622.41  GCMOVE dx -4.00 dy 2.00
+ 335630.64  GCMOVE dx -9.00 dy 3.00
+ 335639.05  GCMOVE dx -7.00 dy 2.00
+ 335647.36  GCMOVE dx -4.00 dy 2.00
+ 335655.70  GCMOVE dx -9.00 dy 3.00
+ 335663.98  GCMOVE dx -4.00 dy 2.00
+ 335672.34  GCMOVE dx -7.00 dy 2.00
+ 335680.68  GCMOVE dx -5.00 dy 2.00
+ 335689.03  GCMOVE dx -6.00 dy 2.00
+ 335697.31  GCMOVE dx -6.00 dy 2.00
+ 335705.70  GCMOVE dx -5.00 dy 2.00
+ 335714.07  GCMOVE dx -5.00 dy 1.00
+ 335722.34  GCMOVE dx -8.00 dy 3.00
+ 335730.73  GCMOVE dx -5.00 dy 3.00
+ 335739.04  GCMOVE dx -6.00 dy 3.00
+ 335747.38  GCMOVE dx -6.00 dy 3.00
+ 335755.75  GCMOVE dx -6.00 dy 4.00
+ 335764.00  GCMOVE dx -6.00 dy 5.00
+ 335772.42  GCMOVE dx -4.00 dy 3.00
+ 335780.79  GCMOVE dx -6.00 dy 4.00
+ 335789.09  GCMOVE dx -4.00 dy 4.00
+ 335797.36  GCMOVE dx -4.00 dy 3.00
+ 335805.76  GCMOVE dx -3.00 dy 2.00
+ 335814.11  GCMOVE dx -3.00 dy 2.00
+ 335822.43  GCMOVE dx -1.00 dy 2.00
+ 335830.70  GCMOVE dx -1.00 dy 1.00
+ 335839.08  GCMOVE dx -1.00 dy -0.00
+ 335847.45  GCMOVE dx 0.00 dy -0.00
+ 335855.79  GCMOVE dx 0.00 dy -0.00
+ 337283.78  GCKEY LCtrl DOWN mods=["ctrl"]
+ 337289.28  GCMOVE dx 0.00 dy -0.00
+ 337290.83  UIPRESS LCtrl DOWN mods=["ctrl"] chars="" lag 8.3 ms
+ 338268.12  GCBTN left DOWN
+ 338269.33  TOUCH indirectPointer began buttonMask=1 tapCount=1
+ 338280.78  GCMOVE dx 0.00 dy -0.00
+ 338289.27  GCMOVE dx 0.00 dy -0.00
+ 338306.01  GCMOVE dx 0.00 dy -0.00
+ 338314.24  GCMOVE dx 0.00 dy -0.00
+ 338322.51  GCMOVE dx 0.00 dy -0.00
+ 338330.83  GCMOVE dx 0.00 dy -0.00
+ 338339.17  GCMOVE dx 0.00 dy -0.00
+ 338347.49  GCMOVE dx 0.00 dy -0.00
+ 338355.78  GCMOVE dx 0.00 dy -0.00
+ 338364.13  GCMOVE dx 0.00 dy -0.00
+ 338372.46  GCMOVE dx 0.00 dy -0.00
+ 338380.73  GCMOVE dx 0.00 dy -0.00
+ 338405.78  GCMOVE dx 0.00 dy -0.00
+ 338414.03  GCMOVE dx 0.00 dy -0.00
+ 338422.44  GCMOVE dx 0.00 dy -0.00
+ 338430.70  GCMOVE dx 0.00 dy -0.00
+ 338439.13  GCMOVE dx 0.00 dy -0.00
+ 338441.49  GCBTN left up
+ 338449.24  TAP secondary tap (locked=true) at (1242.7962987629398, 402.3499717328766) ENDED
+ 341119.75  GCKEY LCtrl up mods=[]
+ 341120.44  UIPRESS LCtrl up mods=["ctrl"] chars="" lag 1.5 ms
+ 341122.70  GCMOVE dx 0.00 dy -0.00

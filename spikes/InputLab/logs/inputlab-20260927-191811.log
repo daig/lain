@@ -1,0 +1,84 @@
+      1.32  DEVICE iPad iPadOS 26.7
+      9.42  MENU main menu rebuilt (strip=false), full tree in log file
+      9.47  MENU [] com.apple.menu.root
+      9.49  MENU   [Input Lab] com.apple.menu.application
+      9.50  MENU     [] com.apple.menu.about
+      9.51  MENU     [] com.apple.menu.preferences
+      9.54  MENU       Input Lab Settings…  ⌨ ["cmd"] ","
+      9.56  MENU     [Services] com.apple.menu.services
+      9.57  MENU     [] com.apple.menu.hide
+      9.58  MENU     [] com.apple.menu.quit
+      9.58  MENU   [File] com.apple.menu.file
+      9.59  MENU     [] com.apple.menu.new-item
+      9.60  MENU     [] com.apple.menu.open
+      9.61  MENU     [] com.apple.menu.close
+      9.62  MENU       Close  ⌨ ["cmd"] "w"
+      9.63  MENU     [] com.apple.menu.document
+      9.64  MENU     [] com.apple.menu.print
+      9.64  MENU   [Edit] com.apple.menu.edit
+      9.65  MENU     [] com.apple.menu.undo-redo
+      9.66  MENU       Undo  ⌨ ["cmd"] "z"
+      9.67  MENU       Redo  ⌨ ["cmd", "shift"] "z"
+      9.68  MENU     [] com.apple.menu.standard-edit
+      9.69  MENU       Cut  ⌨ ["cmd"] "x"
+      9.71  MENU       Copy  ⌨ ["cmd"] "c"
+      9.72  MENU       Paste  ⌨ ["cmd"] "v"
+      9.73  MENU       Paste and Match Style  ⌨ ["cmd", "opt", "shift"] "v"
+      9.74  MENU       Delete
+      9.75  MENU       Select All  ⌨ ["cmd"] "a"
+      9.76  MENU     [Find] com.apple.menu.find
+      9.77  MENU       [] com.apple.menu.find-panel
+      9.78  MENU         Find  ⌨ ["cmd"] "f"
+      9.79  MENU         Find & Replace  ⌨ ["cmd", "opt"] "f"
+      9.80  MENU         Find Next  ⌨ ["cmd"] "g"
+      9.81  MENU         Find Previous  ⌨ ["cmd", "shift"] "g"
+      9.82  MENU       Use Selection for Find  ⌨ ["cmd"] "e"
+      9.84  MENU     [Spelling and Grammar] com.apple.menu.spelling
+      9.84  MENU       [] com.apple.menu.spelling-panel
+      9.85  MENU       [] com.apple.menu.spelling-options
+      9.86  MENU     [Substitutions] com.apple.menu.substitutions
+      9.87  MENU       [] com.apple.menu.substitutions-panel
+      9.87  MENU       [] com.apple.menu.substitution-options
+      9.88  MENU     [Transformations] com.apple.menu.transformations
+      9.89  MENU     [Speech] com.apple.command.speech
+      9.89  MENU   [Format] com.apple.menu.format
+      9.90  MENU     [Font] com.apple.menu.font
+      9.91  MENU       [Text Style] com.apple.menu.text-style
+      9.92  MENU         Bold  ⌨ ["cmd"] "b"
+      9.93  MENU         Italic  ⌨ ["cmd"] "i"
+      9.94  MENU         Underline  ⌨ ["cmd"] "u"
+      9.95  MENU       [] com.apple.menu.text-size
+      9.96  MENU         Bigger  ⌨ ["cmd"] "+"
+      9.97  MENU         Smaller  ⌨ ["cmd"] "-"
+      9.97  MENU       [] com.apple.menu.text-color
+      9.98  MENU       [] com.apple.menu.text-style-pasteboard
+      9.99  MENU     [Text] com.apple.menu.text
+     10.00  MENU       [] com.apple.menu.alignment
+     10.01  MENU         Align Left  ⌨ ["cmd"] "{"
+     10.02  MENU         Center  ⌨ ["cmd"] "|"
+     10.02  MENU         Justify
+     10.03  MENU         Align Right  ⌨ ["cmd"] "}"
+     10.04  MENU       [Writing Direction] com.apple.menu.writing-direction
+     10.05  MENU         Default
+     10.06  MENU         Right to Left
+     10.07  MENU         Left to Right
+     10.07  MENU   [View] com.apple.menu.view
+     10.08  MENU     [] com.apple.menu.toolbar
+     10.09  MENU       Customize Toolbar…
+     10.09  MENU     [] com.apple.menu.sidebar
+     10.10  MENU       Show Sidebar  ⌨ ["cmd", "ctrl"] "s"
+     10.11  MENU     [] com.apple.menu.fullscreen
+     10.12  MENU   [Window] com.apple.menu.window
+     10.12  MENU     [] com.apple.menu.minimize-and-zoom
+     10.13  MENU     [] com.apple.menu.bring-all-to-front
+     10.14  MENU   [Help] com.apple.menu.help
+     10.14  MENU       ⌨ ["cmd"] "?"
+     22.44  GC GCMouseDidBecomeCurrentNotification Optional(GCMouse)
+     22.51  GC GCMouseDidConnectNotification Optional(GCMouse)
+     22.52  GC mouse attached: Mouse vendor=Magic Keyboard aux=0 middle=false
+     22.58  GC GCKeyboardDidConnectNotification Optional(GCKeyboard)
+     22.60  GC keyboard attached: Generic Keyboard
+     30.37  SCENE scene (1376.0, 1032.0) screen (1376.0, 1032.0) native (2064.0, 2752.0) scale 2.0 maxFPS 120
+    399.48  SCENE didBecomeActive
+    402.75  LOCK isLocked=true (wanted=true)
+    609.98  GCMOVE dx 0.00 dy -0.00
