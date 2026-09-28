@@ -2,7 +2,7 @@
 
 Mac ↔ iPad Pro low-latency remote control: the iPad (with Magic Keyboard) is the Mac's display, keyboard, trackpad and speakers. USB-C via usbmux first; peer-to-peer Wi-Fi later; internet out of scope.
 
-**Read `docs/ARCHITECTURE.md` before any design or implementation work.** It is the authoritative spec: invariants (§3), workflow and testing (§12.1–12.2), decisions (§14), milestones (§10), open spikes (§11) and measurements (§13). `docs/PadLink-Design.md` is the superseded exploratory doc — background only.
+**Start every session by reading `docs/STATUS.md`** (current state, next steps, working agreements). **Read `docs/ARCHITECTURE.md` before any design or implementation work.** It is the authoritative spec: invariants (§3), workflow and testing (§12.1–12.2), decisions (§14), milestones (§10), open spikes (§11) and measurements (§13). `docs/PadLink-Design.md` is the superseded exploratory doc — background only.
 
 - Targets: macOS 27 / iPadOS 27 only; Xcode 27; Swift 6 language mode.
 - **Xcode workflow reference: `docs/XCODE-WORKFLOW.md`** — what goes through MCP, what's manual, how tests are organized, with the verified reasons. Follow it.
@@ -13,3 +13,4 @@ Mac ↔ iPad Pro low-latency remote control: the iPad (with Magic Keyboard) is t
 - Private API only inside `*Private` modules via one wrapper each; log it in ARCHITECTURE.md §14.
 - Sign with team `8DWR7MSCR6`, never ad hoc (TCC grants reset otherwise).
 - Record every spike result and measurement in ARCHITECTURE.md §11/§13, and update the spec when a decision changes.
+- Update `docs/STATUS.md` at the end of each session or milestone.
