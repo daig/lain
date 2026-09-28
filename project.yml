@@ -34,6 +34,12 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSUIElement: true              # menu-bar agent, no Dock icon
         LSApplicationCategoryType: public.app-category.utilities
+    entitlements:
+      path: Generated/LainHost.entitlements
+      properties:
+        # Data-protection Keychain for the pairing secret (§7.6); requires a provisioning profile,
+        # so the Mac is registered in the developer account.
+        keychain-access-groups: ["$(AppIdentifierPrefix)sub.dev.lain.host"]
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: sub.dev.lain.host
@@ -71,6 +77,27 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: sub.dev.lain.client
         PRODUCT_NAME: LainClient
         TARGETED_DEVICE_FAMILY: "2"    # iPad only
+  # Hosted unit tests: run inside the signed app, so Keychain and other identity-bound APIs work.
+  LainClientTests:
+    type: bundle.unit-test
+    platform: iOS
+    sources: [Apps/ClientTests]
+    dependencies:
+      - target: LainClient
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "2"
+        PRODUCT_BUNDLE_IDENTIFIER: sub.dev.lain.client.tests
+  LainHostTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [Apps/HostTests]
+    dependencies:
+      - target: LainHost
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sub.dev.lain.host.tests
+        ENABLE_HARDENED_RUNTIME: YES
 schemes:
   LainHost:
     build:
@@ -85,6 +112,7 @@ schemes:
         - package: LainKit/LainInputTests
         - package: LainKit/LainUSBMuxTests
         - package: LainKit/LainTransportTests
+        - LainHostTests
   LainClient:
     build:
       targets: { LainClient: all }
@@ -96,4 +124,5 @@ schemes:
         - package: LainKit/LainProtocolTests
         - package: LainKit/LainTelemetryTests
         - package: LainKit/LainInputTests
-        - package: LainKit/LainTransportTests   # listener + Keychain store on the iPadOS runtime
+        - package: LainKit/LainTransportTests   # listener + pairing on the iPadOS runtime
+        - LainClientTests

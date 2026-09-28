@@ -45,7 +45,9 @@ public final class InMemorySecretStore: SecretStore {
     public func removeSecret(for peer: String) { secrets.withLock { $0[peer] = nil } }
 }
 
-/// Generic-password items in the data-protection Keychain, one per peer, never synced.
+/// Generic-password items in the data-protection Keychain, one per peer, never synced. Needs the
+/// app's identity: on macOS a `keychain-access-groups` entitlement (and so a provisioning profile);
+/// unhosted test bundles get -34018 (errSecMissingEntitlement).
 public struct KeychainSecretStore: SecretStore {
     public struct Failure: Error, Equatable { public let status: OSStatus }
 

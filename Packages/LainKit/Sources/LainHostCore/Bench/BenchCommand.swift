@@ -17,7 +17,8 @@ public enum BenchCommand {
             do {
                 switch name {
                 case "usbmux":
-                    print(try await USBMuxBench.run())
+                    // Persistent pairing: the first run pairs over USB, later runs authenticate.
+                    print(try await USBMuxBench.run(secrets: KeychainSecretStore()))
                 default:
                     print("unknown bench '\(name)'; available: \(names.joined(separator: ", "))")
                     exit(2)
