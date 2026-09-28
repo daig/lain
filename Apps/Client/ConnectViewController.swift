@@ -3,7 +3,11 @@ import UIKit
 
 /// Full-screen connect screen (§6.6). Becomes the stream view controller in M2/M3.
 final class ConnectViewController: UIViewController {
-    private let status = ClientStatus.waitingForMac
+    var status = ClientStatus.waitingForMac {
+        didSet { render() }
+    }
+    private let titleLabel = UILabel()
+    private let detailLabel = UILabel()
 
     override var prefersStatusBarHidden: Bool { true }
     override var prefersHomeIndicatorAutoHidden: Bool { true }
@@ -13,14 +17,12 @@ final class ConnectViewController: UIViewController {
         super.viewDidLoad()
         view.backgroundColor = .black
 
-        let title = UILabel()
-        title.text = status.title
+        let title = titleLabel
         title.font = .systemFont(ofSize: 34, weight: .semibold)
         title.textColor = .white
         title.accessibilityIdentifier = "connect.title"
 
-        let detail = UILabel()
-        detail.text = status.detail
+        let detail = detailLabel
         detail.font = .preferredFont(forTextStyle: .body)
         detail.textColor = .secondaryLabel
         detail.accessibilityIdentifier = "connect.detail"
@@ -35,5 +37,11 @@ final class ConnectViewController: UIViewController {
             stack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             stack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
         ])
+        render()
+    }
+
+    private func render() {
+        titleLabel.text = status.title
+        detailLabel.text = status.detail
     }
 }

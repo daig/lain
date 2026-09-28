@@ -9,6 +9,7 @@ public enum MessageType: UInt8, Sendable, CaseIterable {
     case configUpdate = 0x09
     case displayChanged = 0x0A
     case error = 0x0B
+    case pair = 0x0C
     case videoConfig = 0x20, videoFrame = 0x21, frameAck = 0x24
     case audioConfig = 0x30, audioPacket = 0x31
     case cursorShape = 0x40, cursorSelect = 0x41, cursorWarp = 0x42

@@ -14,10 +14,18 @@ step() {
   local label=$1; shift
   local out="build/logs/$label.log"
   print -P "%B==> $label%b"
-  if "$@" >"$out" 2>&1; then
+  # Watchdog: xcodebuild has been seen to hang after a failed simulator test run (no `timeout` on
+  # macOS). Kill the step after LAIN_STEP_TIMEOUT seconds.
+  "$@" >"$out" 2>&1 &
+  local pid=$!
+  ( sleep "${LAIN_STEP_TIMEOUT:-900}"; kill "$pid" 2>/dev/null && echo "TIMED OUT after ${LAIN_STEP_TIMEOUT:-900}s" >>"$out" ) &
+  local watchdog=$!
+  if wait "$pid"; then
+    kill "$watchdog" 2>/dev/null || true
     grep -E "Test run with|Executed [0-9]+ test|✘" "$out" || true
   else
-    grep -E "error:|✘|FAILED|failed" "$out" | head -40 || true
+    kill "$watchdog" 2>/dev/null || true
+    grep -E "error:|✘|FAILED|failed|TIMED OUT" "$out" | head -40 || true
     echo "FAILED: $label (see $out)"
     exit 1
   fi

@@ -83,6 +83,8 @@ schemes:
         - package: LainKit/LainProtocolTests
         - package: LainKit/LainTelemetryTests
         - package: LainKit/LainInputTests
+        - package: LainKit/LainUSBMuxTests
+        - package: LainKit/LainTransportTests
   LainClient:
     build:
       targets: { LainClient: all }
@@ -94,3 +96,4 @@ schemes:
         - package: LainKit/LainProtocolTests
         - package: LainKit/LainTelemetryTests
         - package: LainKit/LainInputTests
+        - package: LainKit/LainTransportTests   # listener + Keychain store on the iPadOS runtime

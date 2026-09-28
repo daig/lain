@@ -52,6 +52,7 @@ public struct ChannelHello: WireMessage {
     /// Random per session; ties the three connections together.
     public var sessionToken: [UInt8]
     /// HMAC-SHA256 over the fields above, keyed by the pairing secret (computed in LainTransport).
+    /// All zeros requests pairing (§7.6); only the USB listener accepts that.
     public var hmac: [UInt8]
 
     public init(protocolVersion: UInt8 = LainProtocol.majorVersion, connectionKind: ConnectionKind,
@@ -324,6 +325,20 @@ public struct ErrorMessage: WireMessage {
         guard let c = Code(rawValue: raw) else { throw .malformed("error code \(raw)") }
         code = c; message = try r.string()
     }
+}
+
+/// USB pairing (§7.6, D13): sent by the host on the realtime connection right after a pairing
+/// `ChannelHello` (all-zero HMAC). The client stores the secret; its `Hello` confirms it.
+public struct Pair: WireMessage {
+    public static let type = MessageType.pair
+    public static let secretSize = 32
+    public var secret: [UInt8]
+    public init(secret: [UInt8]) {
+        precondition(secret.count == Self.secretSize)
+        self.secret = secret
+    }
+    public func encode(into w: inout ByteWriter) { w.raw(secret) }
+    public init(from r: inout ByteReader) throws(ProtocolError) { secret = try r.raw(Self.secretSize) }
 }
 
 // MARK: - Video

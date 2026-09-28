@@ -9,6 +9,7 @@ public enum Message: Sendable, Equatable {
     case configUpdate(ConfigUpdate)
     case displayChanged(DisplayChanged)
     case error(ErrorMessage)
+    case pair(Pair)
     case videoConfig(VideoConfig), videoFrame(VideoFrame), frameAck(FrameAck)
     case audioConfig(AudioConfig), audioPacket(AudioPacket)
     case cursorShape(CursorShape), cursorSelect(CursorSelect), cursorWarp(CursorWarp)
@@ -30,6 +31,7 @@ public enum Message: Sendable, Equatable {
         case .configUpdate(let m): m
         case .displayChanged(let m): m
         case .error(let m): m
+        case .pair(let m): m
         case .videoConfig(let m): m
         case .videoFrame(let m): m
         case .frameAck(let m): m
@@ -73,6 +75,7 @@ public enum Message: Sendable, Equatable {
         case .configUpdate: m = .configUpdate(try ConfigUpdate(from: &r))
         case .displayChanged: m = .displayChanged(try DisplayChanged(from: &r))
         case .error: m = .error(try ErrorMessage(from: &r))
+        case .pair: m = .pair(try Pair(from: &r))
         case .videoConfig: m = .videoConfig(try VideoConfig(from: &r))
         case .videoFrame: m = .videoFrame(try VideoFrame(from: &r))
         case .frameAck: m = .frameAck(try FrameAck(from: &r))

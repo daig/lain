@@ -20,6 +20,7 @@ enum Samples {
         .displayChanged(DisplayChanged(displayID: 5, pixelWidth: 2752, pixelHeight: 2064, pointWidth: 1376,
                                        pointHeight: 1032, refreshRate: 60)),
         .error(ErrorMessage(code: .versionMismatch, message: "host speaks v2")),
+        .pair(Pair(secret: Array(200..<232))),
         .videoConfig(VideoConfig(configId: 3, codec: .hevc, chroma: .yuv444, bitDepth: 10, width: 2752, height: 2064,
                                  fullRange: true, colorPrimaries: 12, transferFunction: 13, matrix: 1,
                                  parameterSets: [[0x40, 0x01], [0x42, 0x01, 0x01], [0x44, 0x01]])),

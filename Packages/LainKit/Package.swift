@@ -33,6 +33,7 @@ let package = Package(
             name: "LainHostCore",
             dependencies: [
                 "LainProtocol", "LainTelemetry", "LainInput", "LainTransport", "LainMedia",
+                .target(name: "LainUSBMux", condition: .when(platforms: [.macOS])),
                 .target(name: "CGVirtualDisplayPrivate", condition: .when(platforms: [.macOS])),
             ]
         ),
@@ -40,8 +41,14 @@ let package = Package(
             name: "LainClientCore",
             dependencies: ["LainProtocol", "LainTelemetry", "LainInput", "LainTransport", "LainMedia"]
         ),
+        // Fakes for integration tests (fake usbmuxd); never linked into the apps.
+        .target(name: "LainTestSupport", dependencies: ["LainUSBMux"]),
         .testTarget(name: "LainProtocolTests", dependencies: ["LainProtocol"]),
         .testTarget(name: "LainTelemetryTests", dependencies: ["LainTelemetry"]),
         .testTarget(name: "LainInputTests", dependencies: ["LainInput"]),
+        .testTarget(name: "LainUSBMuxTests", dependencies: ["LainUSBMux", "LainTestSupport"]),
+        .testTarget(name: "LainTransportTests", dependencies: ["LainTransport", "LainTestSupport", "LainTelemetry"]),
+        // Host ↔ client end to end on macOS (the client core is platform-neutral where it matters).
+        .testTarget(name: "LainLoopbackTests", dependencies: ["LainHostCore", "LainClientCore", "LainTestSupport"]),
     ]
 )
