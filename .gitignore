@@ -8,3 +8,9 @@ build/
 .DS_Store
 # Claude Code per-machine settings
 .claude/settings.local.json
+# XcodeGen output (project.yml is the source of truth)
+/lain.xcodeproj/
+/Generated/
+# SwiftPM
+.build/
+.swiftpm/

@@ -2,6 +2,7 @@
 // native 2752×2064, on synthetic scrolling colored text. Results go in ARCHITECTURE.md §13.
 //
 //   swiftc -O CodecBench.swift -o /tmp/codecbench && /tmp/codecbench
+//   /tmp/codecbench ltr     # S3b: LTR in the real-time vs low-latency session
 //
 // Encode timing is submit → output callback with one frame outstanding at a time (what the
 // latest-wins pipeline does). "LL" = kVTVideoEncoderSpecification_EnableLowLatencyRateControl;
@@ -177,7 +178,144 @@ func decode(_ label: String, _ samples: [CMSampleBuffer]) {
                  percentile(steady, 0.5), percentile(steady, 0.95), steady.max()!))
 }
 
+// MARK: LTR (S3b)
+
+/// Luma PSNR (dB) between two xf44 buffers, on every 4th row. 10-bit samples live in the top bits.
+func lumaPSNR(_ a: CVPixelBuffer, _ b: CVPixelBuffer) -> Double {
+    CVPixelBufferLockBaseAddress(a, .readOnly); CVPixelBufferLockBaseAddress(b, .readOnly)
+    defer { CVPixelBufferUnlockBaseAddress(a, .readOnly); CVPixelBufferUnlockBaseAddress(b, .readOnly) }
+    let pa = CVPixelBufferGetBaseAddressOfPlane(a, 0)!, pb = CVPixelBufferGetBaseAddressOfPlane(b, 0)!
+    let ra = CVPixelBufferGetBytesPerRowOfPlane(a, 0), rb = CVPixelBufferGetBytesPerRowOfPlane(b, 0)
+    var sse = 0.0, n = 0.0
+    for y in stride(from: 0, to: H, by: 4) {
+        let la = (pa + y * ra).assumingMemoryBound(to: UInt16.self), lb = (pb + y * rb).assumingMemoryBound(to: UInt16.self)
+        for x in 0..<W { let d = Double(Int(la[x] >> 6) - Int(lb[x] >> 6)); sse += d * d }
+        n += Double(W)
+    }
+    return sse == 0 ? 99 : 10 * log10(1023.0 * 1023.0 / (sse / n))
+}
+
+struct LTRFrame { var sample: CMSampleBuffer; var index: Int; var bytes: Int; var key: Bool; var token: Int?; var ms: Double }
+
+/// S3b: is EnableLTR accepted in this mode, do frames carry tokens, how big is a ForceLTRRefresh frame
+/// compared with a keyframe, and does decoding survive a lost frame when the next one is an LTR refresh?
+func ltr(_ label: String, lowLatency: Bool) {
+    let frames = convert(bgraFrames, to: kCVPixelFormatType_444YpCbCr10BiPlanarFullRange)
+    let spec: [CFString: Any] = [
+        kVTVideoEncoderSpecification_EnableLowLatencyRateControl: lowLatency,
+        kVTVideoEncoderSpecification_RequireHardwareAcceleratedVideoEncoder: true,
+    ]
+    var session: VTCompressionSession?
+    guard VTCompressionSessionCreate(allocator: nil, width: Int32(W), height: Int32(H), codecType: kCMVideoCodecType_HEVC,
+                                     encoderSpecification: spec as CFDictionary, imageBufferAttributes: nil,
+                                     compressedDataAllocator: nil, outputCallback: nil, refcon: nil,
+                                     compressionSessionOut: &session) == noErr, let s = session else {
+        print("\(label): create failed"); return
+    }
+    defer { VTCompressionSessionInvalidate(s) }
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ProfileLevel, value: "HEVC_Main44410_AutoLevel" as CFString)
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_RealTime, value: kCFBooleanTrue)
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AllowFrameReordering, value: kCFBooleanFalse)
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ExpectedFrameRate, value: 120 as CFNumber)
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_AverageBitRate, value: bitrate as CFNumber)
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxKeyFrameInterval, value: 100_000 as CFNumber)
+    VTSessionSetProperty(s, key: kVTCompressionPropertyKey_ColorPrimaries, value: kCVImageBufferColorPrimaries_P3_D65)
+    if !lowLatency {
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_MaxFrameDelayCount, value: 0 as CFNumber)
+        VTSessionSetProperty(s, key: kVTCompressionPropertyKey_PrioritizeEncodingSpeedOverQuality, value: kCFBooleanTrue)
+    }
+    let ltrStatus = VTSessionSetProperty(s, key: kVTCompressionPropertyKey_EnableLTR, value: kCFBooleanTrue)
+    var readBack: CFTypeRef?
+    VTSessionCopyProperty(s, key: kVTCompressionPropertyKey_EnableLTR, allocator: nil, valueOut: &readBack)
+    VTCompressionSessionPrepareToEncodeFrames(s)
+    print("\(label): EnableLTR set status \(ltrStatus), reads back \(readBack.map { "\($0)" } ?? "nil")")
+
+    // Plan: frames 0..<150. The receiver acks every token as soon as the frame arrives, except that
+    // frame `lost` never arrives; frame `lost + 1` is encoded with ForceLTRRefresh. Frame `forcedKey`
+    // is a mid-stream keyframe for size comparison.
+    let lost = 60, forcedKey = 110, total = 150
+    var out: [LTRFrame] = []
+    var acked: [Int] = []
+    for n in 0..<total {
+        var props: [CFString: Any] = [:]
+        if !acked.isEmpty { props[kVTEncodeFrameOptionKey_AcknowledgedLTRTokens] = acked as CFArray }
+        if n == lost + 1 { props[kVTEncodeFrameOptionKey_ForceLTRRefresh] = kCFBooleanTrue }
+        if n == forcedKey { props[kVTEncodeFrameOptionKey_ForceKeyFrame] = kCFBooleanTrue }
+        let t0 = CFAbsoluteTimeGetCurrent()
+        let done = DispatchSemaphore(value: 0)
+        var produced: LTRFrame?
+        let status = VTCompressionSessionEncodeFrame(s, imageBuffer: frames[n % frames.count],
+                                                     presentationTimeStamp: CMTime(value: Int64(n), timescale: 120),
+                                                     duration: .invalid, frameProperties: props.isEmpty ? nil : props as CFDictionary,
+                                                     infoFlagsOut: nil) { st, _, sb in
+            defer { done.signal() }
+            guard st == noErr, let sb else { return }
+            let att = (CMSampleBufferGetSampleAttachmentsArray(sb, createIfNecessary: false) as? [[CFString: Any]])?.first
+            let key = !((att?[kCMSampleAttachmentKey_NotSync] as? Bool) ?? false)
+            let token = (att?[kVTSampleAttachmentKey_RequireLTRAcknowledgementToken] as? NSNumber)?.intValue
+            produced = LTRFrame(sample: sb, index: n, bytes: CMSampleBufferGetTotalSampleSize(sb), key: key, token: token,
+                                ms: (CFAbsoluteTimeGetCurrent() - t0) * 1000)
+        }
+        guard status == noErr else { print("\(label): encode error \(status) at frame \(n)"); return }
+        done.wait()
+        guard let f = produced else { print("\(label): no output for frame \(n)"); return }
+        out.append(f)
+        if let token = f.token, n != lost { acked.append(token) }
+        let rest = 1.0 / 120 - (CFAbsoluteTimeGetCurrent() - t0)
+        if rest > 0 { Thread.sleep(forTimeInterval: rest) }
+    }
+
+    let tokens = out.filter { $0.token != nil }
+    let pSizes = out.filter { !$0.key && $0.index != lost + 1 && $0.index > 2 }.map(\.bytes)
+    let avgP = pSizes.reduce(0, +) / max(1, pSizes.count)
+    let ms = out.dropFirst(2).map(\.ms)
+    print(String(format: "  encode p50 %.2f p95 %.2f ms | frames with LTR token: %d (first at %@) | keyframes at %@",
+                 percentile(ms, 0.5), percentile(ms, 0.95), tokens.count,
+                 tokens.first.map { "\($0.index)" } ?? "-", out.filter(\.key).map { "\($0.index)" }.joined(separator: ",")))
+    let refresh = out[lost + 1]
+    print(String(format: "  sizes: IDR %d KB | forced mid-stream keyframe %d KB (key=%@) | LTR refresh %d KB (key=%@) | avg P %d KB",
+                 out[0].bytes / 1024, out[forcedKey].bytes / 1024, "\(out[forcedKey].key)",
+                 refresh.bytes / 1024, "\(refresh.key)", avgP / 1024))
+
+    // Decode twice: the loss followed by the refresh as encoded, and the same loss with the refresh
+    // frame treated as an ordinary P-frame reference (i.e. what happens without recovery is visible
+    // as low PSNR on frames after the gap).
+    func decodePSNR(skipping skip: Set<Int>) -> [Int: Double] {
+        let fd = CMSampleBufferGetFormatDescription(out[0].sample)!
+        let attrs = [kCVPixelBufferPixelFormatTypeKey: kCVPixelFormatType_444YpCbCr10BiPlanarFullRange] as CFDictionary
+        var ds: VTDecompressionSession?
+        guard VTDecompressionSessionCreate(allocator: nil, formatDescription: fd, decoderSpecification: nil,
+                                           imageBufferAttributes: attrs, outputCallback: nil, decompressionSessionOut: &ds) == noErr,
+              let d = ds else { print("  decoder create failed"); return [:] }
+        defer { VTDecompressionSessionInvalidate(d) }
+        var psnr: [Int: Double] = [:]
+        for f in out where !skip.contains(f.index) {
+            let done = DispatchSemaphore(value: 0)
+            VTDecompressionSessionDecodeFrame(d, sampleBuffer: f.sample, flags: [], infoFlagsOut: nil) { st, _, image, _, _ in
+                if st == noErr, let image { psnr[f.index] = lumaPSNR(image, frames[f.index % frames.count]) } else { psnr[f.index] = -Double(st) }
+                done.signal()
+            }
+            done.wait()
+        }
+        return psnr
+    }
+    let clean = decodePSNR(skipping: [])
+    let lossy = decodePSNR(skipping: [lost])
+    func fmt(_ m: [Int: Double], _ idx: [Int]) -> String { idx.map { i in m[i].map { String(format: "%d:%.1f", i, $0) } ?? "\(i):-" }.joined(separator: " ") }
+    let around = [lost - 1, lost, lost + 1, lost + 2, lost + 10, forcedKey - 1, forcedKey, total - 1]
+    print("  PSNR dB, no loss:            " + fmt(clean, around))
+    print("  PSNR dB, frame \(lost) lost:      " + fmt(lossy, around))
+}
+
 // MARK: Run
+
+if CommandLine.arguments.dropFirst().first == "ltr" {
+    print("CodecBench S3b (LTR)  \(ProcessInfo.processInfo.operatingSystemVersionString)  \(W)×\(H)  xf44 → Main44410  target \(bitrate / 1_000_000) Mbps\n")
+    ltr("RT (real-time, MaxFrameDelayCount 0)", lowLatency: false)
+    print("")
+    ltr("LL (low-latency rate control)", lowLatency: true)
+    exit(0)
+}
 
 print("CodecBench \(ProcessInfo.processInfo.operatingSystemVersionString)  \(W)×\(H)  target \(bitrate / 1_000_000) Mbps\n")
 print("— encode —")

@@ -1,0 +1,96 @@
+# XcodeGen spec — the ONLY source of project structure (ARCHITECTURE.md §8, docs/XCODE-WORKFLOW.md).
+# Regenerate with Scripts/bootstrap.sh. lain.xcodeproj and Generated/ are git-ignored.
+name: lain
+options:
+  bundleIdPrefix: sub.dev.lain
+  deploymentTarget:
+    macOS: "27.0"
+    iOS: "27.0"
+  createIntermediateGroups: true
+settings:
+  base:
+    DEVELOPMENT_TEAM: 8DWR7MSCR6
+    CODE_SIGN_STYLE: Automatic
+    SWIFT_VERSION: "6.0"
+    GENERATE_INFOPLIST_FILE: YES   # required: test targets fail to code-sign without it
+    MARKETING_VERSION: "0.1"
+    CURRENT_PROJECT_VERSION: "1"
+packages:
+  LainKit:
+    path: Packages/LainKit
+targets:
+  LainHost:
+    type: application
+    platform: macOS
+    sources: [Apps/Host]
+    dependencies:
+      - package: LainKit
+        product: LainHostCore
+    info:
+      path: Generated/LainHost-Info.plist
+      properties:
+        CFBundleDisplayName: lain
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSUIElement: true              # menu-bar agent, no Dock icon
+        LSApplicationCategoryType: public.app-category.utilities
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sub.dev.lain.host
+        PRODUCT_NAME: LainHost
+        ENABLE_HARDENED_RUNTIME: YES
+        ENABLE_APP_SANDBOX: NO         # unsandboxed by design (D5)
+        CODE_SIGN_IDENTITY: "Apple Development"   # never ad hoc: TCC grants would reset (§2)
+  LainClient:
+    type: application
+    platform: iOS
+    sources: [Apps/Client]
+    dependencies:
+      - package: LainKit
+        product: LainClientCore
+    info:
+      path: Generated/LainClient-Info.plist
+      properties:
+        CFBundleDisplayName: lain
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UILaunchScreen: {}
+        UIStatusBarHidden: true
+        UIApplicationSupportsIndirectInputEvents: true
+        # All four are declared because UIRequiresFullScreen is deprecated (iOS 26) and a landscape-only
+        # plist then warns; the view controllers restrict themselves to landscape.
+        UISupportedInterfaceOrientations~ipad:
+          - UIInterfaceOrientationLandscapeLeft
+          - UIInterfaceOrientationLandscapeRight
+          - UIInterfaceOrientationPortrait
+          - UIInterfaceOrientationPortraitUpsideDown
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sub.dev.lain.client
+        PRODUCT_NAME: LainClient
+        TARGETED_DEVICE_FAMILY: "2"    # iPad only
+schemes:
+  LainHost:
+    build:
+      targets: { LainHost: all }
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - package: LainKit/LainProtocolTests
+        - package: LainKit/LainTelemetryTests
+        - package: LainKit/LainInputTests
+  LainClient:
+    build:
+      targets: { LainClient: all }
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - package: LainKit/LainProtocolTests
+        - package: LainKit/LainTelemetryTests
+        - package: LainKit/LainInputTests
