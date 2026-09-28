@@ -112,6 +112,8 @@ schemes:
         - package: LainKit/LainInputTests
         - package: LainKit/LainUSBMuxTests
         - package: LainKit/LainTransportTests
+        - package: LainKit/LainMediaTests
+        - package: LainKit/LainLoopbackTests      # USB path + real HEVC pipeline (macOS)
         - LainHostTests
   LainClient:
     build:
@@ -125,4 +127,5 @@ schemes:
         - package: LainKit/LainTelemetryTests
         - package: LainKit/LainInputTests
         - package: LainKit/LainTransportTests   # listener + pairing on the iPadOS runtime
+        - package: LainKit/LainMediaTests
         - LainClientTests
