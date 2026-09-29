@@ -121,6 +121,23 @@ func pollUntil(within timeout: Double = 3, _ condition: () -> Bool) async throws
     return true
 }
 
+/// A TLS peer lain didn't build, for the suite checks (D29): TLS 1.2 with `psk`, appending `suites`
+/// (none: Network.framework's own choice). Loopback only; a listener's binds 127.0.0.1.
+func handBuiltTLSParameters(_ psk: WiFiPSK, appending suites: [UInt16], listener: Bool = false) -> NWParameters {
+    let data = { (bytes: [UInt8]) in bytes.withUnsafeBytes { DispatchData(bytes: $0) } as __DispatchData }
+    let tls = NWProtocolTLS.Options()
+    let sec = tls.securityProtocolOptions
+    sec_protocol_options_add_pre_shared_key(sec, data(psk.key), data(Array(psk.identity.utf8)))
+    sec_protocol_options_set_min_tls_protocol_version(sec, .TLSv12)
+    sec_protocol_options_set_max_tls_protocol_version(sec, .TLSv12)
+    for suite in suites { sec_protocol_options_append_tls_ciphersuite(sec, tls_ciphersuite_t(rawValue: suite)!) }
+    let parameters = NWParameters(tls: tls, tcp: NWProtocolTCP.Options())
+    parameters.includePeerToPeer = false
+    parameters.requiredInterfaceType = .loopback
+    if listener { parameters.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any) }
+    return parameters
+}
+
 /// A closed loopback port: one the kernel just handed out, released again. (A socket kept bound but
 /// not listening would be a black hole on this TCP stack, which drops the SYN instead of refusing.)
 func closedLoopbackPort() throws -> UInt16 {
@@ -198,6 +215,140 @@ func closedLoopbackPort() throws -> UInt16 {
         #expect(await rawClosed.next(within: 2) == true)
         #expect(await server.accepted.next(within: 0.2) == nil)
         raw.close()
+    }
+
+    @Test func aFloodOfIdleConnectionsStaysCappedAndARealClientStillGetsIn() async throws {
+        // Every loopback connection comes from 127.0.0.1, so the per-address cap is the one that binds.
+        // The handshake deadline is far off: only the cap lets go of anything here.
+        let server = try await LoopbackTLSServer(psks: [wifiPSKA], handshakeTimeout: 60)
+        defer { server.listener.cancel() }
+        let cap = NetworkStreamListener.maxPendingHandshakesPerHost
+        let dropped = Mutex<Set<Int>>([])
+        let queue = DispatchQueue(label: "flood")
+        var flood: [SocketStream] = []
+        defer { flood.forEach { $0.close() } }
+        var peak = 0
+        for i in 1...200 {
+            let raw = try TCP.connectLoopback(port: server.port)   // plain TCP: never sends a ClientHello
+            raw.start(queue: queue, onBytes: { _ in }, onClose: { _ in dropped.withLock { _ = $0.insert(i) } })
+            flood.append(raw)
+            peak = max(peak, server.listener.pendingHandshakes)
+            guard i.isMultiple(of: 25) else { continue }
+            // A real client in the middle of it, with the cap full of idle connections: it evicts the
+            // oldest and is done long before the flood could evict it.
+            let (client, accepted) = try await server.pair()
+            #expect(client.tls == WiFiTLS.required && accepted.tls == WiFiTLS.required)
+            client.close()
+            accepted.close()
+        }
+        #expect(peak <= cap)
+        // The listener let go of every idle connection beyond the cap, oldest first, and their sockets
+        // closed: the flood holds a few descriptors, not one per connection.
+        let waiting = server.listener.pendingHandshakes
+        #expect(waiting <= cap)
+        #expect(try await pollUntil { dropped.withLock { $0.count } == flood.count - waiting })
+        #expect(dropped.withLock { $0 } == Set(1...(flood.count - waiting)))   // the newest are the ones left
+        #expect(await server.rejected.next(within: 0.3) == nil)   // evictions are silent
+        print("NetworkStream handshake flood: \(flood.count) idle connections, \(dropped.withLock { $0.count }) evicted, "
+              + "at most \(peak) pending, 8 real clients admitted")
+    }
+
+    @Test func cancellingTheListenerDropsPendingHandshakesAtOnce() async throws {
+        let server = try await LoopbackTLSServer(psks: [wifiPSKA], handshakeTimeout: 30)
+        let raw = try TCP.connectLoopback(port: server.port)   // plain TCP: never sends a ClientHello
+        let rawClosed = Inbox<Bool>()
+        raw.start(queue: DispatchQueue(label: "raw"), onBytes: { _ in }, onClose: { _ in rawClosed.put(true) })
+        #expect(try await pollUntil { server.listener.pendingHandshakes == 1 })
+        let t0 = MonotonicClock.now()
+        server.listener.cancel()
+        // At once, not at the handshake deadline.
+        #expect(await rawClosed.next(within: 2) == true)
+        #expect(secondsSince(t0) < 2)
+        #expect(server.listener.pendingHandshakes == 0)
+        #expect(await server.rejected.next(within: 0.2) == nil)   // a cancel isn't a rejection
+        #expect(await server.accepted.next(within: 0.1) == nil)
+        raw.close()
+    }
+
+    @Test func streamsHandedOverOutliveTheListenerAndItsRestart() async throws {
+        var first: LoopbackTLSServer? = try await LoopbackTLSServer(psks: [wifiPSKA])
+        let (client, accepted) = try await first!.pair()
+        let atServer = StreamSink(expecting: 6), atClient = StreamSink(expecting: 6)
+        atServer.attach(accepted)
+        atClient.attach(client)
+        client.write([1, 2, 3])
+        accepted.write([4, 5, 6])
+        // A restart, as the host does when its keys change: the old listener cancelled and released,
+        // a new one with another key set.
+        first?.listener.cancel()
+        first = nil
+        let second = try await LoopbackTLSServer(psks: [wifiPSKA, wifiPSKB])
+        defer { second.listener.cancel() }
+        let (client2, accepted2) = try await second.pair(wifiPSKB)
+        try await Task.sleep(for: .milliseconds(200))   // time for any teardown the cancel could cause
+        client.write([7, 8, 9])
+        accepted.write([10, 11, 12])
+        #expect(await atServer.reached.next() == 6)
+        #expect(await atClient.reached.next() == 6)
+        #expect(atServer.bytes == [1, 2, 3, 7, 8, 9] && atClient.bytes == [4, 5, 6, 10, 11, 12])
+        #expect(atServer.closeCount == 0 && atClient.closeCount == 0)
+        client.close()
+        #expect(await atServer.closed.next() == .clean)
+        [client2, accepted2].forEach { $0.close() }
+    }
+
+    @Test func theListenerRefusesAClientThatSettlesOnAPlainPSKSuite() async throws {
+        // The right PSK and no suite appended: Network.framework offers only its plain-PSK suites, and
+        // TLS completes on 0xA8, which has no forward secrecy (measured 2026-09-29). Refused at ready.
+        let server = try await LoopbackTLSServer(psks: [wifiPSKA])
+        defer { server.listener.cancel() }
+        let client = NWConnection(to: server.endpoint, using: handBuiltTLSParameters(wifiPSKA, appending: []))
+        let clientEnded = Inbox<Bool>()
+        client.stateUpdateHandler = { state in
+            switch state {
+            case .failed, .waiting: clientEnded.put(true)
+            default: break
+            }
+        }
+        client.start(queue: DispatchQueue(label: "plain-psk.client"))
+        defer { client.cancel() }
+        let rejected = try #require(await server.rejected.next())
+        guard case .unexpectedTLS(let tls?) = rejected else { Issue.record("rejected with \(rejected)"); return }
+        #expect(tls.version == WiFiTLS.version && tls.cipherSuite != WiFiTLS.cipherSuite)
+        #expect(await server.accepted.next(within: 0.3) == nil)
+        #expect(await clientEnded.next(within: 2) == true)   // the listener dropped it
+    }
+
+    @Test func aDialerRefusesAListenerThatSettlesOnAPlainPSKSuite() async throws {
+        // A listener holding our PSK that appends only 0xA8: our offer has it too (see `WiFiTLS`), so
+        // TLS completes on it.
+        let listener = try NWListener(using: handBuiltTLSParameters(wifiPSKA, appending: [0x00A8], listener: true))
+        let queue = DispatchQueue(label: "plain-psk.listener")
+        let ready = Inbox<UInt16>(), connections = Inbox<NWConnection>(), serverEnded = Inbox<Bool>()
+        listener.stateUpdateHandler = { [weak listener] state in
+            if case .ready = state { ready.put(listener?.port?.rawValue ?? 0) }
+        }
+        listener.newConnectionHandler = { connection in
+            connection.stateUpdateHandler = { state in
+                switch state {
+                case .failed, .cancelled: serverEnded.put(true)
+                default: break
+                }
+            }
+            connection.start(queue: queue)
+            connections.put(connection)
+        }
+        listener.start(queue: queue)
+        defer { listener.cancel() }
+        let port = try #require(await ready.next())
+        let dialer = NetworkStreamDialer(endpoint: .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!),
+                                         psk: wifiPSKA, options: .loopback)
+        let error = await #expect(throws: NetworkStreamError.self) { _ = try await dialer.connect(kind: .realtime) }
+        let server = await connections.next()
+        defer { server?.cancel() }
+        guard case .unexpectedTLS(let tls?)? = error else { Issue.record("threw \(String(describing: error))"); return }
+        #expect(tls.version == WiFiTLS.version && tls.cipherSuite != WiFiTLS.cipherSuite)
+        #expect(await serverEnded.next(within: 2) == true)   // the dialer dropped its connection
     }
 
     @Test func aListenerHoldingThreePSKsAcceptsEachIdentity() async throws {
@@ -555,5 +706,68 @@ func closedLoopbackPort() throws -> UInt16 {
 
     @Test func negotiatedTLSDescribesItself() {
         #expect(NegotiatedTLS(version: 0x0303, cipherSuite: 0xCCAC).description == "TLS 1.2 suite 0xCCAC")
+        #expect(WiFiTLS.required == NegotiatedTLS(version: 0x0303, cipherSuite: 0xCCAC))
+    }
+
+    @Test func pendingHandshakesEvictTheOldestOfTheSameAddressFirst() {
+        var pending = PendingHandshakes<Int>(limit: 4, perHost: 2)
+        let one = pending.admit(1, from: "a"), two = pending.admit(2, from: "a")
+        #expect(one.evicted.isEmpty && two.evicted.isEmpty && two.key > one.key)
+        let three = pending.admit(3, from: "a"), four = pending.admit(4, from: "b"), five = pending.admit(5, from: "c")
+        #expect(three.evicted == [1])   // a at its cap: a's oldest goes
+        #expect(four.evicted.isEmpty && five.evicted.isEmpty && pending.count == 4)
+        let six = pending.admit(6, from: "c"), seven = pending.admit(7, from: "d")
+        #expect(six.evicted == [5])     // at the total cap: the same address first
+        #expect(seven.evicted == [2])   // an address with none waiting: the oldest overall
+        #expect(pending.count == 4 && pending.count(from: "a") == 1 && pending.count(from: "d") == 1)
+        let removed = [one.key, five.key, seven.key, seven.key].map { pending.remove($0) }
+        #expect(removed == [nil, nil, 7, nil])   // evicted or removed: gone for good
+        let eight = pending.admit(8, from: "d")
+        #expect(eight.evicted.isEmpty && eight.key > seven.key)   // keys are never reused
+        let rest = pending.removeAll()
+        #expect(rest == [3, 4, 6, 8] && pending.count == 0)
+    }
+
+    @Test func aFloodEvictsItsOwnConnectionsFirst() {
+        var pending = PendingHandshakes<String>(limit: 32, perHost: 8)
+        _ = pending.admit("iPad", from: "fe80::1%awdl0")
+        // One address, or a few that each keep connections waiting, only ever evict their own.
+        let evicted = (0..<1_000).flatMap { pending.admit("idle", from: "attacker\($0 % 4)").evicted }
+        #expect(evicted.count == 1_000 - 31 && !evicted.contains("iPad"))
+        #expect(pending.count == 32 && pending.count(from: "fe80::1%awdl0") == 1)
+        // A fresh address per connection reaches the oldest overall, but only after the total cap's worth
+        // of newer connections: a real client is done long before.
+        var fresh = PendingHandshakes<String>(limit: 32, perHost: 8)
+        _ = fresh.admit("iPad", from: "fe80::1%awdl0")
+        let early = (0..<31).flatMap { fresh.admit("idle", from: "fresh\($0)").evicted }
+        let late = fresh.admit("idle", from: "fresh31").evicted
+        #expect(early.isEmpty && late == ["iPad"])
+    }
+
+    @Test func thePerAddressCapCountsAddressesNotPorts() {
+        let host = NetworkStreamListener.remoteHost
+        #expect(host(.hostPort(host: .ipv4(.loopback), port: 50_001)) == host(.hostPort(host: .ipv4(.loopback), port: 50_002)))
+        #expect(host(.hostPort(host: "127.0.0.1", port: 1)) == "127.0.0.1")
+        #expect(host(.hostPort(host: "192.168.1.20", port: 1)) != host(.hostPort(host: "192.168.1.21", port: 1)))
+        #expect(host(.service(name: "Mac mini", type: "_lain._tcp", domain: "local.", interface: nil)) == "")
+    }
+
+    @Test func dropReportsAreRateLimitedAndSummedUp() {
+        var reports = DropReports()
+        let window = UInt64(DropReports.window * 1e9)
+        let first = (0..<DropReports.limit).map { reports.rejected(at: 1_000 + UInt64($0)) }
+        #expect(first.allSatisfy { $0.report && !$0.summarize })
+        let over = reports.rejected(at: 2_000), again = reports.rejected(at: 3_000)
+        #expect(!over.report && over.summarize)   // counted; the first count schedules the one summary
+        #expect(!again.report && !again.summarize)
+        let evictions = [reports.evicted(3), reports.evicted(0)]
+        #expect(evictions == [false, false])      // counted into the summary already scheduled
+        let summary = reports.takeSummary()
+        #expect(summary.unreported == 2 && summary.evicted == 3)
+        // The next window reports again; the next count schedules the next summary.
+        let nextWindow = reports.rejected(at: 1_000 + window), nextEviction = reports.evicted(1)
+        #expect(nextWindow.report && nextEviction)
+        let next = reports.takeSummary()
+        #expect(next.unreported == 0 && next.evicted == 1)
     }
 }

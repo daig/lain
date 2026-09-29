@@ -42,9 +42,10 @@ public struct FrameHeader: Equatable, Sendable {
     public var timestampNs: UInt64
     public var payloadLength: UInt32
 
-    public init(version: UInt8 = LainProtocol.majorVersion, type: MessageType, flags: HeaderFlags = [],
+    /// `version` nil: `LainProtocol.majorVersion`.
+    public init(version: UInt8? = nil, type: MessageType, flags: HeaderFlags = [],
                 sequence: UInt32, timestampNs: UInt64, payloadLength: UInt32) {
-        self.version = version
+        self.version = version ?? LainProtocol.majorVersion
         self.type = type
         self.flags = flags
         self.sequence = sequence

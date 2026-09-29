@@ -109,11 +109,11 @@ public struct Envelope: Sendable, Equatable {
 }
 
 public enum MessageCodec {
-    /// Header + payload, ready to write to a connection. `version` goes in the header; pass another one
-    /// only to answer a mismatched peer with an `Error(versionMismatch)` it can parse (the `ErrorMessage`
-    /// payload is unchanged since v1; §7.5).
+    /// Header + payload, ready to write to a connection. `version` goes in the header (nil:
+    /// `LainProtocol.majorVersion`); pass another one only to answer a mismatched peer with an
+    /// `Error(versionMismatch)` it can parse (the `ErrorMessage` payload is unchanged since v1; §7.5).
     public static func encode(_ message: Message, sequence: UInt32, timestampNs: UInt64,
-                              flags: HeaderFlags? = nil, version: UInt8 = LainProtocol.majorVersion) -> [UInt8] {
+                              flags: HeaderFlags? = nil, version: UInt8? = nil) -> [UInt8] {
         var body = ByteWriter(capacity: 64)
         message.payload.encode(into: &body)
         var w = ByteWriter(capacity: FrameHeader.size + body.bytes.count)

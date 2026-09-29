@@ -60,10 +60,11 @@ public struct USBMuxDialer: StreamDialer {
     public let deviceID: Int
     public let port: UInt16
 
-    public init(client: USBMuxClient = USBMuxClient(), deviceID: Int, port: UInt16 = LainProtocol.usbPort) {
+    /// `port` nil: `LainProtocol.usbPort`.
+    public init(client: USBMuxClient = USBMuxClient(), deviceID: Int, port: UInt16? = nil) {
         self.client = client
         self.deviceID = deviceID
-        self.port = port
+        self.port = port ?? LainProtocol.usbPort
     }
 
     public func dial() async throws -> any ByteStream {
@@ -594,9 +595,10 @@ public final class ClientLinkListener: Sendable {
     private let acceptor: LinkAcceptor
 
     /// - Parameters:
+    ///   - port: nil: `LainProtocol.usbPort`; 0 picks an ephemeral port (tests).
     ///   - acceptsPairing: accept a zero-HMAC hello plus `Pair` (true for the USB listener: the cable
     ///     and "Trust This Computer" are the authorization, D13).
-    public convenience init(port: UInt16 = LainProtocol.usbPort, secrets: some SecretStore,
+    public convenience init(port: UInt16? = nil, secrets: some SecretStore,
                             peerID: String = PairingAccounts.usbHost, acceptsPairing: Bool,
                             onLink: @escaping @Sendable (Link) -> Void) throws {
         try self.init(port: port, secrets: secrets, peerID: peerID, acceptsPairing: acceptsPairing,
@@ -605,7 +607,7 @@ public final class ClientLinkListener: Sendable {
 
     /// With the details of each accepted link (which account matched, whether it paired) and of each
     /// refused connection (`LinkAcceptor`'s `onReject`: `versionMismatch` means the Mac runs another lain).
-    public init(port: UInt16 = LainProtocol.usbPort, secrets: some SecretStore,
+    public init(port: UInt16? = nil, secrets: some SecretStore,
                 peerID: String = PairingAccounts.usbHost, acceptsPairing: Bool,
                 onReject: @escaping @Sendable (any Error) -> Void,
                 onLink: @escaping @Sendable (AcceptedLink) -> Void) throws {
@@ -616,7 +618,7 @@ public final class ClientLinkListener: Sendable {
                                     onReject: onReject, onLink: onLink)
         self.acceptor = acceptor
         let queue = DispatchQueue(label: "lain.client.listener", qos: .userInitiated)
-        listener = try TCPListener(port: port, queue: queue) { socket in
+        listener = try TCPListener(port: port ?? LainProtocol.usbPort, queue: queue) { socket in
             socket.setNoDelay()
             acceptor.accept(socket)
         }

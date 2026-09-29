@@ -41,16 +41,23 @@ public struct WiFiPSK: Sendable, CustomStringConvertible, CustomReflectable {
     }
 }
 
-/// TLS for Wi-Fi links (D29): TLS 1.2 only, `TLS_ECDHE_PSK_WITH_CHACHA20_POLY1305_SHA256` (0xCCAC)
-/// only, so every connection gets forward secrecy on top of the PSK. Network.framework can't do TLS 1.3
-/// with an external PSK (-9858, measured 2026-09-29), and the new `NetworkConnection` API has no PSK
-/// support, hence the classic `sec_protocol_options`. Tickets and resumption are off: every connection
-/// proves a PSK the listener holds now.
+/// TLS for Wi-Fi links (D29): TLS 1.2 with `TLS_ECDHE_PSK_WITH_CHACHA20_POLY1305_SHA256` (0xCCAC), so
+/// every connection gets forward secrecy on top of the PSK. Appending the suite only puts it first: with
+/// a PSK set, Network.framework also enables the plain-PSK suites 0xA8, 0xA9, 0xAF and 0xAE (no forward
+/// secrecy), and no public API removes them (measured 2026-09-29). A lain listener's preference order
+/// picks 0xCCAC whenever the client offers it, and `NetworkStream` refuses any connection, dialed or
+/// accepted, that negotiated anything else (`NetworkStreamError.unexpectedTLS`). Network.framework
+/// can't do TLS 1.3 with an external PSK (-9858, measured 2026-09-29), and the new `NetworkConnection`
+/// API has no PSK support, hence the classic `sec_protocol_options`. Tickets and resumption are off:
+/// every connection proves a PSK the listener holds now.
 public enum WiFiTLS {
     /// `tls_protocol_version_t.TLSv12`.
     public static let version: UInt16 = 0x0303
     /// `tls_ciphersuite_t` has no PSK cases, so the suite goes in by raw value.
     public static let cipherSuite: UInt16 = 0xCCAC
+    /// What every Wi-Fi connection must negotiate: a dial or an accept that ends up with anything else
+    /// fails.
+    public static var required: NegotiatedTLS { NegotiatedTLS(version: version, cipherSuite: cipherSuite) }
 
     /// The dialer (the iPad) offers its one pairing's PSK.
     public static func clientOptions(_ psk: WiFiPSK) -> NWProtocolTLS.Options { options([psk]) }
