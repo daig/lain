@@ -9,6 +9,7 @@
 #   Scripts/ipad.sh --launch-only   # launch the installed app
 #   Scripts/ipad.sh --no-console    # launch without streaming the console (returns once lain is launched)
 # Options combine, in any order, with a device.
+#   Scripts/ipad.sh --print-udid    # print the first connected iPad's UDID, which the others would use
 set -euo pipefail
 self=${0:A}
 cd "${0:A:h}/.."
@@ -19,7 +20,7 @@ APP=build/DerivedData/Build/Products/Debug-iphoneos/LainClient.app
 usage() { awk 'NR > 1 && /^#/ { sub(/^# ?/, ""); print; next } NR > 1 { exit }' "$self"; }
 bad_usage() { print -u2 "ipad.sh: $1"; usage >&2; exit 2; }
 
-build=1 install=1 launch=1 console=1 device=
+build=1 install=1 launch=1 console=1 print_udid=0 device=
 for arg; do
   case $arg in
     --no-build) build=0 ;;
@@ -27,12 +28,14 @@ for arg; do
     --install-only) build=0 launch=0 ;;
     --launch-only) build=0 install=0 ;;
     --no-console) console=0 ;;
+    --print-udid) print_udid=1 ;;
     -h|--help) usage; exit 0 ;;
     -*) bad_usage "unknown option $arg" ;;
     *) [[ -z $device ]] || bad_usage "two devices: $device and $arg"; device=$arg ;;
   esac
 done
 (( build || install || launch )) || bad_usage "those options leave nothing to do"
+(( ! print_udid || $# == 1 )) || bad_usage "--print-udid takes no other arguments"
 
 # First physical iPad that devicectl can reach (paired, connected), unless one was given.
 first_ipad() {
@@ -48,7 +51,8 @@ PY
   rm -f "$json"
 }
 device="${device:-$(first_ipad)}"
-[[ -n "$device" ]] || { echo "No connected iPad (pair it, enable Developer Mode, unlock it)."; exit 1; }
+[[ -n "$device" ]] || { echo "No connected iPad (pair it, enable Developer Mode, unlock it)." >&2; exit 1; }
+if (( print_udid )); then print -r -- "$device"; exit 0; fi
 
 if (( build )); then
   Scripts/bootstrap.sh --if-stale
