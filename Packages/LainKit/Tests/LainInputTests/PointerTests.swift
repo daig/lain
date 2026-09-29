@@ -137,3 +137,15 @@ private let frame: UInt64 = 8_333_333   // 120 Hz
         #expect(b.mask == 0)
     }
 }
+
+@Suite struct FractionalDeltas {
+    @Test func iPadOS27FractionalDeltasAreApplied() throws {
+        // iPadOS 27 sends fractional GCMouse deltas (e.g. 1.71, -0.24; InputLab 2026-09-28).
+        var p = PointerTracker(width: 1376, height: 1032, curve: AccelerationCurve(sensitivity: 1, acceleration: 0))
+        let r = p.move(dx: 1.71, dy: -0.24, at: 8_333_333, buttons: 0)
+        let m = try #require(r)
+        #expect(abs(Double(m.dx) - 1.71) < 1e-6 && abs(Double(m.dy) - 0.24) < 1e-6)
+        let z = p.move(dx: 0.0, dy: -0.0, at: 16_666_666, buttons: 0)
+        #expect(z == nil)
+    }
+}

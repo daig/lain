@@ -1,7 +1,7 @@
 import Darwin
 import LainProtocol
 
-/// A macOS-like pointer acceleration curve over GCMouse's integer deltas (§6.3). Tunable; the
+/// A macOS-like pointer acceleration curve over GCMouse deltas (§6.3). Tunable; the
 /// constants are placeholders until they're tuned side by side with a real Mac trackpad (M2).
 public struct AccelerationCurve: Sendable, Equatable {
     /// Points per count at low speed.
@@ -73,9 +73,9 @@ public struct PointerTracker: Sendable {
         clamp()
     }
 
-    /// Applies one GCMouse delta (y up-positive). Returns nil for zero deltas, which iPadOS sends while
-    /// fingers rest (§13).
-    public mutating func move(dx: Int, dy: Int, at timeNs: UInt64, buttons: UInt8) -> PointerMove? {
+    /// Applies one GCMouse delta (y up-positive). Deltas were integers on iPadOS 26.7 and are
+    /// fractional on 27 (§13). Returns nil for zero deltas, which iPadOS sends while fingers rest.
+    public mutating func move(dx: Double, dy: Double, at timeNs: UInt64, buttons: UInt8) -> PointerMove? {
         guard dx != 0 || dy != 0 else { return nil }
         // GCMouse reports every ~8.3 ms while moving, so after a pause the first delta covers about one
         // frame of motion, not the whole pause.
@@ -84,11 +84,11 @@ public struct PointerTracker: Sendable {
             interval = max(timeNs - last, Self.minIntervalNs)
         }
         lastEventNs = timeNs
-        let counts = (Double(dx * dx + dy * dy)).squareRoot()
+        let counts = (dx * dx + dy * dy).squareRoot()
         let speed = counts / (Double(interval) / 1e9)
         let scale = curve.sensitivity * curve.gain(speed: speed)
-        let mx = Double(dx) * scale
-        let my = -Double(dy) * scale   // GCMouse y is up-positive; the Mac's is down-positive
+        let mx = dx * scale
+        let my = -dy * scale   // GCMouse y is up-positive; the Mac's is down-positive
         x += mx
         y += my
         clamp()

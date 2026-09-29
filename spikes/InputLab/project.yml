@@ -20,7 +20,6 @@ targets:
       properties:
         CFBundleDisplayName: Input Lab
         UILaunchScreen: {}
-        UIRequiresFullScreen: true
         UIStatusBarHidden: true
         UIApplicationSupportsIndirectInputEvents: true
         UIFileSharingEnabled: true
