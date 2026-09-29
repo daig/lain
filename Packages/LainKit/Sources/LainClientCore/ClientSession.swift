@@ -28,6 +28,9 @@ public final class ClientSession: Sendable {
 
     public let port: UInt16
     public let input: ClientInput
+    /// Video (M3): decode, render slot, keyframe requests, cursor shapes. nil keeps the M1/M2
+    /// behaviour of acking frames without decoding them.
+    public let video: ClientVideoPipeline?
     private let listener: ClientLinkListener
     private let current: CurrentLink
 
@@ -35,10 +38,11 @@ public final class ClientSession: Sendable {
     ///   - port: 47800 on the iPad; 0 in tests (the bound port is `port`).
     ///   - onStatus: called from the link's queues; hop to the main actor for UI.
     public init(port: UInt16 = LainProtocol.usbPort, secrets: some SecretStore, hello: Hello,
-                input: ClientInput = ClientInput(), onStatus: @escaping @Sendable (Status) -> Void) throws {
+                input: ClientInput = ClientInput(), video: ClientVideoPipeline? = nil, onStatus: @escaping @Sendable (Status) -> Void) throws {
         let current = CurrentLink()
         self.current = current
         self.input = input
+        self.video = video
         let log = Telemetry.logger("client")
         listener = try ClientLinkListener(port: port, secrets: secrets, acceptsPairing: true) { link in
             let previous = current.replace(with: link)
@@ -71,15 +75,27 @@ public final class ClientSession: Sendable {
                     publish()
                 case .cursorWarp(let w):
                     input.warp(x: w.x, y: w.y)
+                case .cursorShape, .cursorSelect:
+                    video?.cursor.apply(env.message)
                 default:
                     break
                 }
             }
             link.realtime.setHandler(control)
+            if let video {
+                let realtime = link.realtime, videoChannel = link.video
+                video.connect(control: { realtime.send($0) }, video: { videoChannel.send($0) })
+            }
             link.video.setHandler { env in
-                guard case .videoFrame(let f) = env.message else { return control(env) }
-                link.video.send(.frameAck(FrameAck(frameId: f.frameId, receivedAtNs: MonotonicClock.now(),
-                                                   bytes: UInt32(f.data.count))))
+                if let video {
+                    // Decodes and acks frames itself (§7.3), and sees every envelope for gap detection.
+                    guard video.handleVideo(env) else { return control(env) }
+                    guard case .videoFrame = env.message else { return }
+                } else {
+                    guard case .videoFrame(let f) = env.message else { return control(env) }
+                    link.video.send(.frameAck(FrameAck(frameId: f.frameId, receivedAtNs: MonotonicClock.now(),
+                                                       bytes: UInt32(f.data.count))))
+                }
                 let n = frames.add(1, ordering: .relaxed).newValue
                 if n % 30 == 0 {
                     info.withLock { $0.framesReceived = n }
@@ -90,6 +106,7 @@ public final class ClientSession: Sendable {
             link.realtime.setCloseHandler { _ in
                 guard current.clear(ifCurrent: link) else { return }
                 input.disconnect()
+                video?.disconnect()
                 link.close()
                 onStatus(.listening(port: current.port))
             }
@@ -105,6 +122,7 @@ public final class ClientSession: Sendable {
         listener.cancel()
         if let link = current.replace(with: nil) {
             input.disconnect()
+            video?.disconnect()
             link.close()
         }
     }

@@ -1,22 +1,28 @@
 import GameController
 import LainClientCore
 import os
+import Synchronization
 import UIKit
 
-/// The client's one screen (§6.4, §6.6): captures the Magic Keyboard and trackpad under pointer lock
-/// and feeds `ClientInput`, shows the connection state, a local cursor dot (until video exists, M3),
-/// and the D19 overlay while the pointer isn't captured. All input logic lives in
-/// `ClientInputPipeline`; this class only adapts UIKit and GameController to it.
+/// The client's one screen (§6.2, §6.4, §6.6): captures the Magic Keyboard and trackpad under pointer
+/// lock and feeds `ClientInput`; hosts the stream's `CAMetalLayer`, driven by `StreamRenderLoop`
+/// (CAMetalDisplayLink at 120 Hz on its own thread: input tick, newest decoded frame, local cursor);
+/// shows the connection state only while there's no video, the D19 overlay while the pointer isn't
+/// captured, and a HUD toggled with **Ctrl-Opt-Cmd-L** (matched by the character "l" the iPad layout
+/// produces, D18; the combo also reaches the Mac, where nothing uses it by default). All input logic
+/// lives in `ClientInputPipeline`; this class only adapts UIKit and GameController to it.
 ///
 /// GameController handlers are `@Sendable` closures that capture only `input`, and their
 /// `handlerQueue` is `input.queue`, so they run on the input queue with no hop and never touch the
 /// main actor.
 final class StreamViewController: UIViewController, UIGestureRecognizerDelegate {
     let input: ClientInput
+    let video: ClientVideoPipeline
 
     var status = ClientStatus.waitingForMac {
         didSet {
             UIApplication.shared.isIdleTimerDisabled = status.isConnected
+            connected.set(status.isConnected)
             render()
         }
     }
@@ -24,15 +30,20 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     private let titleLabel = UILabel()
     private let detailLabel = UILabel()
     private let overlay = UILabel()
-    private let cursorDot = UIView(frame: CGRect(x: 0, y: 0, width: 10, height: 10))
-    private var displayLink: CADisplayLink?
+    private let hud = UILabel()
+    /// Read by the render thread: draw the local cursor only while a session is up.
+    private let connected = SharedFlag()
+    private var renderLoop: StreamRenderLoop?
+    private var uiTimer: Timer?
+    private var hasVideo = false
     private var observers: [NSObjectProtocol] = []
     private var pointerLocked = false
     private var lastScrollTranslation = CGPoint.zero
     private var lastWheelTranslation = CGPoint.zero
 
-    init(input: ClientInput) {
+    init(input: ClientInput, video: ClientVideoPipeline) {
         self.input = input
+        self.video = video
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -52,26 +63,29 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         super.viewDidLoad()
         view.backgroundColor = .black
         overrideUserInterfaceStyle = .dark   // secondaryLabel etc. must read on the black stream background
+        setUpRendering()
         setUpLabels()
         setUpGestures()
-        cursorDot.backgroundColor = .white
-        cursorDot.layer.cornerRadius = 5
-        cursorDot.layer.borderColor = UIColor.black.cgColor
-        cursorDot.layer.borderWidth = 1
-        cursorDot.isUserInteractionEnabled = false
-        cursorDot.isHidden = true
-        view.addSubview(cursorDot)
 
         input.setPointerEnabled(false)   // D19: nothing from the trackpad until the pointer is locked
         observe()
         GCMouse.mice().forEach(attach(mouse:))
         if let keyboard = GCKeyboard.coalesced { attach(keyboard: keyboard) }
 
-        let link = CADisplayLink(target: self, selector: #selector(tick))
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 80, maximum: 120, preferred: 120)
-        link.add(to: .main, forMode: .common)
-        displayLink = link
         render()
+    }
+
+    override func viewDidLayoutSubviews() {
+        super.viewDidLayoutSubviews()
+        guard let layer = renderLoop?.layer else { return }
+        // Drawable = the view in pixels: 2752×2064 on the 13" iPad Pro full screen, 1:1 with the stream.
+        let scale = traitCollection.displayScale
+        CATransaction.begin()
+        CATransaction.setDisableActions(true)
+        layer.frame = view.bounds
+        layer.contentsScale = scale
+        layer.drawableSize = CGSize(width: (view.bounds.width * scale).rounded(), height: (view.bounds.height * scale).rounded())
+        CATransaction.commit()
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -130,7 +144,71 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         guard isViewLoaded else { return }
         titleLabel.text = status.title
         detailLabel.text = status.detail
+        titleLabel.isHidden = hasVideo
+        detailLabel.isHidden = hasVideo
         overlay.isHidden = pointerLocked
+    }
+
+    // MARK: Rendering (M3)
+
+    /// The Metal layer sits behind everything; the render loop's display link also ticks the input
+    /// pipeline (momentum, key repeat), replacing M2's CADisplayLink.
+    private func setUpRendering() {
+        let input = self.input, connected = self.connected
+        do {
+            let loop = try StreamRenderLoop(
+                video: video,
+                cursorPosition: {
+                    // Streamed-display points. The integrator rewires this to the multi-display
+                    // snapshot (nil while the cursor is on another Mac display).
+                    let c = input.cursor
+                    guard connected.value, c.displayPointWidth > 0, c.displayPointHeight > 0 else { return nil }
+                    return (c.x, c.y)
+                },
+                displayPointSize: {
+                    let c = input.cursor
+                    return c.displayPointWidth > 0 && c.displayPointHeight > 0 ? (c.displayPointWidth, c.displayPointHeight) : nil
+                },
+                tick: { input.tick() })
+            view.layer.addSublayer(loop.layer)
+            loop.start()
+            renderLoop = loop
+        } catch {
+            Self.log.error("renderer unavailable: \(String(describing: error), privacy: .public)")
+        }
+
+        hud.font = .monospacedSystemFont(ofSize: 12, weight: .regular)
+        hud.textColor = .white
+        hud.backgroundColor = UIColor.black.withAlphaComponent(0.55)
+        hud.numberOfLines = 0
+        hud.isHidden = true
+        hud.isUserInteractionEnabled = false
+        hud.accessibilityIdentifier = "stream.hud"
+        hud.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(hud)
+        NSLayoutConstraint.activate([
+            hud.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 8),
+            hud.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
+        ])
+
+        // 4 Hz: whether video is up (hides the connect status) and the HUD's numbers.
+        uiTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
+            MainActor.assumeIsolated { self?.refreshVideoState() }
+        }
+    }
+
+    private func refreshVideoState() {
+        let hasVideo = video.hasVideo
+        if hasVideo != self.hasVideo {
+            self.hasVideo = hasVideo
+            render()
+        }
+        if !hud.isHidden { hud.text = video.stats().hudText }
+    }
+
+    private func toggleHUD() {
+        hud.isHidden.toggle()
+        if !hud.isHidden { hud.text = video.stats().hudText }
     }
 
     // MARK: Pointer lock (D19)
@@ -181,7 +259,9 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         mouse.handlerQueue = input.queue
         guard let mouseInput = mouse.mouseInput else { return }
         let input = self.input
+        let cursor = video.cursor
         mouseInput.mouseMovedHandler = { @Sendable _, dx, dy in
+            cursor.pointerMoved()   // shows the cursor again after typing (§5.4)
             input.mouseMoved(dx: Double(dx), dy: Double(dy))
         }
         let buttons: [(MouseButton, GCControllerButtonInput?)] = [
@@ -198,8 +278,11 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     private func attach(keyboard: GCKeyboard) {
         keyboard.handlerQueue = input.queue
         let input = self.input
+        let cursor = video.cursor
         keyboard.keyboardInput?.keyChangedHandler = { @Sendable _, _, keyCode, pressed in
             guard let usage = UInt16(exactly: keyCode.rawValue) else { return }
+            // Hide while typing: any non-modifier key-down hides the cursor until the pointer moves.
+            if pressed, !(0xE0...0xE7).contains(usage) { cursor.keyDown() }
             input.keyChanged(PhysicalKey(usage: usage), isDown: pressed)
         }
     }
@@ -211,6 +294,12 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) { handle(presses, isDown: false) }
     override func pressesChanged(_ presses: Set<UIPress>, with event: UIPressesEvent?) {}
 
+    /// Ctrl-Opt-Cmd-L, by the character the iPad layout produces (D18; Colemak "l" is QWERTY "U").
+    private static func isHUDShortcut(_ key: UIKey) -> Bool {
+        let mods = key.modifierFlags.intersection([.control, .alternate, .command, .shift])
+        return mods == [.control, .alternate, .command] && key.charactersIgnoringModifiers.lowercased() == "l"
+    }
+
     private func handle(_ presses: Set<UIPress>, isDown: Bool) {
         for press in presses {
             guard let key = press.key else { continue }
@@ -219,6 +308,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
                 input.keyChanged(.globe, isDown: isDown)   // GCKeyboard never reports Globe
             } else if isDown, let u = UInt16(exactly: usage) {
                 input.learnCharacter(PhysicalKey(usage: u), key.charactersIgnoringModifiers)
+                if Self.isHUDShortcut(key) { toggleHUD() }
             }
         }
     }
@@ -316,18 +406,11 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         default: nil
         }
     }
+}
 
-    // MARK: Display link: momentum, key repeat, cursor dot
-
-    @objc private func tick() {
-        input.tick()
-        let c = input.cursor
-        guard status.isConnected, c.displayPointWidth > 0, c.displayPointHeight > 0 else {
-            cursorDot.isHidden = true
-            return
-        }
-        cursorDot.isHidden = false
-        let b = view.bounds
-        cursorDot.center = CGPoint(x: c.x / c.displayPointWidth * b.width, y: c.y / c.displayPointHeight * b.height)
-    }
+/// A Bool shared between the main actor (writer) and the render thread (reader).
+final class SharedFlag: Sendable {
+    private let state = Atomic<Bool>(false)
+    var value: Bool { state.load(ordering: .relaxed) }
+    func set(_ value: Bool) { state.store(value, ordering: .relaxed) }
 }
