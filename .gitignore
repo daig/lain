@@ -14,3 +14,5 @@ build/
 # SwiftPM
 .build/
 .swiftpm/
+# Agent worktrees (Claude Code workflows)
+.claude/worktrees/
