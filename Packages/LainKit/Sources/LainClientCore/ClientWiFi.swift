@@ -25,7 +25,7 @@ public struct ClientWiFiConfig: Sendable {
     public var maxBackoff = 8.0
     /// After a failed dial (TLS, refused, timeout…), for that service (not host id: one id can be
     /// advertised twice): this, doubling up to `maxBackoff`. A service that keeps refusing this iPad's
-    /// key is retried every `maxBackoff`.
+    /// key is retried every `maxBackoff`. The end of a USB link clears all of it.
     public var serviceBackoff = 0.5
     /// A discovery that failed is recreated after this, doubling up to `maxDiscoveryBackoff`.
     public var discoveryBackoff = 1.0
@@ -193,7 +193,8 @@ final class WiFiLoop {
         let task: Task<Void, Never>
     }
 
-    /// A discovered service's dial history, kept while discovery lists it.
+    /// A discovered service's dial history, kept while discovery lists it; its failures are cleared by a
+    /// session with it that got `HelloAck`, and by the end of a USB link.
     struct Service {
         var backoff: Backoff
         /// No dial to it before this (`MonotonicClock` ns).
@@ -206,6 +207,13 @@ final class WiFiLoop {
         var keyRefusals = 0
 
         var refusesKey: Bool { keyRefusals >= WiFiLoop.refusedAfter }
+
+        /// Forgets its failures (backoff, wait, refusals), not its turn: `lastAttemptAt` stays.
+        mutating func clearFailures() {
+            backoff.reset()
+            until = 0
+            keyRefusals = 0
+        }
     }
 
     let config: ClientWiFiConfig
@@ -314,11 +322,7 @@ extension SessionCore {
         guard let w = wifi else { return }
         w.config.lastHost.set(host.hostId)
         w.config.lastHost.setService(host.hostId, WiFiDialPlan.serviceKey(host.endpoint))
-        guard var service = w.services[host.endpoint] else { return }
-        service.backoff.reset()
-        service.until = 0
-        service.keyRefusals = 0
-        w.services[host.endpoint] = service
+        w.services[host.endpoint]?.clearFailures()
     }
 
     /// The current link ended: when the next dial may happen.
@@ -328,6 +332,11 @@ extension SessionCore {
         switch via {
         case .usb:
             w.graceUntil = now + Self.ns(w.config.grace)
+            // The Mac reloads its Wi-Fi keys at each USB link-up (§7.7 D29 decision 9), which is what fixes
+            // a listener that refused this iPad's key (its service keeps its name): each service is dialed
+            // again after the grace, in turn. At the end, not the start: a dial in flight when the cable
+            // came may be refused after it.
+            for endpoint in w.services.keys { w.services[endpoint]?.clearFailures() }
         case .wifi(let host):
             if outcome.error == .busy {
                 let delay = Swift.max(w.config.busyBackoff, w.linkFailures.take())
