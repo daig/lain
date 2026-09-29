@@ -17,8 +17,10 @@ public final class ClientEndpoint: Sendable {
     private let listener: ClientLinkListener
     private let current: CurrentLink
 
-    public init(port: UInt16 = LainProtocol.usbPort, secrets: some SecretStore, hello: Hello,
+    /// `port` nil: `LainProtocol.usbPort`; 0 picks an ephemeral port (tests).
+    public init(port: UInt16? = nil, secrets: some SecretStore, hello: Hello,
                 onStatus: @escaping @Sendable (Status) -> Void) throws {
+        let port = port ?? LainProtocol.usbPort
         let current = CurrentLink()
         self.current = current
         let log = Telemetry.logger("client")

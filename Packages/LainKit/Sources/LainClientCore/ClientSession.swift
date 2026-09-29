@@ -69,10 +69,10 @@ public final class ClientSession: Sendable {
     private let core: SessionCore
 
     /// - Parameters:
-    ///   - port: 47800 on the iPad; 0 in tests (the bound port is `port`).
+    ///   - port: nil: `LainProtocol.usbPort` (the iPad); 0 in tests (the bound port is `port`).
     ///   - wifi: nil keeps the session USB-only.
     ///   - onStatus: called in order on the session's queue; hop to the main queue for UI.
-    public init(port: UInt16 = LainProtocol.usbPort, secrets: some SecretStore, hello: Hello,
+    public init(port: UInt16? = nil, secrets: some SecretStore, hello: Hello,
                 input: ClientInput = ClientInput(), video: ClientVideoPipeline? = nil, wifi: ClientWiFiConfig? = nil,
                 onStatus: @escaping @Sendable (Status) -> Void) throws {
         let core = SessionCore(secrets: secrets, hello: hello, input: input, video: video, wifi: wifi, onStatus: onStatus)
