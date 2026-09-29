@@ -32,16 +32,34 @@ final class RecordingSink: InputSink {
     func setKeyboardType(_ type: KeyboardType) { log.withLock { $0.append(.keyboardType(type)) } }
 }
 
+/// Counts as `IOPMPowerAssertions` does (`PowerAssertionCount`): held while begins outnumber ends.
+/// `creates` and `releases` are how often the IOKit assertion would be created (0 → 1) and released
+/// (1 → 0), so a hand-over that lets it lapse shows up as a release.
 final class RecordingPower: PowerAssertions {
-    private struct State { var holding = false; var begins = 0; var ends = 0; var activity = 0 }
+    private struct State {
+        var count = PowerAssertionCount()
+        var begins = 0, ends = 0, creates = 0, releases = 0, activity = 0
+    }
     private let state = Mutex(State())
-    var holding: Bool { state.withLock { $0.holding } }
+    var holding: Bool { state.withLock { $0.count.count > 0 } }
     var begins: Int { state.withLock { $0.begins } }
     var ends: Int { state.withLock { $0.ends } }
+    var creates: Int { state.withLock { $0.creates } }
+    var releases: Int { state.withLock { $0.releases } }
     var activityCount: Int { state.withLock { $0.activity } }
 
-    func beginPreventingDisplaySleep() { state.withLock { $0.holding = true; $0.begins += 1 } }
-    func endPreventingDisplaySleep() { state.withLock { $0.holding = false; $0.ends += 1 } }
+    func beginPreventingDisplaySleep() {
+        state.withLock { s in
+            s.begins += 1
+            if s.count.begin() { s.creates += 1 }
+        }
+    }
+    func endPreventingDisplaySleep() {
+        state.withLock { s in
+            s.ends += 1
+            if s.count.end() { s.releases += 1 }
+        }
+    }
     func declareUserActivity() { state.withLock { $0.activity += 1 } }
 }
 

@@ -221,9 +221,11 @@ import Testing
         #expect(ack.hostId == Self.identity.id && ack.hostName == Self.identity.name)
         #expect(await rig.reaches(.connected(deviceModel: "iPad16,6")))   // via USB
         #expect(await ipad.closed.next() == true)
-        // Exactly one release, before the USB session's setup; the assertion never lapsed.
+        // Exactly one release, before the USB session's setup; the assertion never lapsed (the USB session
+        // began before the Wi-Fi one ended: never released, held throughout).
         #expect(rig.sink.calls == [.keyboardType(.ansi), .key(down), .releaseAll, .keyboardType(.iso)])
         #expect(rig.power.begins == 2 && rig.power.ends == 1 && rig.power.holding)
+        #expect(rig.power.creates == 1 && rig.power.releases == 0)
         #expect(rig.session.status == .connected(deviceModel: "iPad16,6", via: .usb))
         #expect(rig.session.status.title == "Connected to iPad16,6 over USB")
     }
@@ -259,6 +261,7 @@ import Testing
         let start = ContinuousClock.now
         let port = try #require(await rig.listening())
         #expect(await eventually { rig.session.usbDeviceDialed == 7 })
+        let dialed = ContinuousClock.now   // the window began between `start` and now (the attach)
 
         let early = try await WiFiIPad.connect(port: port, secret: secret)
         defer { early.link.close() }
@@ -267,7 +270,7 @@ import Testing
         #expect(await early.closed.next(within: 3) == true)
 
         // Once USB has had its chance, Wi-Fi is let in.
-        try await Task.sleep(until: start + .milliseconds(1700), clock: .continuous)
+        try await Task.sleep(until: dialed + .milliseconds(1700), clock: .continuous)
         let late = try await WiFiIPad.connect(port: port, secret: secret)
         defer { late.link.close() }
         #expect(late.helloAck != nil)
@@ -304,6 +307,86 @@ import Testing
         #expect(await rig.reaches(.connected(deviceModel: "iPad16,6", via: late.link.transport)))
     }
 
+    /// The case the window exists for: the iPad is plugged in behind a device without lain (an iPhone
+    /// charging), whose fast retries take about 2 s. The iPad's window counts from its attach, so it dials
+    /// over Wi-Fi in vain meanwhile, and its session comes up over USB with no Wi-Fi session in between.
+    @Test func anIPadWaitingBehindAnotherDeviceIsKeptForUSB() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        let rig = try Rig(stored: [Self.serial: secret], usb: [PairingAccounts.usbHost: secret],
+                          devices: [.init(deviceID: 3, serialNumber: "IPHONE-3", acceptsConnect: false),
+                                    .init(deviceID: 7, serialNumber: Self.serial)])
+        defer { rig.tearDown() }
+        let port = try #require(await rig.listening())
+        #expect(await eventually { rig.session.usbDeviceDialed == 3 })
+
+        let wifi = try await WiFiIPad.connect(port: port, secret: secret)
+        defer { wifi.link.close() }
+        #expect(wifi.reply == .error(ErrorMessage(code: .busy, message: "this iPad is on USB")))
+        #expect(rig.session.usbDeviceDialed == 3)   // still waiting its turn: the window came from its attach
+
+        let usb = try #require(await rig.usb.links.next(within: 5))
+        defer { usb.close() }
+        #expect(await rig.usb.received.first { if case .helloAck = $0 { true } else { false } } != nil)
+        #expect(await rig.reaches(.connected(deviceModel: "iPad16,6")))
+        #expect(rig.sink.calls == [.keyboardType(.iso)])   // no Wi-Fi session ever started
+        #expect(rig.power.begins == 1)
+    }
+
+    /// The window restarts at the waiting iPad's first dial: however long the device ahead of it took,
+    /// USB gets its full window once it is the iPad's turn.
+    @Test func theWindowRestartsWhenAWaitingIPadIsFirstDialed() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        var wifi = Rig.wifi
+        wifi.usbPreference = .milliseconds(1500)
+        var tuning = HostSession.Tuning()
+        tuning.fastRetries = 25   // the iPhone's turn: 25 × 100 ms, well past the window from the attach
+        let rig = try Rig(stored: [Self.serial: secret],
+                          devices: [.init(deviceID: 3, serialNumber: "IPHONE-3", acceptsConnect: false),
+                                    .init(deviceID: 7, serialNumber: Self.serial, acceptsConnect: false)],
+                          wifi: wifi, tuning: tuning)
+        defer { rig.tearDown() }
+        let port = try #require(await rig.listening())
+        #expect(await eventually { rig.session.usbDeviceDialed == 3 })
+        let attached = ContinuousClock.now   // usbmuxd reported both devices together
+        #expect(await eventually { rig.session.usbDeviceDialed == 7 })
+        #expect(ContinuousClock.now - attached > .milliseconds(1500))   // the window from the attach is over
+
+        let ipad = try await WiFiIPad.connect(port: port, secret: secret)
+        defer { ipad.link.close() }
+        #expect(ipad.reply == .error(ErrorMessage(code: .busy, message: "this iPad is on USB")))
+    }
+
+    /// Two devices failing over USB take turns, but hand-overs back to the iPad don't restart its window:
+    /// Wi-Fi gets in once the window from its first dial is over, instead of being busy for good.
+    @Test func handOversBetweenFailingDevicesDontKeepWiFiBusy() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        var wifi = Rig.wifi
+        wifi.usbPreference = .milliseconds(1500)
+        var tuning = HostSession.Tuning()
+        tuning.fastRetries = 5   // a hand-over about every 0.5 s: the iPad is dialed again about every second
+        let rig = try Rig(stored: [Self.serial: secret],
+                          devices: [.init(deviceID: 3, serialNumber: "IPHONE-3", acceptsConnect: false),
+                                    .init(deviceID: 7, serialNumber: Self.serial, acceptsConnect: false)],
+                          wifi: wifi, tuning: tuning)
+        defer { rig.tearDown() }
+        let port = try #require(await rig.listening())
+        #expect(await eventually { rig.session.usbDeviceDialed == 7 })
+        let firstDial = ContinuousClock.now   // its window began just before
+        let early = try await WiFiIPad.connect(port: port, secret: secret)
+        defer { early.link.close() }
+        #expect(early.reply == .error(ErrorMessage(code: .busy, message: "this iPad is on USB")))
+
+        // The iPhone's turn, then the iPad's again...
+        #expect(await eventually { rig.session.usbDeviceDialed == 3 })
+        #expect(await eventually { rig.session.usbDeviceDialed == 7 })
+        // ...and the window from its first dial runs out all the same.
+        try await Task.sleep(until: firstDial + .milliseconds(1700), clock: .continuous)
+        let late = try await WiFiIPad.connect(port: port, secret: secret)
+        defer { late.link.close() }
+        #expect(late.helloAck != nil)
+        #expect(await rig.reaches(.connected(deviceModel: "iPad16,6", via: late.link.transport)))
+    }
+
     // MARK: Wi-Fi over Wi-Fi
 
     @Test func aNewWiFiLinkFromTheSameIPadReplacesItsSession() async throws {
@@ -324,7 +407,9 @@ import Testing
         #expect(second.helloAck != nil)
         #expect(await first.closed.next() == true)
         #expect(rig.sink.calls == [.keyboardType(.ansi), .key(down), .releaseAll, .keyboardType(.iso)])
+        // The assertion never lapsed: the new session began before the old one ended.
         #expect(rig.power.begins == 2 && rig.power.ends == 1 && rig.power.holding)
+        #expect(rig.power.creates == 1 && rig.power.releases == 0)
         let up = KeyEvent(usage: 0x04, isDown: false, modifiers: [])
         second.link.realtime.send(.keyEvent(up))
         #expect(await eventually { rig.sink.inputCalls.last == .key(up) })
@@ -384,6 +469,117 @@ import Testing
         let down = KeyEvent(usage: 0x04, isDown: true, modifiers: [])
         ipad.link.realtime.send(.keyEvent(down))
         #expect(await eventually { rig.sink.inputCalls == [.key(down)] })
+    }
+
+    /// Nothing reached the live Wi-Fi session: the same status with nothing new published, its link
+    /// open, nothing released, the assertion held throughout, and input still flowing.
+    static func expectUntouched(_ rig: Rig, _ ipad: WiFiIPad, _ status: HostStatus,
+                                sourceLocation: SourceLocation = #_sourceLocation) async {
+        #expect(rig.session.status == status, sourceLocation: sourceLocation)
+        #expect(await rig.statuses.next(within: 0.1) == nil, sourceLocation: sourceLocation)
+        #expect(await ipad.closed.next(within: 0.1) == nil, sourceLocation: sourceLocation)
+        #expect(!rig.sink.inputCalls.contains(.releaseAll), sourceLocation: sourceLocation)
+        #expect(rig.power.holding && rig.power.ends == 0 && rig.power.releases == 0, sourceLocation: sourceLocation)
+        let down = KeyEvent(usage: 0x04, isDown: true, modifiers: [])
+        ipad.link.realtime.send(.keyEvent(down))
+        #expect(await eventually { rig.sink.inputCalls == [.key(down)] }, sourceLocation: sourceLocation)
+    }
+
+    @Test func anIPhoneReattachingLeavesTheWiFiSessionUp() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        let rig = try Rig(stored: [Self.serial: secret])
+        defer { rig.tearDown() }
+        let port = try #require(await rig.listening())
+        let ipad = try await WiFiIPad.connect(port: port, secret: secret)
+        defer { ipad.link.close() }
+        let wifi = HostStatus.connected(deviceModel: "iPad16,6", via: ipad.link.transport)
+        #expect(await rig.reaches(wifi))
+        rig.mux.attach(.init(deviceID: 3, serialNumber: "IPHONE-3", acceptsConnect: false))
+        #expect(await eventually { rig.session.usbDeviceDialed == 3 })
+        let loop = rig.session.usbConnectLoop
+
+        // usbmuxd reports the iPhone attached again (it re-enumerated): its connect loop starts over, and
+        // only a session of that loop's would end.
+        rig.mux.attach(.init(deviceID: 3, serialNumber: "IPHONE-3", acceptsConnect: false))
+        #expect(await eventually { rig.session.usbConnectLoop != loop && rig.session.usbDeviceDialed == 3 })
+        try await Task.sleep(for: .milliseconds(100))
+        await Self.expectUntouched(rig, ipad, wifi)
+    }
+
+    @Test func aUSBMuxdRestartLeavesTheWiFiSessionUp() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        var tuning = HostSession.Tuning()
+        tuning.usbmuxRetryInterval = .milliseconds(100)
+        let rig = try Rig(stored: [Self.serial: secret], tuning: tuning)
+        defer { rig.tearDown() }
+        let port = try #require(await rig.listening())
+        let ipad = try await WiFiIPad.connect(port: port, secret: secret)
+        defer { ipad.link.close() }
+        let wifi = HostStatus.connected(deviceModel: "iPad16,6", via: ipad.link.transport)
+        #expect(await rig.reaches(wifi))
+        rig.mux.attach(.init(deviceID: 3, serialNumber: "IPHONE-3", acceptsConnect: false))
+        #expect(await eventually { rig.session.usbDeviceDialed == 3 })
+        let loop = rig.session.usbConnectLoop
+
+        // usbmuxd restarts: the host forgets its devices (ending their loops) and listens again, and the
+        // iPhone is reported afresh.
+        rig.mux.restart()
+        #expect(await eventually { rig.session.usbConnectLoop != loop && rig.session.usbDeviceDialed == 3 })
+        try await Task.sleep(for: .milliseconds(100))
+        await Self.expectUntouched(rig, ipad, wifi)
+    }
+
+    // MARK: Another protocol
+
+    /// A v1 app can't speak v2 at all: its first frame, framed in v1, is refused by the Wi-Fi acceptor
+    /// (answered in v1), and the owner is told to update the iPad, as over USB.
+    @Test func aWiFiPeerFramingAnotherProtocolIsAskedToUpdate() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        let rig = try Rig(stored: [Self.serial: secret])
+        defer { rig.tearDown() }
+        let port = try #require(await rig.listening())
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: try #require(NWEndpoint.Port(rawValue: port)))
+        let stream = try await NetworkStreamDialer(endpoint: endpoint, psk: WiFiPSK(secret: secret), options: .loopback)
+            .connect(kind: .realtime)
+        defer { stream.close() }
+        let hello = ChannelAuth.hello(kind: .realtime, token: ChannelAuth.randomBytes(ChannelHello.tokenSize), secret: secret)
+        stream.write(MessageCodec.encode(.channelHello(hello), sequence: 0, timestampNs: 0, version: 1))
+        #expect(await rig.reaches(HostStatus.iPadNeedsUpdate))
+        #expect(rig.session.status.title == "Error: lain on the iPad speaks another protocol: update it")
+        #expect(!rig.session.hasWiFiLink && rig.power.begins == 0 && rig.sink.calls.isEmpty)
+    }
+
+    /// A link whose `Hello` says another protocol version is answered `Error(versionMismatch)` and closed,
+    /// and the owner told to update the iPad.
+    @Test func aWiFiHelloInAnotherProtocolIsAskedToUpdate() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        let rig = try Rig(stored: [Self.serial: secret])
+        defer { rig.tearDown() }
+        let port = try #require(await rig.listening())
+        var hello = Self.wifiHello
+        hello.protocolVersion = LainProtocol.majorVersion + 1
+        await #expect(throws: TransportError.versionMismatch(remote: 0)) {
+            _ = try await WiFiIPad.connect(port: port, secret: secret, hello: hello)
+        }
+        #expect(await rig.reaches(HostStatus.iPadNeedsUpdate))
+        #expect(await eventually { !rig.session.hasWiFiLink })
+        #expect(rig.power.begins == 0 && rig.sink.calls.isEmpty)
+    }
+
+    /// The same for a `Hello` framed in another version, on a link authenticated in ours.
+    @Test func aWiFiHelloFramedInAnotherProtocolIsAskedToUpdate() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        let rig = try Rig(stored: [Self.serial: secret])
+        defer { rig.tearDown() }
+        let port = try #require(await rig.listening())
+        let link = try await WiFiIPad.dialer(port: port, secret: secret).open(secret: secret)
+        defer { link.close() }
+        #expect(await eventually { rig.session.hasWiFiLink })   // delivered: the host waits for its Hello
+        link.realtime.stream.write(MessageCodec.encode(.hello(Self.wifiHello), sequence: 1, timestampNs: 0,
+                                                       version: LainProtocol.majorVersion + 1))
+        #expect(await rig.reaches(HostStatus.iPadNeedsUpdate))
+        #expect(await eventually { !rig.session.hasWiFiLink })
+        #expect(rig.power.begins == 0 && rig.sink.calls.isEmpty)
     }
 
     // MARK: Lifecycle
@@ -516,6 +712,64 @@ import Testing
         #expect(ipad.helloAck != nil)
     }
 
+    /// The host's secrets in memory; the next listing can be held once it has read them, as a slow
+    /// Keychain read would be.
+    final class HeldListing: SecretStore {
+        let inner: InMemorySecretStore
+        /// Gets a value when the held listing has read the secrets.
+        let entered = Inbox<Bool>()
+        private let hold = Mutex(false)
+        private let release = DispatchSemaphore(value: 0)
+        init(_ initial: [String: [UInt8]]) { inner = InMemorySecretStore(initial) }
+        func holdNextListing() { hold.withLock { $0 = true } }
+        func releaseListing() { release.signal() }
+        func secret(for peer: String) throws -> [UInt8]? { inner.secret(for: peer) }
+        func setSecret(_ secret: [UInt8], for peer: String) throws { inner.setSecret(secret, for: peer) }
+        func removeSecret(for peer: String) throws { inner.removeSecret(for: peer) }
+        func allSecrets() throws -> [String: [UInt8]] {
+            let read = inner.allSecrets()
+            if hold.withLock({ h in defer { h = false }; return h }) {
+                entered.put(true)
+                release.wait()
+            }
+            return read
+        }
+    }
+
+    /// Refreshes overlap (launch, each USB link-up, retries): a slow read of the old keys that finishes
+    /// after a re-pairing's refresh must not put them back.
+    @Test func aSlowKeyReadFinishingLastDoesNotPutBackTheOldKey() async throws {
+        let old = ChannelAuth.randomBytes(32), new = ChannelAuth.randomBytes(32)
+        let store = HeldListing([Self.serial: old])
+        let listener = HostWiFiListener(config: Rig.wifi, secrets: store, identity: nil, onAccept: { $0.close() })
+        defer { listener.cancel() }
+        // The launch refresh reads the keys and is slow to come back...
+        store.holdNextListing()
+        let slow = Inbox<Bool>()
+        DispatchQueue.global().async {
+            listener.refresh()
+            slow.put(true)
+        }
+        #expect(await store.entered.next() == true)
+        // ...while the iPad re-pairs over USB, and the link-up's refresh reads the new key and starts listening.
+        try store.setSecret(new, for: Self.serial)
+        listener.refresh()
+        #expect(listener.starts == 1)
+        // The slow read comes back last, with the old key: dropped.
+        store.releaseListing()
+        #expect(await slow.next() == true)
+        #expect(listener.starts == 1)
+        #expect(await eventually { listener.port != nil })
+        let port = try #require(listener.port)
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: try #require(NWEndpoint.Port(rawValue: port)))
+        func dial(_ secret: [UInt8]) async throws {
+            try await NetworkStreamDialer(endpoint: endpoint, psk: WiFiPSK(secret: secret), options: .loopback)
+                .connect(kind: .realtime).close()
+        }
+        try await dial(new)
+        await #expect(throws: NetworkStreamError.unknownIdentity) { try await dial(old) }
+    }
+
     // MARK: Capture failures
 
     /// A lain display and a capture that stops on its own right after starting (as SCK's
@@ -535,16 +789,20 @@ import Testing
             DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(20)) { onError(Stopped()) }
         }
         func stop() async {}
+
+        /// One session's video, whose capture fails right after it starts.
+        static func pipeline() -> HostVideoPipeline {
+            let failing = FailingVideo()
+            return HostVideoPipeline(display: failing, frameSource: failing, cursorSource: nil)
+        }
     }
 
     @Test func theCaptureBackoffHoldsEveryTransport() async throws {
         let secret = ChannelAuth.randomBytes(32)
         var tuning = HostSession.Tuning()
         tuning.captureRetryInterval = .milliseconds(1500)
-        let rig = try Rig(stored: [Self.serial: secret], usb: [PairingAccounts.usbHost: secret], tuning: tuning, video: {
-            let failing = FailingVideo()
-            return HostVideoPipeline(display: failing, frameSource: failing, cursorSource: nil)
-        })
+        let rig = try Rig(stored: [Self.serial: secret], usb: [PairingAccounts.usbHost: secret], tuning: tuning,
+                          video: { FailingVideo.pipeline() })
         defer { rig.tearDown() }
         let port = try #require(await rig.listening())
 
@@ -567,9 +825,149 @@ import Testing
         defer { third.link.close() }
         #expect(third.reply == .error(ErrorMessage(code: .busy, message: "backing off after capture failures")))
         rig.mux.attach(.init(deviceID: 7, serialNumber: "IPAD-9"))
+        #expect(await rig.reaches(HostStatus.captureBackingOff))   // not "open lain on the iPad"
         try await Task.sleep(until: ended + .milliseconds(1000), clock: .continuous)
         #expect(rig.mux.connectCount == 0)   // the USB loop waits too
         #expect(await eventually(within: 3) { rig.mux.connectCount > 0 })
+        #expect(await rig.reaches(.connecting))   // once the backoff was over
+    }
+
+    /// Replugging the iPad whose sessions kept failing capture is the owner's reset: it is dialed at once,
+    /// not after the backoff, and its count starts over.
+    @Test func repluggingTheIPadStartsItsSessionsAfresh() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        var tuning = HostSession.Tuning()
+        tuning.captureRetryInterval = .seconds(5)
+        let rig = try Rig(stored: [Self.serial: secret], usb: [PairingAccounts.usbHost: secret],
+                          devices: [.init(deviceID: 7, serialNumber: Self.serial)], tuning: tuning,
+                          video: { FailingVideo.pipeline() })
+        defer { rig.tearDown() }
+        // Capture fails right after each start and the host ends the session: it redials at once the first
+        // time; after the second it backs off, and the menu says so.
+        #expect(await rig.usb.links.next(within: 5) != nil)
+        #expect(await rig.usb.links.next(within: 5) != nil)
+        #expect(await rig.reaches(HostStatus.captureBackingOff))
+        #expect(rig.session.status.title == "Error: backing off after capture failures")
+        #expect(await rig.usb.links.next(within: 0.5) == nil)
+
+        // The owner replugs the cable (usbmuxd numbers the iPad anew): it is dialed at once, and the next
+        // failure redials at once again, as the first one did.
+        rig.mux.detach(deviceID: 7)
+        rig.mux.attach(.init(deviceID: 8, serialNumber: Self.serial))
+        let replugged = ContinuousClock.now
+        #expect(await rig.usb.links.next(within: 5) != nil)
+        #expect(await rig.usb.links.next(within: 5) != nil)
+        #expect(ContinuousClock.now - replugged < .seconds(2))
+    }
+
+    // MARK: One lain display at a time
+
+    /// The Mac's lain displays: each session's pipeline makes its own, and a destroyed one leaves the
+    /// active list only `removalMs` later (as a released CGVirtualDisplay does, but slower). On a Mac they
+    /// share one identity, so two must never exist at once (`peak`).
+    final class SlowDisplays: Sendable {
+        let removalMs: Int
+        private let counts = Mutex((live: 0, peak: 0, created: 0))
+        init(removalMs: Int) { self.removalMs = removalMs }
+        var live: Int { counts.withLock { $0.live } }
+        var peak: Int { counts.withLock { $0.peak } }
+        var created: Int { counts.withLock { $0.created } }
+
+        /// One session's video: its own lain display, and a capture that delivers nothing.
+        func pipeline() -> HostVideoPipeline {
+            let display = Display(displays: self)
+            return HostVideoPipeline(display: display, frameSource: display, cursorSource: nil)
+        }
+
+        func added() {
+            counts.withLock { c in
+                c.live += 1
+                c.created += 1
+                c.peak = max(c.peak, c.live)
+            }
+        }
+
+        func gone() { counts.withLock { $0.live -= 1 } }
+
+        final class Display: StreamedDisplayProvider, FrameSource {
+            static let bounds = CGRect(x: 0, y: 1050, width: 320, height: 240)
+            let displays: SlowDisplays
+            private let state = Mutex((alive: false, listed: false))
+            init(displays: SlowDisplays) { self.displays = displays }
+
+            func create() async throws -> StreamedDisplay {
+                state.withLock { $0 = (true, true) }
+                displays.added()
+                return StreamedDisplay(displayID: 9, pixelWidth: 640, pixelHeight: 480, bounds: Self.bounds, refreshRate: 120)
+            }
+            func currentBounds() -> CGRect? { state.withLock { $0.alive } ? Self.bounds : nil }
+            func destroy() {
+                let wasAlive = state.withLock { s -> Bool in
+                    defer { s.alive = false }
+                    return s.alive
+                }
+                guard wasAlive else { return }
+                DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(displays.removalMs)) { [self] in
+                    state.withLock { $0.listed = false }
+                    displays.gone()
+                }
+            }
+            func waitUntilRemoved() async {
+                await VirtualDisplay.waitUntilGone(9, timeout: 5) { _ in state.withLock { $0.listed } }
+            }
+            func start(_ config: FrameSourceConfig, onFrame: @escaping @Sendable (CVPixelBuffer, UInt64) -> Void,
+                       onError: @escaping @Sendable (any Error) -> Void) async throws {}
+            func stop() async {}
+        }
+    }
+
+    /// A takeover inside another takeover's wait: the iPad's second link waits for its first session's
+    /// display to go, and a third link displaces the second before it has. The third session waits for
+    /// the first session's display too, not only for the second's (which never existed).
+    @Test func aTakeoverDuringATakeoverWaitsForEveryEarlierDisplay() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        let displays = SlowDisplays(removalMs: 800)
+        let rig = try Rig(stored: [Self.serial: secret], video: { displays.pipeline() })
+        defer { rig.tearDown() }
+        let port = try #require(await rig.listening())
+        let first = try await WiFiIPad.connect(port: port, secret: secret)
+        defer { first.link.close() }
+        #expect(first.helloAck != nil && displays.live == 1)
+
+        // The iPad redials: the second link takes over and waits while the first session's display goes...
+        let second = Task { try await WiFiIPad.connect(port: port, secret: secret) }
+        #expect(await first.closed.next() == true)
+        #expect(displays.live == 1)
+        // ...and redials again before it has gone.
+        let third = try await WiFiIPad.connect(port: port, secret: secret)
+        defer { third.link.close() }
+        #expect(third.helloAck != nil)
+        #expect(displays.peak == 1 && displays.live == 1 && displays.created == 2)
+        await #expect(throws: (any Error).self) { try await second.value }   // closed without a HelloAck
+    }
+
+    /// The same with the cable going in while the second Wi-Fi link waits: the USB session waits for the
+    /// first session's display too.
+    @Test func theCableGoingInDuringATakeoverWaitsForEveryEarlierDisplay() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        let displays = SlowDisplays(removalMs: 800)
+        let rig = try Rig(stored: [Self.serial: secret], usb: [PairingAccounts.usbHost: secret], video: { displays.pipeline() })
+        defer { rig.tearDown() }
+        let port = try #require(await rig.listening())
+        let first = try await WiFiIPad.connect(port: port, secret: secret)
+        defer { first.link.close() }
+        #expect(first.helloAck != nil && displays.live == 1)
+
+        let second = Task { try await WiFiIPad.connect(port: port, secret: secret) }
+        #expect(await first.closed.next() == true)
+        #expect(displays.live == 1)
+        rig.mux.attach(.init(deviceID: 7, serialNumber: Self.serial))
+        let usb = try #require(await rig.usb.links.next(within: 5))
+        defer { usb.close() }
+        #expect(await rig.usb.received.first { if case .helloAck = $0 { true } else { false } } != nil)
+        #expect(await rig.reaches(.connected(deviceModel: "iPad16,6")))
+        #expect(displays.peak == 1 && displays.live == 1 && displays.created == 2)
+        await #expect(throws: (any Error).self) { try await second.value }
     }
 }
 

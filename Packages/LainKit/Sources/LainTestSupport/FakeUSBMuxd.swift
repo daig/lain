@@ -84,6 +84,16 @@ public final class FakeUSBMuxd: Sendable {
         for fd in listeners { try? send(fd, p) }
     }
 
+    /// The daemon restarting, as its clients see it: every `Listen` connection is dropped (their event
+    /// streams end), and a client that listens again gets the attached devices reported afresh.
+    public func restart() {
+        let listeners = state.withLock { s in
+            defer { s.listeners = [] }
+            return s.listeners
+        }
+        listeners.forEach { Darwin.shutdown($0, SHUT_RDWR) }
+    }
+
     private func acceptLoop(_ listenFD: Int32) {
         while true {
             let fd = accept(listenFD, nil, nil)

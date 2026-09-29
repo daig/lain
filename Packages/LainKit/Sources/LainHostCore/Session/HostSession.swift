@@ -101,7 +101,8 @@ public final class HostSession: Sendable {
         /// A session ended by a capture error lets the next one start at once the first time; each
         /// further one in a row waits this long, doubling (capped at 32×), so a recurring capture failure
         /// can't churn the virtual display and window placement in a tight loop. Session-wide: it holds
-        /// whichever transport the next session comes over (§7.7 D29).
+        /// whichever transport the next session comes over (§7.7 D29). Plugging in the iPad whose sessions
+        /// failed is the owner's reset: it is dialed at once, and its count starts over.
         public var captureRetryInterval: Duration = .seconds(1)
         /// lain on the iPad closing realtime right after our `ChannelHello` this many times in a row is
         /// taken for an app that speaks another protocol (a v1 app closes without answering).
@@ -138,9 +139,13 @@ public final class HostSession: Sendable {
         /// Every USB device usbmuxd reports, in attach order. Only `device` is dialed; the others are
         /// tried when it detaches or lain doesn't answer on it (an iPhone charging, say).
         var attached: [USBMuxDevice] = []
-        /// When each attached device's USB attempt began (the USB preference window): its attach while
-        /// it waits its turn, then its connect loop's start and each of its USB sessions' end.
+        /// When each attached device's USB attempt began (the USB preference window, decision 8): its
+        /// attach, its first dial if it waited its turn behind another device, and the end of each of its
+        /// USB sessions. Hand-over re-dials leave it alone, so two devices failing over USB in turn can't
+        /// keep an iPad's Wi-Fi busy for good.
         var usbSince: [Int: ContinuousClock.Instant] = [:]
+        /// Attached devices not dialed since their attach.
+        var undialed: Set<Int> = []
         /// The live session: its owner, its connection, what it runs over and the iPad (its USB serial,
         /// the account its secret is stored under).
         var live: (owner: Owner, connection: HostConnection, transport: LinkTransport, peer: String)?
@@ -151,15 +156,24 @@ public final class HostSession: Sendable {
         /// The Wi-Fi link source, for the session's lifetime (without `Dependencies.wifi`, none).
         var acceptor: LinkAcceptor?
         var wifiListener: HostWiFiListener?
-        /// The latest session's video pipeline: a new session waits for its teardown (capture stopped,
-        /// virtual display removed) before creating its own display.
+        /// The latest session's video pipeline, for the menu.
         var video: HostVideoPipeline?
+        /// Every claimed session's pipeline until that session has waited out its teardown (capture
+        /// stopped, virtual display removed): a new session waits for all of them before creating its own
+        /// display, including one whose session was displaced before it got to wait (one lain display at a
+        /// time: they share the persistent identity).
+        var retiring: [HostVideoPipeline] = []
         /// Why the latest session has no video (Screen Recording missing, say), for the menu.
         var videoError: String?
         /// Sessions ended by a capture error in a row, over either transport, and when the next one may
         /// start (`Tuning.captureRetryInterval`).
         var captureFailures = 0
         var captureBackoffUntil: ContinuousClock.Instant?
+        /// The iPad (its USB serial, the account its secret is stored under) whose session ended the
+        /// latest capture failure: plugging it in resets the backoff.
+        var captureFailedPeer: String?
+        /// The USB connect loop (its generation) waiting out the capture backoff: the status says so.
+        var backingOff: UInt64?
         /// usbmuxd's event stream failed; cleared by the next attach it reports.
         var usbmuxDown = false
         /// lain on the iPad speaks another protocol (§7.7 D29 decision 4); cleared by the next link that
@@ -172,7 +186,8 @@ public final class HostSession: Sendable {
             if let live, let model = liveModel { return .connected(deviceModel: model, via: live.transport) }
             if usbmuxDown { return .error("usbmuxd unavailable") }
             if peerOutdated { return HostStatus.iPadNeedsUpdate }
-            return device != nil ? .connecting : .waitingForIPad
+            guard let device else { return .waitingForIPad }
+            return backingOff == device.generation ? HostStatus.captureBackingOff : .connecting
         }
 
         /// Recomputes the status: the new one, numbered, if it changed. Once stopped, only
@@ -189,10 +204,11 @@ public final class HostSession: Sendable {
         /// session is stopped, the claiming task cancelled, or the owner stale: `.usb(g)` needs its connect
         /// loop to still own the device; `.wifi(g)` needs to be the newest accepted link, with no USB session
         /// live. A USB claim displaces a live Wi-Fi session; a Wi-Fi claim displaces an older Wi-Fi session
-        /// (the same iPad's: another iPad's link was answered `busy` first). The claimer then finishes the
-        /// displaced connection and waits for `previousVideo` (`serve`).
+        /// (the same iPad's: another iPad's link was answered `busy` first). The displaced session's video
+        /// stops here, so a claim right after this one finds its teardown under way; the claimer then
+        /// finishes the displaced connection and waits for every pipeline in `previousVideo` (`serve`).
         mutating func claim(_ connection: HostConnection, _ owner: Owner, transport: LinkTransport, peer: String)
-            -> (displaced: HostConnection?, previousVideo: HostVideoPipeline?)? {
+            -> (displaced: HostConnection?, previousVideo: [HostVideoPipeline])? {
             guard !stopped, !Task.isCancelled else { return nil }
             switch owner {
             case .usb(let g):
@@ -202,10 +218,12 @@ public final class HostSession: Sendable {
                 if case .usb? = live?.owner { return nil }
             }
             let displaced = live?.connection
+            displaced?.video?.stop()   // now, not once the claimer finishes it: synchronous, never takes this lock
             live = (owner, connection, transport, peer)
             liveModel = nil
-            let previousVideo = video
+            let previousVideo = retiring
             if let v = connection.video {
+                retiring.append(v)
                 video = v
                 videoError = nil
             }
@@ -234,15 +252,25 @@ public final class HostSession: Sendable {
             return nil
         }
 
-        /// The session-wide capture backoff, when a session has ended.
-        mutating func sessionEnded(captureFailed: Bool, retryInterval: Duration) {
+        /// The session-wide capture backoff, when `peer`'s session has ended.
+        mutating func sessionEnded(peer: String, captureFailed: Bool, retryInterval: Duration) {
             guard captureFailed else {
                 captureFailures = 0
+                captureFailedPeer = nil
                 return
             }
             captureFailures += 1
+            captureFailedPeer = peer
             guard captureFailures > 1 else { return }
             captureBackoffUntil = .now + retryInterval * (1 << min(captureFailures - 2, 5))
+        }
+
+        /// The owner plugged in the iPad whose sessions kept failing capture: its next session starts at
+        /// once, and the count starts over.
+        mutating func resetCaptureBackoff() {
+            captureFailures = 0
+            captureBackoffUntil = nil
+            captureFailedPeer = nil
         }
     }
     private let state = Mutex(State())
@@ -281,6 +309,9 @@ public final class HostSession: Sendable {
     /// Tests: the USB device whose connect loop runs.
     var usbDeviceDialed: Int? { state.withLock { $0.device?.id } }
 
+    /// Tests: that connect loop's generation (a re-attach or a usbmuxd restart starts a new one).
+    var usbConnectLoop: UInt64? { state.withLock { $0.device?.generation } }
+
     /// Tests: Wi-Fi listeners created so far.
     var wifiListenerStarts: Int { state.withLock { $0.wifiListener }?.starts ?? 0 }
 
@@ -318,7 +349,7 @@ public final class HostSession: Sendable {
             s.stopped = true
             defer {
                 s.runTask = nil; s.device = nil; s.live = nil; s.liveModel = nil; s.attached = []; s.usbSince = [:]
-                s.wifi = nil
+                s.undialed = []; s.wifi = nil
             }
             return (s.runTask, s.device?.task, s.live?.connection, s.wifi?.task, s.wifiListener, s.acceptor)
         }
@@ -369,6 +400,7 @@ public final class HostSession: Sendable {
             let active = state.withLock { s -> Int? in
                 s.attached.removeAll()
                 s.usbSince.removeAll()
+                s.undialed.removeAll()
                 return s.device?.id
             }
             if let active { detached(active) }
@@ -385,8 +417,12 @@ public final class HostSession: Sendable {
             s.attached.removeAll { $0.deviceID == device.deviceID }
             s.attached.append(device)
             s.usbSince[device.deviceID] = now
+            s.undialed.insert(device.deviceID)
             // One iPad at a time: another device waits its turn; the same one re-attaching replaces itself.
             if let current = s.device, current.id != device.deviceID { return (.none, s.refreshStatus()) }
+            // Plugging in the iPad whose sessions kept failing capture is the owner's reset. Automatic
+            // redials, the next device in line and Wi-Fi links still wait the backoff out.
+            if device.serialNumber == s.captureFailedPeer { s.resetCaptureBackoff() }
             let previous = s.device.map { d in (d.task, s.takeLive(ownedBy: .usb(generation: d.generation))) }
             dial(device, in: &s)
             return (.some(previous), s.refreshStatus())
@@ -409,6 +445,7 @@ public final class HostSession: Sendable {
             s -> (Task<Void, Never>?, HostConnection?, Int?, (status: HostStatus, sequence: UInt64)?) in
             s.attached.removeAll { $0.deviceID == id }
             s.usbSince[id] = nil
+            s.undialed.remove(id)
             guard let current = s.device, current.id == id else { return (nil, nil, nil, nil) }
             // Only this loop's session ends; a Wi-Fi session goes on (§7.7 D29 decision 8).
             let connection = s.takeLive(ownedBy: .usb(generation: current.generation))
@@ -429,11 +466,13 @@ public final class HostSession: Sendable {
         publish(change)
     }
 
-    /// Starts the connect loop for `device` (under `state`).
+    /// Starts the connect loop for `device` (under `state`). Its first dial since its attach restarts its USB
+    /// preference window (it may have waited its turn behind another device); a hand-over back to it
+    /// doesn't.
     private func dial(_ device: USBMuxDevice, in s: inout State) {
         s.generation &+= 1
         let generation = s.generation
-        s.usbSince[device.deviceID] = .now
+        if s.undialed.remove(device.deviceID) != nil { s.usbSince[device.deviceID] = .now }
         s.device = (device.deviceID, generation, Task { [self] in await connectLoop(device, generation: generation) })
     }
 
@@ -456,7 +495,7 @@ public final class HostSession: Sendable {
         var closedInARow = 0
         while !Task.isCancelled {
             // No session starts inside the session-wide capture backoff, whatever its transport.
-            await waitOutCaptureBackoff()
+            await waitOutCaptureBackoff(generation: generation)
             if Task.isCancelled { return }
             do {
                 let (link, hello, paired) = try await HostLink.open(
@@ -470,9 +509,12 @@ public final class HostSession: Sendable {
                 // A pairing (this one, or a bench's in another process) may have changed the stored
                 // secrets: the Wi-Fi listener re-reads them after every USB link-up (§7.7 D29 decision 9).
                 state.withLock { $0.wifiListener }?.refresh()
-                await run(link, hello: hello, generation: generation, peer: device.serialNumber)
-                // Dialing again: the USB preference window restarts.
-                state.withLock { s in if s.device?.generation == generation { s.usbSince[device.deviceID] = .now } }
+                let served = await run(link, hello: hello, generation: generation, peer: device.serialNumber)
+                // USB answered: the preference window restarts. A session restarted it as it ended (`serve`);
+                // a link turned away before serving restarts it here.
+                if !served {
+                    state.withLock { s in if s.device?.generation == generation { s.usbSince[device.deviceID] = .now } }
+                }
             } catch {
                 if Task.isCancelled { return }
                 failures += 1
@@ -507,25 +549,41 @@ public final class HostSession: Sendable {
         }
     }
 
-    /// Sleeps until the session-wide capture backoff is over.
-    private func waitOutCaptureBackoff() async {
+    /// Sleeps until the session-wide capture backoff is over. Meanwhile the status says so (instead of
+    /// "open lain on the iPad"), for as long as this loop's device is the one dialed.
+    private func waitOutCaptureBackoff(generation: UInt64) async {
         while !Task.isCancelled {
-            guard let until = state.withLock({ $0.captureBackoffUntil }), ContinuousClock.now < until else { return }
+            var until: ContinuousClock.Instant?
+            updateStatus { s in
+                if let u = s.captureBackoffUntil, ContinuousClock.now < u, s.device?.generation == generation {
+                    until = u
+                    s.backingOff = generation
+                } else if s.backingOff == generation {
+                    s.backingOff = nil
+                }
+            }
+            guard let until else { return }
             try? await Task.sleep(until: until, clock: .continuous)
         }
+        updateStatus { s in if s.backingOff == generation { s.backingOff = nil } }
     }
 
-    /// One USB session; returns when it has ended and been torn down.
-    private func run(_ link: Link, hello: Hello, generation: UInt64, peer: String) async {
-        guard acceptsVersion(of: hello, on: link) else { return }
+    /// One USB session; returns when it has ended and been torn down: true, or false if the link was
+    /// turned away before serving (another protocol, or the claim refused).
+    private func run(_ link: Link, hello: Hello, generation: UInt64, peer: String) async -> Bool {
+        guard acceptsVersion(of: hello, on: link) else { return false }
         let connection = makeConnection(link)
         let (claimed, change) = state.withLock { s in
             (s.claim(connection, .usb(generation: generation), transport: link.transport, peer: peer), s.refreshStatus())
         }
         publish(change)
-        guard let claimed else { link.close(); return }
+        guard let claimed else {
+            link.close()
+            return false
+        }
         tuning.afterRegistering?()
-        await serve(connection, hello: hello, displaced: claimed.displaced, previousVideo: claimed.previousVideo)
+        await serve(connection, hello: hello, peer: peer, displaced: claimed.displaced, previousVideo: claimed.previousVideo)
+        return true
     }
 
     // MARK: Wi-Fi connection
@@ -580,7 +638,7 @@ public final class HostSession: Sendable {
         }
         guard acceptsVersion(of: hello, on: link) else { return }
 
-        enum Admission: Sendable { case refused, busy(String), claimed(displaced: HostConnection?, previousVideo: HostVideoPipeline?) }
+        enum Admission: Sendable { case refused, busy(String), claimed(displaced: HostConnection?, previousVideo: [HostVideoPipeline]) }
         let connection = makeConnection(link)
         let now = ContinuousClock.now
         let (admission, change) = state.withLock { s -> (Admission, (status: HostStatus, sequence: UInt64)?) in
@@ -605,7 +663,7 @@ public final class HostSession: Sendable {
             link.close()
         case .claimed(let displaced, let previousVideo):
             log.notice("Wi-Fi session with \(hello.deviceModel, privacy: .public) (\(peer, privacy: .public))")
-            await serve(connection, hello: hello, displaced: displaced, previousVideo: previousVideo)
+            await serve(connection, hello: hello, peer: peer, displaced: displaced, previousVideo: previousVideo)
         }
     }
 
@@ -630,20 +688,25 @@ public final class HostSession: Sendable {
                               deps: deps, tuning: tuning)
     }
 
-    /// A claimed session, over either transport (§7.7 D29 decision 8), strictly in order: the displaced
-    /// session is finished (its video stops, its input is released under its lock and its power
-    /// assertion ends, synchronously), the new client's keyboard type is set, the connection starts
-    /// (power), the previous session's display is waited out (one lain display at a time: they share the
-    /// persistent identity), then video, `HelloAck` and the first layout. Returns when the session has
-    /// ended and been torn down.
-    private func serve(_ connection: HostConnection, hello: Hello, displaced: HostConnection?,
-                       previousVideo: HostVideoPipeline?) async {
-        displaced?.finish()
-        deps.sink.setKeyboardType(hello.keyboardType)
+    /// A claimed session of `peer`, over either transport (§7.7 D29 decision 8), strictly in order: the
+    /// connection starts (it takes the display-sleep assertion before the displaced session drops its
+    /// own, so a hand-over never lets it lapse), the displaced session is finished (its video stops, its
+    /// input is released under its lock and its power assertion ends, synchronously), the new client's
+    /// keyboard type is set, every earlier session's display is waited out (one lain display at a time:
+    /// they share the persistent identity), then video, `HelloAck` and the first layout. Returns when the
+    /// session has ended and been torn down.
+    private func serve(_ connection: HostConnection, hello: Hello, peer: String, displaced: HostConnection?,
+                       previousVideo: [HostVideoPipeline]) async {
         // A detach, stop or takeover from here on finishes `connection`; `start()` then refuses, so the
         // power assertion is only taken by a connection that will also release it.
-        if connection.start() {
-            if let previousVideo, previousVideo !== connection.video { await previousVideo.waitUntilStopped() }
+        let started = connection.start()
+        displaced?.finish()
+        deps.sink.setKeyboardType(hello.keyboardType)
+        if started {
+            for video in previousVideo where video !== connection.video { await video.waitUntilStopped() }
+        }
+        // Taken over (or stopped) while it waited: it never starts its video or answers.
+        if started, !connection.isFinished {
             let chroma = await startVideo(connection, hello: hello)
             // HelloAck after video start, so it carries the virtual display's point size and the chroma
             // actually streamed. The first frames may overtake it on the video connection; the client
@@ -662,13 +725,19 @@ public final class HostSession: Sendable {
         connection.finish()
         let captureFailed = connection.captureFailed.load(ordering: .acquiring)
         updateStatus { s in
-            if s.live?.connection === connection {
+            if let live = s.live, live.connection === connection {
+                // A USB session's end restarts its iPad's USB preference window in the step that ends it,
+                // so a Wi-Fi link decided after the session is gone always sees the new window.
+                if case .usb(let g) = live.owner, let d = s.device, d.generation == g { s.usbSince[d.id] = .now }
                 s.live = nil
                 s.liveModel = nil
             }
-            s.sessionEnded(captureFailed: captureFailed, retryInterval: tuning.captureRetryInterval)
+            s.sessionEnded(peer: peer, captureFailed: captureFailed, retryInterval: tuning.captureRetryInterval)
         }
-        await connection.video?.waitUntilStopped()
+        if let video = connection.video {
+            await video.waitUntilStopped()
+            state.withLock { s in s.retiring.removeAll { $0 === video } }
+        }
         log.notice("session ended")
     }
 
@@ -762,6 +831,9 @@ final class HostConnection: Sendable {
             return true
         }
     }
+
+    /// `finish()` has run: a takeover, detach or stop ended the session.
+    var isFinished: Bool { rt.withLock { $0.finished } }
 
     /// Installs the handlers and waits until the realtime connection closes.
     func run() async {

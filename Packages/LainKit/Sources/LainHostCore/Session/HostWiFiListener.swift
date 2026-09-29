@@ -12,10 +12,10 @@ public struct HostWiFiConfig: Sendable {
     /// Advertise Bonjour `_lain._tcp` with TXT `v` and `id` (needs the host identity). The app only:
     /// never tests or the test host (decision 12).
     public var advertise: Bool
-    /// USB wins (decision 8): a Wi-Fi link from an iPad that is attached over USB, while its connect loop
-    /// is younger than this (dialing since the attach, a hand-over or its last USB session's end, or
-    /// waiting behind another device since its attach), is told `busy`. After it, USB counts as broken
-    /// and Wi-Fi is let in.
+    /// USB wins (decision 8): a Wi-Fi link from an iPad that is attached over USB is told `busy` for this
+    /// long after its USB attempt began: its attach, its first dial if it waited its turn behind another
+    /// device, or the end of its last USB session. Hand-over re-dials between devices that both fail over
+    /// USB don't restart it. After it, USB counts as broken and Wi-Fi is let in.
     public var usbPreference: Duration = .seconds(5)
     /// How long an accepted link may take to send `Hello` (`HostLink.handshakeTimeout` over USB).
     public var helloTimeout: Double = HostLink.handshakeTimeout
@@ -37,9 +37,10 @@ public struct HostWiFiConfig: Sendable {
 /// stored iPad secret, `WiFiPSK(secret:)` of every `allSecrets()` entry (§7.7 D29 decision 9). No
 /// listener while no iPad has paired. `refresh()` re-reads the secrets and restarts the listener only if
 /// the set of PSK identities changed (a restart swaps the listener, not the acceptor: accepted
-/// connections are unaffected). A failed read or a failed listener retries with backoff. The listener
-/// logs its identities at each start, never the keys. It is created, replaced and cancelled only under
-/// the lock, and never once cancelled.
+/// connections are unaffected). Refreshes may overlap (launch, each USB link-up, retries); the newest
+/// read wins, so a slow read can't put back keys a re-pairing replaced. A failed read or a failed
+/// listener retries with backoff. The listener logs its identities at each start, never the keys. It is
+/// created, replaced and cancelled only under the lock, and never once cancelled.
 final class HostWiFiListener: Sendable {
     private let config: HostWiFiConfig
     private let secrets: any SecretStore
@@ -62,6 +63,17 @@ final class HostWiFiListener: Sendable {
         var backoff: Duration?
         /// Listeners created so far (tests).
         var starts = 0
+        /// `refresh()` reads, numbered as they begin, and the newest one whose outcome was applied: an
+        /// older read that finishes later is dropped (the Keychain read runs outside the lock).
+        var reads: UInt64 = 0
+        var applied: UInt64 = 0
+
+        /// Whether the outcome of read `ticket` is still the newest to apply (and now is).
+        mutating func apply(_ ticket: UInt64) -> Bool {
+            guard !cancelled, ticket > applied else { return false }
+            applied = ticket
+            return true
+        }
     }
     private let state = Mutex(State())
 
@@ -89,15 +101,20 @@ final class HostWiFiListener: Sendable {
     var starts: Int { state.withLock { $0.starts } }
 
     /// Re-reads the stored secrets: starts the listener if there are some and none runs, restarts it if
-    /// the identities changed, stops it if there are none left.
+    /// the identities changed, stops it if there are none left. The outcome is dropped if a read that
+    /// began later has already been applied.
     func refresh() {
+        let ticket = state.withLock { s -> UInt64 in
+            s.reads &+= 1
+            return s.reads
+        }
         let stored: [String: [UInt8]]
         do {
             stored = try secrets.allSecrets()
         } catch {
             log.error("Wi-Fi: could not read the pairing secrets (\(String(describing: error), privacy: .public)); retrying")
             state.withLock { s in
-                guard !s.cancelled else { return }
+                guard s.apply(ticket) else { return }
                 if s.listener == nil { s.status = .off("can't read the pairing secrets") }
                 retryLater(&s)
             }
@@ -106,7 +123,7 @@ final class HostWiFiListener: Sendable {
         let psks = stored.values.map(WiFiPSK.init(secret:)).sorted { $0.identity < $1.identity }
         let identities = Set(psks.map(\.identity))
         state.withLock { s in
-            guard !s.cancelled else { return }
+            guard s.apply(ticket) else { return }
             let changed = identities != s.identities
             s.identities = identities
             if !changed, s.listener != nil {

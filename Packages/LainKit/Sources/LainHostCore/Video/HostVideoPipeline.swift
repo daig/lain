@@ -161,58 +161,54 @@ public final class HostVideoPipeline: Sendable {
         }
         guard claimed else { throw HostVideoError.alreadyStarted }
 
+        // Until it runs, every way out (an error, or a `stop()` meanwhile) goes through `abandonStart()`:
+        // the display this start may have created is removed and waited out, and a waiting `stop()` let go.
         let display: StreamedDisplay
+        let settings: VideoEncoder.Settings
+        let encoder: VideoEncoder
+        let cursor: CursorMonitor?
+        let timer: DispatchSourceTimer
         do {
             display = try await displayProvider.create()
-        } catch {
-            await abandonStart()
-            throw error
-        }
-        guard state.withLock({ $0.phase == .starting }) else {
-            await abandonStart()
-            throw HostVideoError.stopped
-        }
+            guard state.withLock({ $0.phase == .starting }) else { throw HostVideoError.stopped }
 
-        var settings = VideoEncoder.Settings(width: display.pixelWidth, height: display.pixelHeight)
-        settings.chroma = Self.requestedChroma(for: hello)
-        settings.frameRate = hello.maxRefreshRate > 0 ? min(options.frameRate, Int(hello.maxRefreshRate)) : options.frameRate
-        settings.averageBitRate = options.averageBitRate
-        let encoder: VideoEncoder
-        do {
+            var wanted = VideoEncoder.Settings(width: display.pixelWidth, height: display.pixelHeight)
+            wanted.chroma = Self.requestedChroma(for: hello)
+            wanted.frameRate = hello.maxRefreshRate > 0 ? min(options.frameRate, Int(hello.maxRefreshRate)) : options.frameRate
+            wanted.averageBitRate = options.averageBitRate
+            settings = wanted
             encoder = try VideoEncoder(settings: settings) { [weak self] out in self?.encoded(out) }
+            let gate = FrameGate<Item>(maxInFlight: options.maxInFlight, isStale: { [weak self] item in
+                self.map { item.capture < $0.newestCapture.load(ordering: .acquiring) } ?? false
+            }) { [weak self] item in self?.submit(item) }
+            cursor = cursorSource.map { CursorMonitor(source: $0, send: sendRealtime) }
+            let idleCheckMs = options.idleCheckMs
+
+            // The idle timer exists only once installed: libdispatch traps on releasing a source that was
+            // never activated, which a start abandoned here would do.
+            let installed = state.withLock { s -> DispatchSourceTimer? in
+                guard s.phase == .starting else { return nil }
+                let timer = DispatchSource.makeTimerSource(queue: idleQueue)
+                timer.schedule(deadline: .now(), repeating: .milliseconds(idleCheckMs), leeway: .milliseconds(2))
+                timer.setEventHandler { [weak self] in self?.idleTick() }
+                s.phase = .running
+                s.display = display
+                s.encoder = encoder
+                s.gate = gate
+                s.channel = videoChannel
+                s.cursor = cursor
+                s.timer = timer
+                s.chroma = encoder.chroma
+                s.stats.chroma = encoder.chroma
+                s.stats.pixelWidth = display.pixelWidth
+                s.stats.pixelHeight = display.pixelHeight
+                return timer
+            }
+            guard let installed else { throw HostVideoError.stopped }
+            timer = installed
         } catch {
             await abandonStart()
             throw error
-        }
-        let gate = FrameGate<Item>(maxInFlight: options.maxInFlight, isStale: { [weak self] item in
-            self.map { item.capture < $0.newestCapture.load(ordering: .acquiring) } ?? false
-        }) { [weak self] item in self?.submit(item) }
-        let cursor = cursorSource.map { CursorMonitor(source: $0, send: sendRealtime) }
-        let idleCheckMs = options.idleCheckMs
-
-        // The idle timer exists only once installed: libdispatch traps on releasing a source that was
-        // never activated, which a start abandoned here would do.
-        let installed = state.withLock { s -> DispatchSourceTimer? in
-            guard s.phase == .starting else { return nil }
-            let timer = DispatchSource.makeTimerSource(queue: idleQueue)
-            timer.schedule(deadline: .now(), repeating: .milliseconds(idleCheckMs), leeway: .milliseconds(2))
-            timer.setEventHandler { [weak self] in self?.idleTick() }
-            s.phase = .running
-            s.display = display
-            s.encoder = encoder
-            s.gate = gate
-            s.channel = videoChannel
-            s.cursor = cursor
-            s.timer = timer
-            s.chroma = encoder.chroma
-            s.stats.chroma = encoder.chroma
-            s.stats.pixelWidth = display.pixelWidth
-            s.stats.pixelHeight = display.pixelHeight
-            return timer
-        }
-        guard let timer = installed else {
-            await abandonStart()
-            throw HostVideoError.stopped
         }
         // Running: the display is the pipeline's now, and `stop()` removes it.
         starting.end()

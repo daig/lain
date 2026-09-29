@@ -62,11 +62,18 @@ public final class VirtualDisplay: @unchecked Sendable {
         throw Failure.didNotAppear
     }
 
-    /// Waits until the window server no longer lists `displayID` (after the object was released).
-    public static func waitUntilGone(_ displayID: CGDirectDisplayID, timeout: TimeInterval = 2) async {
+    /// Waits until the window server no longer lists `displayID` (after the object was released), for at
+    /// most `timeout`, checking every 20 ms (`isListed`: tests stand in for the window server). It runs its
+    /// course even on a cancelled task (a detach during a session's video start): the next lain display
+    /// may only be created once this one is gone (one at a time, §5.7), so the wait must neither end early
+    /// nor, as a cancelled `Task.sleep` would make it, spin on the window server.
+    public static func waitUntilGone(_ displayID: CGDirectDisplayID, timeout: TimeInterval = 2,
+                                     isListed: (CGDirectDisplayID) -> Bool = { activeDisplays().contains($0) }) async {
         let deadline = Date().addingTimeInterval(timeout)
-        while Date() < deadline, activeDisplays().contains(displayID) {
-            try? await Task.sleep(for: .milliseconds(20))
+        while Date() < deadline, isListed(displayID) {
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(20)) { c.resume() }
+            }
         }
     }
 

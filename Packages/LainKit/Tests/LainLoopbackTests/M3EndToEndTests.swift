@@ -78,7 +78,13 @@ import Testing
             }
         }
         func waitUntilRemoved() async {
-            while alive { try? await Task.sleep(for: .milliseconds(5)) }
+            // Polled like `VirtualDisplay.waitUntilGone`: at its pace even on a cancelled task (a detach
+            // during video start), where `Task.sleep` would return at once and spin.
+            while alive {
+                await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                    DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(5)) { c.resume() }
+                }
+            }
         }
 
         func activeDisplays() -> [ActiveDisplay] {
