@@ -18,6 +18,8 @@ public final class ClientSession: Sendable {
         /// Displays in the Mac's desktop (`DisplayLayout`); 1 until one arrives.
         public var displayCount = 1
         public var macInputSource = ""
+        /// The chroma the Mac streams (`HelloAck`).
+        public var chroma: ChromaFormat?
         public var framesReceived = 0
         /// `HelloAck` arrived and was applied; input flows.
         public var isConfigured = false
@@ -73,6 +75,7 @@ public final class ClientSession: Sendable {
                         i.displayPointWidth = ack.displayPointWidth
                         i.displayPointHeight = ack.displayPointHeight
                         i.macInputSource = ack.macInputSource
+                        i.chroma = ack.chroma
                         i.isConfigured = true
                     }
                     publish()

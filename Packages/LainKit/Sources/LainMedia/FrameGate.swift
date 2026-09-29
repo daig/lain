@@ -10,6 +10,8 @@ public final class FrameGate<Frame: Sendable>: Sendable {
         /// Replaced in the slot by a newer frame before they could be encoded.
         public var droppedBeforeEncode = 0
         public var peakInFlight = 0
+        /// Re-offers turned away because a newer frame had already been offered (`isStale`).
+        public var staleRejected = 0
     }
 
     private struct State {
@@ -20,11 +22,17 @@ public final class FrameGate<Frame: Sendable>: Sendable {
     }
     private let state: Mutex<State>
     private let encode: @Sendable (Frame) -> Void
+    private let isStale: (@Sendable (Frame) -> Bool)?
 
-    /// - Parameter encode: submits a frame to the encoder; called outside the lock on whichever thread
-    ///   freed capacity (capture, encoder output or ack). Must not block.
-    public init(maxInFlight: Int = 2, encode: @escaping @Sendable (Frame) -> Void) {
+    /// - Parameters:
+    ///   - isStale: checked under the gate's lock when a frame is offered; true turns it away. A
+    ///     re-offer of an older frame (idle refinement, keyframe) that races a newer capture must
+    ///     neither replace the newer frame in the slot nor be encoded after it.
+    ///   - encode: submits a frame to the encoder; called outside the lock on whichever thread
+    ///     freed capacity (capture, encoder output or ack). Must not block.
+    public init(maxInFlight: Int = 2, isStale: (@Sendable (Frame) -> Bool)? = nil, encode: @escaping @Sendable (Frame) -> Void) {
         state = Mutex(State(window: FrameAckWindowLite(maxInFlight: maxInFlight)))
+        self.isStale = isStale
         self.encode = encode
     }
 
@@ -32,9 +40,13 @@ public final class FrameGate<Frame: Sendable>: Sendable {
     public var inFlight: Int { state.withLock { $0.window.count } }
     public var slotOccupied: Bool { state.withLock { $0.slot != nil } }
 
-    /// A newly captured frame (capture thread).
+    /// A newly captured (or re-offered) frame.
     public func offer(_ frame: Frame) {
         let now = state.withLock { s -> Frame? in
+            if let isStale, isStale(frame) {
+                s.stats.staleRejected += 1
+                return nil
+            }
             s.stats.offered += 1
             if !s.encoderBusy && s.window.canSend {
                 s.encoderBusy = true

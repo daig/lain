@@ -31,6 +31,25 @@ final class Submissions: Sendable {
         #expect(!gate.slotOccupied)
     }
 
+    @Test func staleReofferNeverReplacesOrFollowsANewerFrame() {
+        let subs = Submissions()
+        let newest = Atomic<Int>(1)
+        let gate = FrameGate<Int>(maxInFlight: 2, isStale: { $0 < newest.load(ordering: .relaxed) }) { subs.add($0) }
+        gate.offer(1)                        // encoding
+        newest.store(2, ordering: .relaxed)
+        gate.offer(2)                        // slot
+        gate.offer(1)                        // an idle refinement of 1 built just before 2 arrived
+        #expect(gate.stats.staleRejected == 1 && gate.stats.droppedBeforeEncode == 0)
+        gate.sent(frameId: 1)
+        #expect(subs.all == [1, 2])
+        gate.sent(frameId: 2)
+        gate.acked(frameId: 2)
+        gate.offer(1)                        // encoder idle: still not encoded after 2
+        #expect(subs.all == [1, 2])
+        gate.offer(2)                        // a refinement of the newest frame is fine
+        #expect(subs.all == [1, 2, 2])
+    }
+
     @Test func unackedFramesHoldTheSlot() {
         let subs = Submissions()
         let gate = FrameGate<Int>(maxInFlight: 2) { subs.add($0) }

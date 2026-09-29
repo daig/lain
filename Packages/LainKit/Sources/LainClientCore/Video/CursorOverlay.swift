@@ -83,8 +83,9 @@ public struct CursorSprite: Sendable, Equatable {
 /// `CursorSelect`, and hide-while-typing. Written from the realtime and input queues, read by the
 /// renderer each tick (a version check, then a copy only when something changed).
 public final class CursorOverlay: Sendable {
-    /// At most this many Mac shapes are kept (the Mac has a few dozen; ids are stable per shape).
-    public static let maxShapes = 64
+    /// At most this many Mac shapes are kept, the host's live window: past it the host resends shapes
+    /// under higher ids, so the lowest id is always the one to drop (`CursorShape.maxLive`).
+    public static let maxShapes = CursorShape.maxLive
 
     private struct State {
         var shapes: [UInt32: CursorShape] = [:]
@@ -105,8 +106,7 @@ public final class CursorOverlay: Sendable {
         switch message {
         case .cursorShape(let shape):
             state.withLock { s in
-                if s.shapes.count >= Self.maxShapes, s.shapes[shape.shapeId] == nil,
-                   let victim = s.shapes.keys.first(where: { $0 != s.selected }) {
+                if s.shapes.count >= Self.maxShapes, s.shapes[shape.shapeId] == nil, let victim = s.shapes.keys.min() {
                     s.shapes[victim] = nil
                 }
                 s.shapes[shape.shapeId] = shape

@@ -40,6 +40,12 @@ public struct CursorWarpDetector: Sendable {
         return actual
     }
 
+    /// The client got a new `DisplayLayout`: a warp it received before it may have been clamped to the
+    /// old arrangement, so the next quiet sample reports the cursor again (after the layout).
+    public mutating func resync() {
+        expected = nil
+    }
+
     /// A new session: nothing is known about the client's cursor.
     public mutating func reset() {
         expected = nil

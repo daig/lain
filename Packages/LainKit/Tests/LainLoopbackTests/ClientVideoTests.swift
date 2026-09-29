@@ -29,6 +29,8 @@ final class FakeDecoder: FrameDecoding, @unchecked Sendable {
     let decoded = Mutex<[UInt32]>([])
     let deferred = Mutex<[VideoDecoder.Output]>([])
     let holdOutputs: Bool
+    /// Every decode fails with kVTInvalidSessionErr (a session invalidated while backgrounded).
+    let dead = Atomic<Bool>(false)
     nonisolated(unsafe) static let image = SyntheticFrames.makeBuffer(16, 16, kCVPixelFormatType_444YpCbCr10BiPlanarFullRange)
 
     init(failing: Set<UInt32>, holdOutputs: Bool, onOutput: @escaping @Sendable (VideoDecoder.Output) -> Void) {
@@ -39,8 +41,9 @@ final class FakeDecoder: FrameDecoding, @unchecked Sendable {
 
     func decode(_ frame: VideoFrame) {
         decoded.withLock { $0.append(frame.frameId) }
-        let fail = failing.withLock { $0.contains(frame.frameId) }
-        let out = VideoDecoder.Output(frameId: frame.frameId, image: fail ? nil : Self.image, status: fail ? -12909 : 0,
+        let isDead = dead.load(ordering: .relaxed)
+        let fail = isDead || failing.withLock { $0.contains(frame.frameId) }
+        let out = VideoDecoder.Output(frameId: frame.frameId, image: fail ? nil : Self.image, status: isDead ? -12903 : fail ? -12909 : 0,
                                       decodeDoneNs: MonotonicClock.now())
         if holdOutputs { deferred.withLock { $0.append(out) } } else { onOutput(out) }
     }
@@ -165,6 +168,40 @@ final class FakeVideoRig: @unchecked Sendable {
         rig.send(frame(5, key: true))
         #expect(rig.decodedIds == [1, 2, 3, 5])
         #expect(rig.pipeline.stats().decodeErrors == 1)
+        #expect(rig.decoders.withLock { $0.count } == 1)   // an ordinary delta error keeps the decoder
+    }
+
+    @Test func deadDecoderSessionIsRebuiltAtTheNextKeyframe() {
+        let rig = FakeVideoRig()
+        rig.send(.videoConfig(fakeConfig))
+        rig.send(frame(1, key: true))
+        rig.send(frame(2))
+        let first = rig.decoder
+        first?.dead.store(true, ordering: .relaxed)  // backgrounded: the session was invalidated
+        rig.pipeline.requestKeyframe(.resumed)
+        rig.send(frame(3, key: true))               // the resume keyframe fails on the dead session
+        #expect(rig.pipeline.stats().decodeErrors == 1)
+        rig.clock.advance(ms: 300)
+        rig.send(frame(4))                          // dropped, asks again
+        #expect(rig.out.keyframeRequests.map(\.reason) == [.resumed, .decodeError])
+        rig.send(frame(5, key: true))               // decoded by a new decoder from the stored config
+        #expect(rig.decoders.withLock { $0.count } == 2)
+        #expect(rig.decodedIds == [5])
+        #expect(rig.pipeline.latest.take()?.frameId == 5)
+        #expect(!rig.pipeline.stats().awaitingKeyframe)
+        rig.send(frame(6))
+        #expect(rig.decodedIds == [5, 6])
+    }
+
+    @Test func invalidSessionOnADeltaFrameAlsoRebuilds() {
+        let rig = FakeVideoRig()
+        rig.send(.videoConfig(fakeConfig))
+        rig.send(frame(1, key: true))
+        rig.decoder?.dead.store(true, ordering: .relaxed)
+        rig.send(frame(2))                          // -12903
+        rig.send(frame(3, key: true))
+        #expect(rig.decoders.withLock { $0.count } == 2)
+        #expect(rig.pipeline.latest.take()?.frameId == 3)
     }
 
     @Test func keyframeRequestsAreRateLimitedWhileWaiting() {

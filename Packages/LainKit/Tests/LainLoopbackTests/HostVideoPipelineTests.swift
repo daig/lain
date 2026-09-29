@@ -189,7 +189,8 @@ func noRefinement() -> HostVideoPipeline.Options {
     @Test func fourFourFourStreamWithConfigFirstKeyframeFirstAndAcks() async throws {
         let display = FakeStreamedDisplay(), source = FakeFrameSource(), client = VideoClient()
         let realtime = Mutex<[Message]>([])
-        let pipeline = HostVideoPipeline(display: display, frameSource: source, cursorSource: FakeCursor())
+        // Refinement off: a scheduler stall in the feed would rightly refine mid-stream (its own test).
+        let pipeline = HostVideoPipeline(display: display, frameSource: source, cursorSource: FakeCursor(), options: noRefinement())
         try await pipeline.start(hello: hello([.hevcMain, .hevcMain44410Hardware]), videoChannel: client.host,
                                  sendRealtime: { m in realtime.withLock { $0.append(m) } })
 
@@ -286,14 +287,22 @@ func noRefinement() -> HostVideoPipeline.Options {
 
         let frames = client.frames
         let refinements = frames.filter { $0.flags.contains(.refinement) }
-        #expect(refinements.count == 2)
         #expect(refinements.allSatisfy { !$0.frame.isKeyframe })
-        // Only after 150 ms without a new frame, never while frames flow.
-        #expect(refinements.allSatisfy { $0.atNs >= lastFeed + 140_000_000 })
-        #expect(frames.filter { $0.atNs < lastFeed + 100_000_000 }.allSatisfy { !$0.flags.contains(.refinement) })
-        // The second waits another interval.
-        if refinements.count == 2 { #expect(refinements[1].atNs >= lastFeed + 290_000_000) }
-        #expect(pipeline.stats.refinements == 2)
+        // Each refinement comes 150 ms (the second 300 ms) after the capture it refines, at most two per
+        // capture. Measured from that capture, not the feed loop, so a stall in the feed (which rightly
+        // refines mid-stream) can't fail the test.
+        var sinceCapture: [(capture: UInt64, count: Int)] = []
+        for f in frames {
+            if !f.flags.contains(.refinement) { sinceCapture.append((f.frame.captureTimeNs, 0)); continue }
+            guard let last = sinceCapture.last else { Issue.record("refinement before any capture"); continue }
+            sinceCapture[sinceCapture.count - 1].count += 1
+            let n = UInt64(sinceCapture[sinceCapture.count - 1].count)
+            #expect(f.frame.captureTimeNs >= last.capture + n * 150_000_000 - 10_000_000)
+        }
+        #expect(sinceCapture.allSatisfy { $0.count <= 2 })
+        #expect(sinceCapture.last?.count == 2)                        // the idle tail got both
+        #expect(frames.last.map { $0.atNs >= lastFeed } == true)
+        #expect(pipeline.stats.refinements == refinements.count)
         pipeline.stop()
         await pipeline.waitUntilStopped()
     }
@@ -357,6 +366,8 @@ func noRefinement() -> HostVideoPipeline.Options {
         #expect(!pipeline.isRunning)
         #expect(source.stops == 1)
         #expect(display.created == 1 && display.destroyed == 1 && !display.alive)
+        // A stopped pipeline flags no display (its display is being removed).
+        #expect(pipeline.streamedDisplayID == nil && pipeline.streamedDisplayBounds == nil)
 
         let messages = client.all.count, cursorMessages = realtime.withLock { $0 }
         // Late capture callbacks, keyframe requests, acks and the idle timer do nothing now.

@@ -83,6 +83,10 @@ public final class HostSession: Sendable {
         /// (resolution, arrangement, displays added or removed, which one is streamed) is sent as a new
         /// `DisplayLayout`, and the session goes on.
         public var displayCheckIntervalNs: UInt64 = 500_000_000
+        /// A session ended by a capture error redials at once the first time; each further one in a row
+        /// waits this long, doubling (capped at 32×), so a recurring capture failure can't churn the
+        /// virtual display and window placement in a tight loop.
+        public var captureRetryInterval: Duration = .seconds(1)
         /// Tests only: runs in `run()` right after the connection is registered.
         var afterRegistering: (@Sendable () -> Void)?
         public init() {}
@@ -260,6 +264,7 @@ public final class HostSession: Sendable {
 
     private func connectLoop(_ device: USBMuxDevice, generation: UInt64) async {
         var failures = 0
+        var captureFailures = 0
         while !Task.isCancelled {
             setStatus(.connecting, generation: generation)
             do {
@@ -269,7 +274,14 @@ public final class HostSession: Sendable {
                 if Task.isCancelled { link.close(); return }
                 failures = 0
                 log.notice("link up with \(hello.deviceModel, privacy: .public) (\(paired ? "paired" : "authenticated", privacy: .public))")
-                await run(link, hello: hello, generation: generation)
+                if await run(link, hello: hello, generation: generation) {
+                    captureFailures += 1
+                    if captureFailures > 1 {
+                        try? await Task.sleep(for: tuning.captureRetryInterval * (1 << min(captureFailures - 2, 5)))
+                    }
+                } else {
+                    captureFailures = 0
+                }
             } catch {
                 if Task.isCancelled { return }
                 failures += 1
@@ -282,12 +294,13 @@ public final class HostSession: Sendable {
         }
     }
 
-    /// One connected session; returns when it has ended and been torn down.
-    private func run(_ link: Link, hello: Hello, generation: UInt64) async {
+    /// One connected session; returns when it has ended and been torn down, with whether a capture
+    /// error ended it.
+    private func run(_ link: Link, hello: Hello, generation: UInt64) async -> Bool {
         guard hello.protocolVersion == LainProtocol.majorVersion else {
             link.realtime.send(.error(ErrorMessage(code: .versionMismatch, message: "host speaks v\(LainProtocol.majorVersion)")))
             link.close()
-            return
+            return false
         }
         // The streamed display is the session's virtual display once video is up (§5.1); until then, or
         // without video, the provider falls back to the main display.
@@ -302,7 +315,7 @@ public final class HostSession: Sendable {
             defer { if video != nil { s.video = video; s.videoError = nil } }
             return .some(s.video)
         }
-        guard let previousVideo else { link.close(); return }
+        guard let previousVideo else { link.close(); return false }
         tuning.afterRegistering?()
 
         // A detach or stop from here on finishes `connection`; `start()` then refuses, so the power
@@ -329,6 +342,7 @@ public final class HostSession: Sendable {
         state.withLock { s in if s.connection === connection { s.connection = nil } }
         await video?.waitUntilStopped()
         log.notice("session ended")
+        return connection.captureFailed.load(ordering: .acquiring)
     }
 
     /// Starts the connection's video, if it has any. Returns the chroma streamed, or nil without video.
@@ -338,9 +352,17 @@ public final class HostSession: Sendable {
         let link = connection.link, log = self.log
         do {
             try await video.start(hello: hello, videoChannel: link.video, sendRealtime: { link.realtime.send($0) },
-                                  onError: { error in
+                                  onError: { [weak self, weak connection] error in
+                                      if error is CaptureStoppedByUser {
+                                          // The owner stopped it: keep the session, input only, until the next attach.
+                                          log.notice("video capture stopped by the user; input only until the next attach")
+                                          video.stop()
+                                          self?.state.withLock { s in if s.video === video { s.videoError = "capture stopped on the Mac" } }
+                                          return
+                                      }
                                       // Capture stopped on its own: end the session; the reconnect starts afresh.
                                       log.error("video capture stopped: \(String(describing: error), privacy: .public); ending the session")
+                                      connection?.captureFailed.store(true, ordering: .releasing)
                                       link.close()
                                   })
             return video.chroma
@@ -349,6 +371,8 @@ public final class HostSession: Sendable {
         } catch {
             log.error("video unavailable: \(String(describing: error), privacy: .public); input only")
             state.withLock { s in if s.video === video { s.videoError = String(describing: error) } }
+            // The failed start's display is being removed: HelloAck and the first layout must not see it.
+            await video.waitUntilStopped()
             return nil
         }
     }
@@ -374,6 +398,8 @@ final class HostConnection: Sendable {
     let provider: any DisplayProvider
     /// The session's video (M3); stopped by `finish()`.
     let video: HostVideoPipeline?
+    /// Capture stopped on its own and closed the link (the connect loop backs off before the next).
+    let captureFailed = Atomic<Bool>(false)
     private let deps: HostSession.Dependencies
     private let tuning: HostSession.Tuning
     private let activityQueue = DispatchQueue(label: "lain.host.activity", qos: .utility)
@@ -554,14 +580,18 @@ final class HostConnection: Sendable {
     func sendLayoutIfChanged() {
         let layout = provider.desktopLayout()
         guard !layout.displays.isEmpty else { return }
-        lastLayout.withLock { last in
-            guard layout != last, !ended.withLock({ $0.done }) else { return }
+        let sent = lastLayout.withLock { last -> Bool in
+            guard layout != last, !ended.withLock({ $0.done }) else { return false }
             if last != nil {
                 log.notice("display arrangement changed: \(layout.displays.count) display(s); sending the new layout")
             }
             last = layout
             link.realtime.send(.displayLayout(layout))
+            return true
         }
+        // A warp sent just before this layout was snapped against the old one on the client (the
+        // cursor may only exist in the new arrangement): report the cursor again, after the layout.
+        if sent { rt.withLock { $0.warp.resync() } }
     }
 }
 #endif

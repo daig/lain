@@ -503,6 +503,10 @@ public struct AudioPacket: WireMessage {
 /// Sent once per unique shape (§5.4). Pixels are premultiplied BGRA, rows packed.
 public struct CursorShape: WireMessage {
     public static let type = MessageType.cursorShape
+    /// The host keeps at most this many shapes live. When it needs another it forgets them all and
+    /// resends each shape when next used, under new ids that are higher than every earlier one, so a
+    /// client that keeps this many and evicts the lowest id always holds every live shape.
+    public static let maxLive = 64
     public var shapeId: UInt32
     public var pixelWidth: UInt16
     public var pixelHeight: UInt16

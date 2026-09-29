@@ -31,6 +31,15 @@ private func describe(_ messages: [Message]) -> [String] {
         #expect(t.uniqueShapes == 3)
     }
 
+    @Test func pastTheLiveWindowShapesAreResentUnderNewIds() {
+        var t = CursorShapeTracker()
+        for i in 0..<CursorShape.maxLive { _ = t.update(image(UInt8(i))) }          // ids 1...64
+        #expect(describe(t.update(image(0))) == ["select 1"])
+        #expect(describe(t.update(image(200))) == ["shape 65", "select 65"])       // the table starts over
+        #expect(t.uniqueShapes == 1)
+        #expect(describe(t.update(image(0))) == ["shape 66", "select 66"])         // resent, not just selected
+    }
+
     @Test func hiddenKeepsTheShapeAndShowsAgain() {
         var t = CursorShapeTracker()
         #expect(t.update(nil).isEmpty)                                      // nothing shown yet: nothing to hide

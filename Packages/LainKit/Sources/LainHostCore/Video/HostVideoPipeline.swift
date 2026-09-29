@@ -75,6 +75,9 @@ public final class HostVideoPipeline: Sendable {
         var buffer: CVPixelBuffer
         var captureNs: UInt64
         var refinement: Bool
+        /// Which capture this buffer is (re-offers keep it): the gate turns away a re-offer once a
+        /// newer capture exists, so a refinement or keyframe re-offer racing it can't show old content.
+        var capture: UInt64
     }
 
     private enum Phase { case idle, starting, running, stopped }
@@ -108,6 +111,8 @@ public final class HostVideoPipeline: Sendable {
     /// Serializes "record in flight + send" per encoded frame, so an ack can never overtake the gate's
     /// bookkeeping and `VideoConfig` always precedes the frames that use it.
     private let sendLock = Mutex(())
+    /// The newest capture number (bumped before that frame is offered).
+    private let newestCapture = Atomic<UInt64>(0)
     private let idleQueue = DispatchQueue(label: "lain.video.idle", qos: .userInitiated)
     private let log = Telemetry.logger("video")
 
@@ -122,8 +127,9 @@ public final class HostVideoPipeline: Sendable {
 
     // MARK: Public surface
 
-    /// The streamed display once `start` has created it.
-    public var streamedDisplay: StreamedDisplay? { state.withLock { $0.display } }
+    /// The streamed display while the pipeline runs (nil before, and once stopped or failed: its
+    /// display is being removed and must not be flagged or targeted).
+    public var streamedDisplay: StreamedDisplay? { state.withLock { $0.phase == .running ? $0.display : nil } }
     public var streamedDisplayID: UInt32? { streamedDisplay?.displayID }
     /// Live global point bounds of the streamed display (for `DisplayLayout`); the owner may move it in
     /// System Settings at any time, so this re-reads it.
@@ -173,7 +179,9 @@ public final class HostVideoPipeline: Sendable {
             abortStart()
             throw error
         }
-        let gate = FrameGate<Item>(maxInFlight: options.maxInFlight) { [weak self] item in self?.submit(item) }
+        let gate = FrameGate<Item>(maxInFlight: options.maxInFlight, isStale: { [weak self] item in
+            self.map { item.capture < $0.newestCapture.load(ordering: .acquiring) } ?? false
+        }) { [weak self] item in self?.submit(item) }
         let cursor = cursorSource.map { CursorMonitor(source: $0, send: sendRealtime) }
         let timer = DispatchSource.makeTimerSource(queue: idleQueue)
         timer.schedule(deadline: .now(), repeating: .milliseconds(options.idleCheckMs), leeway: .milliseconds(2))
@@ -250,7 +258,10 @@ public final class HostVideoPipeline: Sendable {
         let source = frameSource, provider = displayProvider, removeDisplay = taken.hadDisplay
         let task = Task.detached {
             await source.stop()
-            if removeDisplay { provider.destroy() }
+            if removeDisplay {
+                provider.destroy()
+                await provider.waitUntilRemoved()
+            }
         }
         state.withLock { $0.teardown = task }
         // The encoder is invalidated when its last reference (an in-flight callback, at most) goes.
@@ -258,7 +269,8 @@ public final class HostVideoPipeline: Sendable {
         log.notice("video stopped")
     }
 
-    /// Waits for the background part of `stop()` (capture stopped, display removed).
+    /// Waits for the background part of `stop()` (capture stopped, display removed and gone from the
+    /// active display list).
     public func waitUntilStopped() async {
         await state.withLock { $0.teardown }?.value
     }
@@ -279,7 +291,9 @@ public final class HostVideoPipeline: Sendable {
         log.notice("keyframe requested (\(String(describing: reason)))")
         encoder.requestKeyframe()
         if reason == .resumed || reason == .startup { gate.reset() }
-        if let last, !gate.slotOccupied { offer(Item(buffer: last.buffer, captureNs: now, refinement: false), gate: gate) }
+        if let last, !gate.slotOccupied {
+            offer(Item(buffer: last.buffer, captureNs: now, refinement: false, capture: last.capture), gate: gate)
+        }
     }
 
     /// Inbound on the video connection (installed by `start`; public so a session can route to it).
@@ -318,16 +332,17 @@ public final class HostVideoPipeline: Sendable {
     private func captured(_ buffer: CVPixelBuffer, _ captureNs: UInt64) {
         // SCK frames carry no YCbCr matrix (S2): tag them to match the stream's explicit BT.709 matrix.
         ColorTags.tag(buffer)
-        let item = Item(buffer: buffer, captureNs: captureNs, refinement: false)
         let now = MonotonicClock.now()
-        let gate = state.withLock { s -> FrameGate<Item>? in
-            guard s.phase == .running, let g = s.gate else { return nil }
+        let (gate, item) = state.withLock { s -> (FrameGate<Item>?, Item?) in
+            guard s.phase == .running, let g = s.gate else { return (nil, nil) }
+            let item = Item(buffer: buffer, captureNs: captureNs, refinement: false,
+                            capture: newestCapture.add(1, ordering: .acquiringAndReleasing).newValue)
             s.stats.captured += 1
             s.lastCaptured = item
             s.refiner.newFrame(at: now)
-            return g
+            return (g, item)
         }
-        if let gate { offer(item, gate: gate) }
+        if let gate, let item { offer(item, gate: gate) }
     }
 
     private func offer(_ item: Item, gate: FrameGate<Item>) {
@@ -405,7 +420,7 @@ public final class HostVideoPipeline: Sendable {
         let now = MonotonicClock.now()
         let item = state.withLock { s -> Item? in
             guard s.phase == .running, let last = s.lastCaptured, s.refiner.shouldRefine(at: now) else { return nil }
-            return Item(buffer: last.buffer, captureNs: now, refinement: true)
+            return Item(buffer: last.buffer, captureNs: now, refinement: true, capture: last.capture)
         }
         if let item { offer(item, gate: gate) }
     }

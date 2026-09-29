@@ -53,6 +53,9 @@ import Testing
     /// only while it exists.
     final class FakeLainDisplay: StreamedDisplayProvider, ActiveDisplaySource {
         private let state = Mutex((alive: false, created: 0, destroyed: 0))
+        /// Like the window server, the display leaves the active list a while after it is released.
+        let removalDelayMs: Int
+        init(removalDelayMs: Int = 0) { self.removalDelayMs = removalDelayMs }
         var alive: Bool { state.withLock { $0.alive } }
         var created: Int { state.withLock { $0.created } }
         var destroyed: Int { state.withLock { $0.destroyed } }
@@ -64,10 +67,18 @@ import Testing
         }
         func currentBounds() -> CGRect? { alive ? M3EndToEndTests.lainBounds : nil }
         func destroy() {
-            state.withLock { s in
-                if s.alive { s.destroyed += 1 }
-                s.alive = false
+            let remove: @Sendable () -> Void = { [self] in
+                state.withLock { s in
+                    if s.alive { s.destroyed += 1 }
+                    s.alive = false
+                }
             }
+            if removalDelayMs == 0 { remove() } else {
+                DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(removalDelayMs), execute: remove)
+            }
+        }
+        func waitUntilRemoved() async {
+            while alive { try? await Task.sleep(for: .milliseconds(5)) }
         }
 
         func activeDisplays() -> [ActiveDisplay] {
@@ -144,6 +155,11 @@ import Testing
         })
         guard case .connected(let info) = clientStatus.last else { Issue.record("not connected"); return }
         #expect(info.displayPointWidth == 688 && info.displayPointHeight == 516)
+        // The HelloAck itself (the first configured snapshot, before any layout) carried the lain
+        // display's size and the chroma streamed.
+        let acked = clientStatus.all.compactMap { if case .connected(let i) = $0, i.isConfigured { i } else { nil } }.first
+        #expect(acked?.displayPointWidth == 688 && acked?.displayPointHeight == 516 && acked?.displayCount == 1)
+        #expect(acked?.chroma == expected)
         #expect(lain.alive && lain.created == 1)
         let pipeline = try #require(pipelines.all.first)
         #expect(pipeline.chroma == expected)
@@ -260,6 +276,85 @@ import Testing
 
     /// Capture (or the virtual display) failing at start leaves an input-only session on the main
     /// display, with the reason for the menu.
+    /// Host tracker → client overlay over many more distinct cursors than either keeps: whatever the
+    /// Mac shows is always drawn (never the built-in arrow once shapes exist).
+    @Test func manyCursorShapesNeverFallBackToTheArrow() {
+        var tracker = CursorShapeTracker()
+        let overlay = CursorOverlay()
+        var rng = SystemRandomNumberGenerator()
+        var order = Array(0..<150) + (0..<600).map { _ in Int.random(in: 0..<150, using: &rng) }
+        order += Array(0..<150)
+        for n in order {
+            let pixels = [UInt8](repeating: UInt8(n % 256), count: 16) + [UInt8(n / 256), 0, 0, 0] + [UInt8](repeating: 0, count: 12)
+            let img = CursorImage(pixelWidth: 2, pixelHeight: 4, scale: 2, hotspotX: 0, hotspotY: 0, pixels: pixels)
+            for m in tracker.update(img) { overlay.apply(m) }
+            let sprite = overlay.current.sprite
+            #expect(sprite != .arrow && sprite.pixels == pixels, "cursor \(n)")
+            if sprite == .arrow { return }
+        }
+        #expect(tracker.uniqueShapes <= CursorShape.maxLive)
+    }
+
+    /// Capture that starts, then stops on its own shortly after (SCK's didStopWithError).
+    final class StoppingSource: FrameSource {
+        let makeError: @Sendable () -> any Error
+        init(_ makeError: @escaping @Sendable () -> any Error) { self.makeError = makeError }
+        func start(_ config: FrameSourceConfig, onFrame: @escaping @Sendable (CVPixelBuffer, UInt64) -> Void,
+                   onError: @escaping @Sendable (any Error) -> Void) async throws {
+            let makeError = makeError
+            DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(20)) { onError(makeError()) }
+        }
+        func stop() async {}
+    }
+
+    /// A host session over `source` with an input-only stand-in Mac; returns what the test watches.
+    static func stoppingRig(_ source: @escaping @Sendable () -> any FrameSource, tuning: HostSession.Tuning = .init()) throws
+        -> (host: HostSession, lain: FakeLainDisplay, mac: InputLoopbackTests.VirtualMac, client: ClientSession,
+            status: Status<ClientSession.Status>, stop: @Sendable () -> Void) {
+        let lain = FakeLainDisplay()
+        let mac = InputLoopbackTests.VirtualMac(
+            display: HostDisplay(displayID: 1, origin: .zero, pointSize: CGSize(width: 1680, height: 1050)),
+            layout: DisplayLayout(displays: []), cursor: CGPoint(x: 100, y: 100))
+        let status = Status<ClientSession.Status>()
+        let client = try ClientSession(port: 0, secrets: InMemorySecretStore(), hello: Self.hello(hardware444: true),
+                                       video: ClientVideoPipeline()) { status.put($0) }
+        let mux = try FakeUSBMuxd(devices: [.init(deviceID: 7, serialNumber: "IPAD-7")], targetPort: client.port)
+        let host = HostSession(dependencies: HostSession.Dependencies(
+            usbmux: USBMuxClient(socketPath: mux.socketPath), secrets: InMemorySecretStore(), sink: mac,
+            display: DisplayLayoutProvider(source: lain, streamedDisplayID: { nil }, cursor: { mac.cursorLocation() }),
+            power: InputLoopbackTests.FakePower(), settings: { Self.settings },
+            video: { HostVideoPipeline(display: lain, frameSource: source(), cursorSource: nil) }), tuning: tuning)
+        host.start()
+        return (host, lain, mac, client, status, { host.stop(); mux.stop(); client.stop() })
+    }
+
+    @Test func captureStoppedByTheUserKeepsAnInputOnlySession() async throws {
+        let rig = try Self.stoppingRig { StoppingSource { CaptureStoppedByUser() } }
+        defer { rig.stop() }
+        #expect(await eventually { rig.lain.created == 1 && !rig.lain.alive })
+        #expect(await eventually { rig.host.videoError != nil })
+        // Not restarted: the session goes on with the same link, no new display.
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(rig.lain.created == 1)
+        #expect(rig.host.status == .connected(deviceModel: "iPad16,6"))
+        #expect(!rig.mac.inputCalls.contains(.releaseAll))
+        let mark = rig.mac.inputCalls.count
+        rig.client.input.mouseMoved(dx: 10, dy: 0)
+        #expect(await eventually { rig.mac.inputCalls.count > mark })
+    }
+
+    @Test func recurringCaptureErrorsBackOff() async throws {
+        struct Broken: Error {}
+        var tuning = HostSession.Tuning()
+        tuning.captureRetryInterval = .milliseconds(200)
+        let rig = try Self.stoppingRig({ StoppingSource { Broken() } }, tuning: tuning)
+        defer { rig.stop() }
+        #expect(await eventually { rig.lain.created >= 2 })        // the first one redials at once
+        try await Task.sleep(for: .milliseconds(1000))
+        // Immediate, then 200, 400, 800 ms apart: a handful of sessions, not one every few ms.
+        #expect(rig.lain.created <= 6, "\(rig.lain.created) sessions")
+    }
+
     @Test func videoFailureLeavesAnInputOnlySession() async throws {
         struct Denied: Error {}
         final class FailingSource: FrameSource {
@@ -267,7 +362,8 @@ import Testing
                        onError: @escaping @Sendable (any Error) -> Void) async throws { throw Denied() }
             func stop() async {}
         }
-        let lain = FakeLainDisplay()
+        // The failed start's display lingers in the active list, as a released CGVirtualDisplay does.
+        let lain = FakeLainDisplay(removalDelayMs: 300)
         let mac = InputLoopbackTests.VirtualMac(
             display: HostDisplay(displayID: 1, origin: .zero, pointSize: CGSize(width: 1680, height: 1050)),
             layout: DisplayLayout(displays: []), cursor: CGPoint(x: 100, y: 100))
@@ -291,7 +387,10 @@ import Testing
         })
         guard case .connected(let info) = clientStatus.last else { Issue.record("not connected"); return }
         #expect(info.displayPointWidth == 1680 && info.displayPointHeight == 1050)   // main: nothing streamed
-        #expect(await eventually { !lain.alive && lain.destroyed == 1 })
+        // Neither HelloAck nor any layout ever described the display being torn down.
+        let seen = clientStatus.all.compactMap { if case .connected(let i) = $0, i.isConfigured { i } else { nil } }
+        #expect(seen.allSatisfy { $0.displayPointWidth == 1680 && $0.displayCount <= 2 })
+        #expect(!lain.alive && lain.destroyed == 1)
         #expect(host.videoError?.contains("Denied") == true)
         #expect(host.videoStats == nil)
         let mark = mac.inputCalls.count

@@ -19,6 +19,12 @@ public struct FrameSourceConfig: Sendable, Equatable {
     }
 }
 
+/// Capture was stopped by the Mac's owner (the screen-recording indicator in the menu bar or Control
+/// Center): the session goes on input-only rather than restarting capture against their wish.
+public struct CaptureStoppedByUser: Error, Equatable {
+    public init() {}
+}
+
 /// Delivers complete captured frames of the streamed display. Injected so tests feed synthetic frames.
 public protocol FrameSource: Sendable {
     /// Starts capture. `onFrame` is called on the source's own serial queue for each **complete** frame
@@ -145,7 +151,7 @@ public final class ScreenCaptureFrameSource: NSObject, FrameSource, SCStreamOutp
             defer { s.onError = nil; s.onFrame = nil }
             return s.stopped ? nil : s.onError
         }
-        handler?(error)
+        if let e = error as? SCStreamError, e.code == .userStopped { handler?(CaptureStoppedByUser()) } else { handler?(error) }
     }
 }
 #endif

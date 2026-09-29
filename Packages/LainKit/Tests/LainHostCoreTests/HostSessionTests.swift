@@ -183,6 +183,29 @@ import Testing
         #expect(await eventually { rig.sink.inputCalls.count == 2 })
     }
 
+    @Test func aWarpIsResentAfterANewLayout() async throws {
+        var tuning = HostSession.Tuning()
+        tuning.displayCheckIntervalNs = 20_000_000
+        let rig = try Rig(cursor: CGPoint(x: 300, y: 250), tuning: tuning)
+        defer { rig.tearDown() }
+        rig.cursor.layout.withLock { $0 = Self.desktop }
+        _ = try await rig.connect()
+        #expect(await rig.client.received.first { $0 == .cursorWarp(CursorWarp(x: 300, y: 250)) } != nil)
+        // The owner drags the streamed display left of main with the cursor on it: the cursor's new
+        // position is reported before the layout that contains it reaches the client.
+        rig.cursor.cursor.withLock { $0 = CGPoint(x: -1000, y: 500) }
+        #expect(await rig.client.received.first { $0 == .cursorWarp(CursorWarp(x: -1000, y: 500)) } != nil)
+        let moved = DisplayLayout(displays: [
+            .init(displayID: 1, x: 0, y: 0, width: 1680, height: 1050, isStreamed: false),
+            .init(displayID: 9, x: -1376, y: 0, width: 1376, height: 1032, isStreamed: true),
+        ])
+        rig.cursor.layout.withLock { $0 = moved }
+        #expect(await rig.client.received.first { $0 == .displayLayout(moved) } != nil)
+        // So it is sent again after the layout (the client may have clamped the first one).
+        let again = await rig.client.received.first(within: 2) { if case .cursorWarp = $0 { true } else { false } }
+        #expect(again == .cursorWarp(CursorWarp(x: -1000, y: 500)))
+    }
+
     @Test func detachReleasesEverything() async throws {
         let rig = try Rig()
         defer { rig.tearDown() }

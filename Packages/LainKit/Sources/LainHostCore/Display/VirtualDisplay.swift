@@ -62,6 +62,14 @@ public final class VirtualDisplay: @unchecked Sendable {
         throw Failure.didNotAppear
     }
 
+    /// Waits until the window server no longer lists `displayID` (after the object was released).
+    public static func waitUntilGone(_ displayID: CGDirectDisplayID, timeout: TimeInterval = 2) async {
+        let deadline = Date().addingTimeInterval(timeout)
+        while Date() < deadline, activeDisplays().contains(displayID) {
+            try? await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
     public static func activeDisplays() -> [CGDirectDisplayID] {
         var count: UInt32 = 0
         CGGetActiveDisplayList(0, nil, &count)

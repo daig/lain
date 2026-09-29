@@ -31,6 +31,13 @@ public protocol StreamedDisplayProvider: Sendable {
     func currentBounds() -> CGRect?
     /// Removes the display. Idempotent.
     func destroy()
+    /// Waits (bounded) until the display `destroy()` removed has left the active display list: the
+    /// window server removes it asynchronously, and the next session's display shares its identity.
+    func waitUntilRemoved() async
+}
+
+extension StreamedDisplayProvider {
+    public func waitUntilRemoved() async {}
 }
 
 #if os(macOS)
@@ -42,6 +49,8 @@ public final class VirtualStreamedDisplayProvider: StreamedDisplayProvider {
     public let spec: VirtualDisplay.Spec
     public let refreshRate: Int
     private let display = Mutex<VirtualDisplay?>(nil)
+    /// The display `destroy()` last released, until it has left the active list.
+    private let removed = Mutex<CGDirectDisplayID?>(nil)
 
     public init(spec: VirtualDisplay.Spec = VirtualDisplay.Spec(), refreshRate: Int = 120) {
         self.spec = spec
@@ -89,7 +98,14 @@ public final class VirtualStreamedDisplayProvider: StreamedDisplayProvider {
             defer { d = nil }
             return d
         }
+        if let vd { removed.withLock { $0 = vd.displayID } }
         withExtendedLifetime(vd) {}
+    }
+
+    public func waitUntilRemoved() async {
+        guard let id = removed.withLock({ $0 }) else { return }
+        await VirtualDisplay.waitUntilGone(id)
+        removed.withLock { if $0 == id { $0 = nil } }
     }
 }
 #endif

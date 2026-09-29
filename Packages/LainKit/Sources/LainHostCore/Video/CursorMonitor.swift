@@ -31,7 +31,9 @@ public protocol CursorImageSource: Sendable {
 }
 
 /// The shape bookkeeping, without timers or AppKit: each unique image gets an ID and is sent once as
-/// `CursorShape`; `CursorSelect` goes out whenever the current shape or its visibility changes.
+/// `CursorShape`; `CursorSelect` goes out whenever the current shape or its visibility changes. At most
+/// `CursorShape.maxLive` shapes are live: past that the table starts over (ids keep growing), so every
+/// shape is resent when next used and the client's lowest-id eviction never drops a live one.
 public struct CursorShapeTracker: Sendable {
     private var ids: [CursorImage: UInt32] = [:]
     private var nextId: UInt32 = 1
@@ -58,6 +60,7 @@ public struct CursorShapeTracker: Sendable {
         } else if let known = ids[image] {
             id = known
         } else {
+            if ids.count >= CursorShape.maxLive { ids.removeAll(keepingCapacity: true) }
             id = nextId
             nextId &+= 1
             ids[image] = id

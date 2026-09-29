@@ -121,6 +121,9 @@ public final class ClientVideoPipeline: Sendable {
     private let log = Telemetry.logger("video")
 
     private static let timingSlots = 32
+    /// kVTInvalidSessionErr, kVTVideoDecoderMalfunctionErr.
+    private static let invalidSessionStatus: Int32 = -12903
+    private static let decoderMalfunctionStatus: Int32 = -12911
 
     private struct Timing {
         var frameId: UInt32 = 0
@@ -141,6 +144,9 @@ public final class ClientVideoPipeline: Sendable {
         var lastGoodFrameId: UInt32 = 0
         /// The keyframe that ended the last recovery: errors from frames before it are stale.
         var lastKeyframeId: UInt32?
+        /// The decoder looks dead (its session was invalidated, e.g. while backgrounded, or even a
+        /// keyframe failed): rebuild it from `config` before the next keyframe.
+        var rebuildDecoder = false
         var timings = [Timing](repeating: Timing(), count: ClientVideoPipeline.timingSlots)
         var stats = VideoStats()
         var decode = RollingPercentiles(capacity: 240)
@@ -218,6 +224,7 @@ public final class ClientVideoPipeline: Sendable {
             return true
         case .videoFrame(let frame):
             var toDecode: (any FrameDecoding)?
+            var replaced: (any FrameDecoding)?
             let (ack, request) = state.withLock { s -> ((@Sendable (Message) -> Void)?, (@Sendable () -> Void)?) in
                 s.stats.framesReceived += 1
                 s.bytes += frame.data.count
@@ -226,6 +233,10 @@ public final class ClientVideoPipeline: Sendable {
                     s.stats.sequenceGaps += 1
                     s.awaitingKeyframe = true
                     request = makeRequest(&s, .sequenceGap, force: false)
+                }
+                if frame.isKeyframe, s.rebuildDecoder, let config = s.config {
+                    replaced = replaceDecoder(&s, config)
+                    s.rebuildDecoder = s.decoder == nil     // creation failed: try again at the next keyframe
                 }
                 if s.decoder == nil {
                     s.stats.framesDropped += 1
@@ -248,6 +259,7 @@ public final class ClientVideoPipeline: Sendable {
             // Backpressure (§7.3): ack on receipt, whether or not the frame is decoded.
             ack?(.frameAck(FrameAck(frameId: frame.frameId, receivedAtNs: now, bytes: UInt32(frame.data.count))))
             request?()
+            replaced?.finish()
             toDecode?.decode(frame)
             return true
         default:
@@ -317,24 +329,29 @@ public final class ClientVideoPipeline: Sendable {
             s.format = FrameFormat(config)
             return (nil, nil)
         }
+        s.config = config
+        s.format = FrameFormat(config)
+        s.awaitingKeyframe = true
+        s.rebuildDecoder = false
+        return (replaceDecoder(&s, config), nil)
+    }
+
+    /// A new decoder for `config` under a new generation; returns the old one to finish outside the lock.
+    private func replaceDecoder(_ s: inout State, _ config: VideoConfig) -> (any FrameDecoding)? {
         let old = s.decoder
         s.decoderGeneration &+= 1
         let generation = s.decoderGeneration
         let format = FrameFormat(config)
-        s.config = config
-        s.format = format
-        s.awaitingKeyframe = true
         do {
             s.decoder = try makeDecoder(config, requireHardware444 && config.chroma == .yuv444) { [weak self] out in
                 self?.decoded(out, generation: generation, format: format)
             }
             log.notice("decoder for config \(config.configId): \(config.width)×\(config.height) \(config.chroma == .yuv444 ? "4:4:4" : "4:2:0") \(config.bitDepth)-bit")
-            return (old, nil)
         } catch {
             s.decoder = nil
             log.error("decoder creation failed: \(String(describing: error), privacy: .public)")
-            return (old, nil)
         }
+        return old
     }
 
     /// A `KeyframeRequest` to send outside the lock, or nil when rate-limited or not connected.
@@ -355,6 +372,12 @@ public final class ClientVideoPipeline: Sendable {
             guard let image = out.image, out.status == 0 else {
                 // A frame submitted before the recovery keyframe failing is expected; ignore it.
                 if let k = s.lastKeyframeId, Int32(bitPattern: out.frameId &- k) < 0 { return (nil, nil) }
+                // A dead session (invalidated while backgrounded, or a malfunction) or a failing
+                // keyframe won't recover with another keyframe: rebuild the decoder when one arrives.
+                if out.status == Self.invalidSessionStatus || out.status == Self.decoderMalfunctionStatus
+                    || out.frameId == s.lastKeyframeId {
+                    s.rebuildDecoder = true
+                }
                 s.stats.decodeErrors += 1
                 s.awaitingKeyframe = true
                 s.lastKeyframeId = nil
