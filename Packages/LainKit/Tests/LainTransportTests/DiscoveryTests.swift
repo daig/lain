@@ -56,7 +56,7 @@ import Testing
     @Test func fixedDiscoveryReportsItsStateAndListThenUpdates() async {
         let host = DiscoveredHost(hostId: hostId, name: "Mac mini", protocolVersion: LainProtocol.majorVersion, endpoint: service)
         let discovery = FixedHostDiscovery(hosts: [host])
-        let lists = Mailbox<[DiscoveredHost]>(), states = Mailbox<DiscoveryState>()
+        let lists = Inbox<[DiscoveredHost]>(), states = Inbox<DiscoveryState>()
         discovery.start(onChange: { lists.put($0) }, onState: { states.put($0) })
         #expect(await states.next() == .searching)
         #expect(await lists.next() == [host])
@@ -75,7 +75,7 @@ import Testing
     @Test func aFixedDiscoveryCancelledBeforeStartReportsNothing() async {
         let discovery = FixedHostDiscovery(state: .failed("x"))
         discovery.cancel()
-        let states = Mailbox<DiscoveryState>()
+        let states = Inbox<DiscoveryState>()
         discovery.start(onChange: { _ in }, onState: { states.put($0) })
         #expect(await states.next(within: 0.2) == nil)
     }

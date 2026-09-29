@@ -5,12 +5,12 @@ import Synchronization
 
 /// Collects values from callbacks and lets tests await them.
 final class Inbox<T: Sendable>: Sendable {
-    private let state = Mutex<(items: [T], waiters: [CheckedContinuation<T?, Never>])>(([], []))
+    private let state = Mutex<(items: [T], waiters: [(id: Int, c: CheckedContinuation<T?, Never>)], nextID: Int)>(([], [], 0))
 
     func put(_ v: T) {
         let waiter = state.withLock { s -> CheckedContinuation<T?, Never>? in
             if s.waiters.isEmpty { s.items.append(v); return nil }
-            return s.waiters.removeFirst()
+            return s.waiters.removeFirst().c
         }
         waiter?.resume(returning: v)
     }
@@ -18,16 +18,18 @@ final class Inbox<T: Sendable>: Sendable {
     /// The next value, or nil after `seconds`.
     func next(within seconds: Double = 5) async -> T? {
         await withCheckedContinuation { (c: CheckedContinuation<T?, Never>) in
-            let ready = state.withLock { s -> T? in
-                if !s.items.isEmpty { return s.items.removeFirst() }
-                s.waiters.append(c)
-                return nil
+            let (ready, id) = state.withLock { s -> (T?, Int) in
+                if !s.items.isEmpty { return (s.items.removeFirst(), -1) }
+                s.nextID += 1
+                s.waiters.append((s.nextID, c))
+                return (nil, s.nextID)
             }
             if let ready { c.resume(returning: ready); return }
+            // Times out only this wait: a timer outliving an answered wait must not end a later one.
             DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { [self] in
                 let timedOut = state.withLock { s -> CheckedContinuation<T?, Never>? in
-                    guard let i = s.waiters.firstIndex(where: { _ in true }) else { return nil }
-                    return s.waiters.remove(at: i)
+                    guard let i = s.waiters.firstIndex(where: { $0.id == id }) else { return nil }
+                    return s.waiters.remove(at: i).c
                 }
                 timedOut?.resume(returning: nil)
             }

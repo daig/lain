@@ -2,6 +2,7 @@ import CryptoKit
 import Foundation
 import Network
 import Security
+import Synchronization
 
 /// The Wi-Fi TLS pre-shared key of one pairing (§7.6, §7.7, D29), derived from the 32-byte pairing
 /// secret with HKDF-SHA256 (salt "lain"; distinct info strings, so the key and the identity are
@@ -55,10 +56,25 @@ public enum WiFiTLS {
     public static func clientOptions(_ psk: WiFiPSK) -> NWProtocolTLS.Options { options([psk]) }
 
     /// The listener (the Mac) holds one PSK per paired iPad; the handshake picks the one whose identity
-    /// the client offers (unknown → -9864). The server can't tell which one was used (the metadata
-    /// lists them all), so the acceptor identifies the peer by trying `ChannelHello` candidates. With
-    /// no PSKs, every handshake fails.
+    /// the client offers (unknown → -9864). With no PSKs, every handshake fails.
     public static func serverOptions(_ psks: [WiFiPSK]) -> NWProtocolTLS.Options { options(psks) }
+
+    /// `serverOptions`, also telling `offered` which identity each connection's client used. The
+    /// server's TLS metadata lists every configured PSK, but the PSK selection block (documented for
+    /// clients) also runs on a TLS 1.2 server, with the identity the client offered and that
+    /// connection's metadata (measured 2026-09-29). The acceptor still finds the account by trying
+    /// `ChannelHello` candidates, and then requires the one TLS checked (`PairingBoundStream`).
+    static func serverOptions(_ psks: [WiFiPSK], recordingInto offered: OfferedPSKIdentities) -> NWProtocolTLS.Options {
+        let tls = options(psks)
+        let known = Set(psks.map(\.identity))
+        sec_protocol_options_set_pre_shared_key_selection_block(tls.securityProtocolOptions, { metadata, identity, complete in
+            let name = identity.map { String(decoding: Array($0 as DispatchData), as: UTF8.self) }
+            guard let name, known.contains(name) else { return complete(nil) }   // -9864, as without the block
+            offered.record(name, for: metadata)
+            complete(identity)
+        }, offered.queue)
+        return tls
+    }
 
     private static func options(_ psks: [WiFiPSK]) -> NWProtocolTLS.Options {
         let tls = NWProtocolTLS.Options()
@@ -78,5 +94,37 @@ public enum WiFiTLS {
     /// the array's storage would dangle).
     private static func dispatchData(_ bytes: [UInt8]) -> __DispatchData {
         bytes.withUnsafeBytes { DispatchData(bytes: $0) } as __DispatchData
+    }
+}
+
+/// Which PSK identity each accepted connection's client offered: recorded by the listener's TLS
+/// selection block during the handshake, taken when the connection is ready. Keyed by the connection's
+/// TLS metadata object, held weakly, so an entry can't outlive its handshake or match a later one.
+final class OfferedPSKIdentities: Sendable {
+    /// Where the selection block runs (it only records and answers).
+    let queue = DispatchQueue(label: "lain.wifi.psk", qos: .userInitiated)
+
+    private struct Offer: @unchecked Sendable {   // the metadata object is only compared, never used
+        weak var metadata: AnyObject?
+        var identity: String
+    }
+    private let offers = Mutex<[ObjectIdentifier: Offer]>([:])
+
+    func record(_ identity: String, for metadata: sec_protocol_metadata_t) {
+        let object = metadata as AnyObject
+        offers.withLock { o in
+            o = o.filter { $0.value.metadata != nil }   // handshakes that failed since
+            o[ObjectIdentifier(object)] = Offer(metadata: object, identity: identity)
+        }
+    }
+
+    /// The identity `connection`'s client offered. On the connection's queue, once it is ready.
+    func take(for connection: NWConnection) -> String? {
+        guard let tls = connection.metadata(definition: NWProtocolTLS.definition) as? NWProtocolTLS.Metadata else { return nil }
+        let object = tls.securityProtocolMetadata as AnyObject
+        return offers.withLock { o in
+            guard let offer = o.removeValue(forKey: ObjectIdentifier(object)), offer.metadata === object else { return nil }
+            return offer.identity
+        }
     }
 }

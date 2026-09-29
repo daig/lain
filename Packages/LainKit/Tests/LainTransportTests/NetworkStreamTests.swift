@@ -14,55 +14,15 @@ import Testing
 let wifiPSKA = WiFiPSK(secret: Array(0..<32))
 let wifiPSKB = WiFiPSK(secret: [UInt8](repeating: 0xA5, count: 32))
 
-/// Collects values from callbacks for tests to await, like `Inbox`, except that each wait's timeout
-/// ends only that wait: these tests wait on one mailbox many times, and a stale timeout must not cut
-/// a later wait short.
-final class Mailbox<T: Sendable>: Sendable {
-    private struct State {
-        var items: [T] = []
-        var waiters: [(id: UInt64, continuation: CheckedContinuation<T?, Never>)] = []
-        var lastId: UInt64 = 0
-    }
-    private let state = Mutex(State())
-
-    func put(_ value: T) {
-        let waiter = state.withLock { s -> CheckedContinuation<T?, Never>? in
-            guard !s.waiters.isEmpty else { s.items.append(value); return nil }
-            return s.waiters.removeFirst().continuation
-        }
-        waiter?.resume(returning: value)
-    }
-
-    /// The next value, or nil after `seconds`.
-    func next(within seconds: Double = 5) async -> T? {
-        await withCheckedContinuation { (c: CheckedContinuation<T?, Never>) in
-            let waiting = state.withLock { s -> (ready: T?, id: UInt64) in
-                if !s.items.isEmpty { return (s.items.removeFirst(), 0) }
-                s.lastId += 1
-                s.waiters.append((s.lastId, c))
-                return (nil, s.lastId)
-            }
-            if let ready = waiting.ready { return c.resume(returning: ready) }
-            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { [self] in
-                let expired = state.withLock { s -> CheckedContinuation<T?, Never>? in
-                    guard let i = s.waiters.firstIndex(where: { $0.id == waiting.id }) else { return nil }
-                    return s.waiters.remove(at: i).continuation
-                }
-                expired?.resume(returning: nil)
-            }
-        }
-    }
-}
-
 /// A loopback TLS-PSK listener and what it hands over or rejects.
 struct LoopbackTLSServer {
     let listener: NetworkStreamListener
     let port: UInt16
-    let accepted: Mailbox<NetworkStream>
-    let rejected: Mailbox<NetworkStreamError>
+    let accepted: Inbox<NetworkStream>
+    let rejected: Inbox<NetworkStreamError>
 
     init(psks: [WiFiPSK], handshakeTimeout: Double = NetworkStreamListener.handshakeTimeout) async throws {
-        let accepted = Mailbox<NetworkStream>(), rejected = Mailbox<NetworkStreamError>(), ready = Mailbox<UInt16>()
+        let accepted = Inbox<NetworkStream>(), rejected = Inbox<NetworkStreamError>(), ready = Inbox<UInt16>()
         listener = try NetworkStreamListener(psks: psks, options: .loopback, handshakeTimeout: handshakeTimeout,
                                              onEvent: { event in
                                                  switch event {
@@ -108,8 +68,8 @@ final class StreamSink: Sendable {
     private let target: Int
     private let keep: Bool
     /// Fires once `target` bytes have arrived.
-    let reached = Mailbox<Int>()
-    let closed = Mailbox<Closed>()
+    let reached = Inbox<Int>()
+    let closed = Inbox<Closed>()
 
     init(expecting target: Int = .max, keep: Bool = true) {
         self.target = target
@@ -190,6 +150,8 @@ func closedLoopbackPort() throws -> UInt16 {
             #expect(stream.tls == NegotiatedTLS(version: WiFiTLS.version, cipherSuite: WiFiTLS.cipherSuite))
             #expect(stream.path.kind == .loopback)
             #expect(!stream.path.interfaceName.isEmpty)
+            #expect(stream.path.linkTransport == .network(interface: stream.path.interfaceName, peerToPeer: false))
+            #expect(stream.pskIdentity == wifiPSKA.identity)
             #expect(stream.handshakeNs > 0 && Double(stream.handshakeNs) / 1e6 <= dialMs)
         }
         #expect(client.path.interfaceName == accepted.path.interfaceName)
@@ -230,7 +192,7 @@ func closedLoopbackPort() throws -> UInt16 {
         let server = try await LoopbackTLSServer(psks: [wifiPSKA], handshakeTimeout: 0.5)
         defer { server.listener.cancel() }
         let raw = try TCP.connectLoopback(port: server.port)   // plain TCP: never sends a ClientHello
-        let rawClosed = Mailbox<Bool>()
+        let rawClosed = Inbox<Bool>()
         raw.start(queue: DispatchQueue(label: "raw"), onBytes: { _ in }, onClose: { _ in rawClosed.put(true) })
         #expect(await server.rejected.next(within: 3) == .timeout)
         #expect(await rawClosed.next(within: 2) == true)
@@ -239,13 +201,17 @@ func closedLoopbackPort() throws -> UInt16 {
     }
 
     @Test func aListenerHoldingThreePSKsAcceptsEachIdentity() async throws {
-        let psks = (1...3).map { WiFiPSK(secret: [UInt8](repeating: UInt8($0), count: 32)) }
+        let secrets = (1...3).map { [UInt8](repeating: UInt8($0), count: 32) }
+        let psks = secrets.map(WiFiPSK.init(secret:))
         let server = try await LoopbackTLSServer(psks: psks)
         defer { server.listener.cancel() }
-        for psk in psks {
+        for (secret, psk) in zip(secrets, psks) {
             let (client, accepted) = try await server.pair(psk)
             #expect(client.tls?.cipherSuite == WiFiTLS.cipherSuite)
             #expect(accepted.tls?.cipherSuite == WiFiTLS.cipherSuite)
+            // The listener learns which of its PSKs this client used (the TLS selection block).
+            #expect(accepted.pskIdentity == psk.identity && client.pskIdentity == psk.identity)
+            #expect(secrets.filter { accepted.isBound(toSecret: $0) } == [secret])
             let sink = StreamSink(expecting: 1)
             sink.attach(accepted)
             client.write([7])
@@ -399,14 +365,14 @@ func closedLoopbackPort() throws -> UInt16 {
 
     @Test func aDialCancelledMidHandshakeThrowsAndLeavesNoConnection() async throws {
         // A plain TCP server: the dial's TCP connect succeeds, then TLS waits for a ServerHello forever.
-        let raw = Mailbox<SocketStream>()
+        let raw = Inbox<SocketStream>()
         let tcp = try TCPListener(port: 0, queue: DispatchQueue(label: "tcp")) { raw.put($0) }
         defer { tcp.cancel() }
         let dialer = NetworkStreamDialer(endpoint: .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: tcp.port)!),
                                          psk: wifiPSKA, options: .loopback, timeout: 20)
         let dial = Task { try await dialer.connect(kind: .realtime) }
         let peer = try #require(await raw.next())
-        let peerClosed = Mailbox<Bool>()
+        let peerClosed = Inbox<Bool>()
         peer.start(queue: DispatchQueue(label: "peer"), onBytes: { _ in }, onClose: { _ in peerClosed.put(true) })
         try await Task.sleep(for: .milliseconds(100))
         let t0 = MonotonicClock.now()
@@ -427,7 +393,7 @@ func closedLoopbackPort() throws -> UInt16 {
     }
 
     @Test func aDialThatIsNeverAnsweredTimesOut() async throws {
-        let raw = Mailbox<SocketStream>()
+        let raw = Inbox<SocketStream>()
         let tcp = try TCPListener(port: 0, queue: DispatchQueue(label: "tcp")) { raw.put($0) }
         defer { tcp.cancel() }
         let dialer = NetworkStreamDialer(endpoint: .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: tcp.port)!),

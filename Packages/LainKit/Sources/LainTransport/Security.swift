@@ -30,6 +30,13 @@ public enum ChannelAuth {
     }
 }
 
+/// A stream whose transport already authenticated its peer with a key derived from one pairing
+/// secret: Wi-Fi TLS-PSK (§7.7 D29). `LinkAcceptor` takes only that secret's `ChannelHello` on it.
+public protocol PairingBoundStream: ByteStream {
+    /// Whether `secret` is the pairing the transport authenticated; false while that is unknown.
+    func isBound(toSecret secret: [UInt8]) -> Bool
+}
+
 /// Where pairing secrets live: the Keychain in the apps, memory in tests.
 public protocol SecretStore: Sendable {
     func secret(for peer: String) throws -> [UInt8]?

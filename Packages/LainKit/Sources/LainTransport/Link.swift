@@ -84,12 +84,13 @@ public struct LinkDialer: Sendable {
     /// Runs on each new stream before its channel starts (HostLink: the video socket's small send
     /// buffer, §7.3).
     public let configure: @Sendable (ConnectionKind, any ByteStream) -> Void
-    /// What the link runs over, read from its realtime stream.
+    /// What the link runs over, read from its realtime stream (by default the stream's own path:
+    /// `LinkTransport(stream:)`).
     public let transport: @Sendable (any ByteStream) -> LinkTransport
 
     public init(dialer: any StreamDialer, label: String = "lain.link",
                 configure: @escaping @Sendable (ConnectionKind, any ByteStream) -> Void = { _, _ in },
-                transport: @escaping @Sendable (any ByteStream) -> LinkTransport = { _ in .usb }) {
+                transport: @escaping @Sendable (any ByteStream) -> LinkTransport = { LinkTransport(stream: $0) }) {
         self.dialer = dialer
         self.label = label
         self.configure = configure
@@ -231,7 +232,9 @@ public struct AcceptedLink: Sendable {
 /// up to `helloTimeout` for their realtime. Once all three are in, `onLink` gets the link and the
 /// acceptor forgets the session, keeping only its token (a late join is closed): what happens to an
 /// earlier link is the consumer's policy. A session whose video and audio don't follow its realtime
-/// within `helloTimeout` is dropped.
+/// within `helloTimeout` is dropped. On a connection whose transport already authenticated one pairing
+/// (`PairingBoundStream`: Wi-Fi TLS-PSK), a `ChannelHello` under any other secret is refused, so the
+/// HMAC and the TLS key always name the same pairing.
 public final class LinkAcceptor: Sendable {
     public static let helloTimeout = 3.0
     /// Tokens of delivered and dropped sessions kept to close late joins; older ones fall back to the
@@ -296,14 +299,15 @@ public final class LinkAcceptor: Sendable {
     ///     Every other stored account is a further candidate, listed with `allSecrets()`, whose failure is
     ///     only logged. Without a primary account (the host), `allSecrets()` is the read that must work.
     ///     `authenticationFailed` thus always means "read fine, nothing matched".
-    ///   - transport: what an accepted link runs over, read from its realtime stream.
+    ///   - transport: what an accepted link runs over, read from its realtime stream (by default the
+    ///     stream's own path: `LinkTransport(stream:)`).
     ///   - onReject: a refused connection, on the acceptor's queue: `TransportError.versionMismatch` (the
     ///     peer runs another lain: worth telling the owner), `.authenticationFailed`, `.unexpectedMessage`,
     ///     or the secret store's error.
     ///   - onLink: a complete link, on the acceptor's queue.
     public init(secrets: some SecretStore, primaryAccount: String? = nil, pairing: Pairing = .refuse,
                 label: String = "lain.acceptor",
-                transport: @escaping @Sendable (any ByteStream) -> LinkTransport = { _ in .usb },
+                transport: @escaping @Sendable (any ByteStream) -> LinkTransport = { LinkTransport(stream: $0) },
                 onReject: @escaping @Sendable (any Error) -> Void = { _ in },
                 onLink: @escaping @Sendable (AcceptedLink) -> Void) {
         control = DispatchQueue(label: "\(label).acceptor", qos: .userInitiated)
@@ -411,6 +415,10 @@ public final class LinkAcceptor: Sendable {
             guard let match else {
                 return reject(channel, .authenticationFailed, "bad HMAC", TransportError.authenticationFailed)
             }
+            guard isBound(channel, to: match.secret) else {
+                return reject(channel, .authenticationFailed, "HMAC under another pairing than the TLS key",
+                              TransportError.authenticationFailed)
+            }
             establish(hello, peer: match.peer, secret: match.secret, paired: false, realtime: channel)
         case .video, .audio:
             route(hello, channel)
@@ -433,6 +441,12 @@ public final class LinkAcceptor: Sendable {
             log.error("could not list the pairing secrets (\(String(describing: error), privacy: .public)); only \(primary, privacy: .public) was tried")
             return nil
         }
+    }
+
+    /// A connection whose transport authenticated one pairing (Wi-Fi TLS-PSK) carries only that
+    /// pairing's `ChannelHello`; others (USB) have nothing to check.
+    private func isBound(_ channel: MessageChannel, to secret: [UInt8]) -> Bool {
+        (channel.stream as? any PairingBoundStream)?.isBound(toSecret: secret) ?? true
     }
 
     private func handlePair(_ env: Envelope, _ hello: ChannelHello, on channel: MessageChannel, peer: String,
@@ -504,6 +518,10 @@ public final class LinkAcceptor: Sendable {
     private func join(_ hello: ChannelHello, _ channel: MessageChannel, secret: [UInt8]) {
         guard ChannelAuth.isValid(hello, secret: secret) else {
             return reject(channel, .authenticationFailed, "bad HMAC on \(hello.connectionKind)", TransportError.authenticationFailed)
+        }
+        guard isBound(channel, to: secret) else {
+            return reject(channel, .authenticationFailed, "\(hello.connectionKind) under another pairing than its TLS key",
+                          TransportError.authenticationFailed)
         }
         enum Joined: Sendable {
             case orphan
@@ -619,14 +637,5 @@ public final class ClientLinkListener: Sendable {
         } else if !pair.hostId.isEmpty {
             Telemetry.logger("link").error("Pair carried a malformed host id; stored for USB only")
         }
-    }
-}
-
-final class WeakBox<T: AnyObject>: @unchecked Sendable {
-    private let lock = Mutex<Void>(())
-    private weak var _value: T?
-    var value: T? {
-        get { lock.withLock { _ in _value } }
-        set { lock.withLock { _ in _value = newValue } }
     }
 }

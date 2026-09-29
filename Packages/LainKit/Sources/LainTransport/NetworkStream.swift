@@ -50,7 +50,16 @@ public struct NetworkStreamOptions: Sendable {
     /// A listener's parameters. Production keeps the wildcard dual-stack bind (awdl0 has only an IPv6
     /// link-local address); `requiredInterfaceType = .loopback` alone would still bind `*:port`.
     public func listenerParameters(psks: [WiFiPSK]) -> NWParameters {
-        let p = parameters(tls: WiFiTLS.serverOptions(psks))
+        listenerParameters(tls: WiFiTLS.serverOptions(psks))
+    }
+
+    /// `NetworkStreamListener`'s: `offered` learns which PSK each connection's client used.
+    func listenerParameters(psks: [WiFiPSK], offered: OfferedPSKIdentities) -> NWParameters {
+        listenerParameters(tls: WiFiTLS.serverOptions(psks, recordingInto: offered))
+    }
+
+    private func listenerParameters(tls: NWProtocolTLS.Options) -> NWParameters {
+        let p = parameters(tls: tls)
         if loopbackOnly { p.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any) }
         return p
     }
@@ -115,6 +124,19 @@ public struct NetworkPath: Sendable, Equatable {
         case .wiredEthernet?: return .wired
         default: return name.hasPrefix("lo") ? .loopback : .other
         }
+    }
+
+    /// This path as a link's transport: the interface (nil if unknown) and whether it is AWDL/LLW.
+    public var linkTransport: LinkTransport {
+        .network(interface: interfaceName.isEmpty ? nil : interfaceName, peerToPeer: kind == .peerToPeer)
+    }
+}
+
+extension LinkTransport {
+    /// What `stream` runs over: a Network.framework stream's path, anything else USB (the usbmuxd pipe,
+    /// or the iPad's loopback listener it feeds). `LinkDialer`'s and `LinkAcceptor`'s default.
+    public init(stream: any ByteStream) {
+        self = (stream as? NetworkStream)?.path.linkTransport ?? .usb
     }
 }
 
@@ -205,6 +227,9 @@ public final class NetworkStream: ByteStream {
     /// The interface and far end (see `NetworkPath`).
     public let path: NetworkPath
     public let tls: NegotiatedTLS?
+    /// The PSK identity TLS authenticated: the dialer's own, or the one the client offered to the
+    /// listener (nil if TLS didn't report it). Names one pairing (`isBound(toSecret:)`).
+    public let pskIdentity: String?
     /// Start to ready: resolution, TCP and TLS for a dial; the TLS handshake for an accepted connection.
     public let handshakeNs: UInt64
     let core: Core
@@ -212,6 +237,7 @@ public final class NetworkStream: ByteStream {
     struct Opened: Sendable {
         var path: NetworkPath
         var tls: NegotiatedTLS?
+        var pskIdentity: String?
         var handshakeNs: UInt64
     }
 
@@ -219,6 +245,7 @@ public final class NetworkStream: ByteStream {
         self.core = core
         path = opened.path
         tls = opened.tls
+        pskIdentity = opened.pskIdentity
         handshakeNs = opened.handshakeNs
     }
 
@@ -233,11 +260,12 @@ public final class NetworkStream: ByteStream {
 
     public func close() { core.close() }
 
-    /// Connects and waits for `.ready`. Fails on `.failed`, on `.waiting` (it never waits for a
-    /// better path), on the timeout and on task cancellation, always cancelling the connection.
-    static func connect(to endpoint: NWEndpoint, using parameters: NWParameters, timeout: Double,
+    /// Connects with `psk` and waits for `.ready`. Fails on `.failed`, on `.waiting` (it never waits
+    /// for a better path), on the timeout and on task cancellation, always cancelling the connection.
+    static func connect(to endpoint: NWEndpoint, using parameters: NWParameters, psk: WiFiPSK, timeout: Double,
                         label: String) async throws -> NetworkStream {
-        let core = Core(connection: NWConnection(to: endpoint, using: parameters), label: label)
+        let identity = psk.identity
+        let core = Core(connection: NWConnection(to: endpoint, using: parameters), label: label) { _ in identity }
         let opened = try await withTaskCancellationHandler {
             try await withCheckedThrowingContinuation { (continuation: CheckedContinuation<Opened, any Error>) in
                 core.open(timeout: timeout) { continuation.resume(with: $0) }
@@ -251,6 +279,14 @@ public final class NetworkStream: ByteStream {
             throw CancellationError()
         }
         return stream
+    }
+}
+
+extension NetworkStream: PairingBoundStream {
+    /// TLS proved the key of exactly one pairing, `WiFiPSK(secret:)`, named by its identity.
+    public func isBound(toSecret secret: [UInt8]) -> Bool {
+        guard let pskIdentity else { return false }
+        return WiFiPSK(secret: secret).identity == pskIdentity
     }
 }
 
@@ -285,10 +321,13 @@ extension NetworkStream {
 
         let connection: NWConnection
         let queue: DispatchQueue
+        /// The PSK identity TLS authenticated, asked once the connection is ready.
+        private let pskIdentity: @Sendable (NWConnection) -> String?
         private let state = Mutex(State())
 
-        init(connection: NWConnection, label: String) {
+        init(connection: NWConnection, label: String, pskIdentity: @escaping @Sendable (NWConnection) -> String?) {
             self.connection = connection
+            self.pskIdentity = pskIdentity
             queue = DispatchQueue(label: label, qos: .userInteractive)
         }
 
@@ -376,7 +415,7 @@ extension NetworkStream {
 
         private func becameReady() {
             let now = MonotonicClock.now()
-            let (path, tls) = (NetworkPath(connection.currentPath), NegotiatedTLS(connection))
+            let (path, tls, identity) = (NetworkPath(connection.currentPath), NegotiatedTLS(connection), pskIdentity(connection))
             let ready = state.withLock { s -> (opening: (@Sendable (Result<Opened, any Error>) -> Void)?, since: UInt64)? in
                 guard s.phase == .connecting else { return nil }
                 s.phase = .open
@@ -384,7 +423,7 @@ extension NetworkStream {
                 return (s.opening, s.startedAtNs)
             }
             guard let ready else { return }
-            ready.opening?(.success(Opened(path: path, tls: tls, handshakeNs: now &- ready.since)))
+            ready.opening?(.success(Opened(path: path, tls: tls, pskIdentity: identity, handshakeNs: now &- ready.since)))
         }
 
         private func failConnecting(_ error: any Error) {
@@ -529,7 +568,7 @@ public struct NetworkStreamDialer: StreamDialer {
     /// Throws `NetworkStreamError` (or `CancellationError`); see `NetworkStream.connect`.
     public func connect(kind: ConnectionKind?) async throws -> NetworkStream {
         do {
-            return try await NetworkStream.connect(to: endpoint, using: options.dialParameters(psk: psk, kind: kind),
+            return try await NetworkStream.connect(to: endpoint, using: options.dialParameters(psk: psk, kind: kind), psk: psk,
                                                    timeout: timeout, label: "lain.wifi.\(kind.map { "\($0)" } ?? "stream")")
         } catch let error as NetworkStreamError {
             let what = "dial \(endpoint.debugDescription) failed: \(error)"
@@ -582,7 +621,7 @@ public final class WiFiLinkDialer: StreamDialer {
         let stream: NetworkStream
         do {
             stream = try await NetworkStream.connect(
-                to: target, using: options.dialParameters(psk: psk, kind: kind, requiredInterface: current?.interface),
+                to: target, using: options.dialParameters(psk: psk, kind: kind, requiredInterface: current?.interface), psk: psk,
                 timeout: timeout, label: "lain.wifi.\(name)")
         } catch let error as NetworkStreamError {
             let what = "dial \(name) to \(target.debugDescription) failed: \(error)"
@@ -609,9 +648,10 @@ public final class WiFiLinkDialer: StreamDialer {
 // MARK: - Listener
 
 /// Accepts TLS-PSK connections (§7.7, D29), optionally advertised over Bonjour. Each accepted
-/// connection is handed to `onAccept` only once `.ready` (TLS done, path known); one that isn't ready
-/// within `handshakeTimeout` is force-cancelled, so the acceptor's own `ChannelHello` deadline
-/// measures the same thing as on USB. Cancelling the listener leaves handed-over streams alone.
+/// connection is handed to `onAccept` only once `.ready` (TLS done; path and the client's PSK identity
+/// known); one that isn't ready within `handshakeTimeout` is force-cancelled, so the acceptor's own
+/// `ChannelHello` deadline measures the same thing as on USB. Cancelling the listener leaves
+/// handed-over streams alone.
 public final class NetworkStreamListener: Sendable {
     public static let handshakeTimeout = 5.0
 
@@ -662,8 +702,9 @@ public final class NetworkStreamListener: Sendable {
                 onAccept: @escaping @Sendable (NetworkStream) -> Void) throws {
         precondition(advertisement == nil || !options.loopbackOnly, "a loopback-only listener never advertises")
         identities = psks.map(\.identity)
-        let listener = try NWListener(using: options.listenerParameters(psks: psks))
-        let box = Box(handshakeTimeout: handshakeTimeout, onEvent: onEvent, onAccept: onAccept)
+        let offered = OfferedPSKIdentities()
+        let listener = try NWListener(using: options.listenerParameters(psks: psks, offered: offered))
+        let box = Box(handshakeTimeout: handshakeTimeout, offered: offered, onEvent: onEvent, onAccept: onAccept)
         if let advertisement {
             listener.service = NWListener.Service(name: advertisement.name, type: advertisement.type, domain: nil,
                                                   txtRecord: NWTXTRecord(advertisement.txt))
@@ -693,21 +734,25 @@ public final class NetworkStreamListener: Sendable {
     private final class Box: Sendable {
         let queue = DispatchQueue(label: "lain.wifi.listener", qos: .userInitiated)
         private let handshakeTimeout: Double
+        private let offered: OfferedPSKIdentities
         private let onEvent: @Sendable (Event) -> Void
         private let onAccept: @Sendable (NetworkStream) -> Void
         /// Connections still in their handshake; nil once cancelled.
         private let pending = Mutex<[ObjectIdentifier: NetworkStream.Core]?>([:])
 
-        init(handshakeTimeout: Double, onEvent: @escaping @Sendable (Event) -> Void,
+        init(handshakeTimeout: Double, offered: OfferedPSKIdentities, onEvent: @escaping @Sendable (Event) -> Void,
              onAccept: @escaping @Sendable (NetworkStream) -> Void) {
             self.handshakeTimeout = handshakeTimeout
+            self.offered = offered
             self.onEvent = onEvent
             self.onAccept = onAccept
         }
 
         /// On `queue`. Network.framework hands connections over in `.setup`, before TLS.
         func accept(_ connection: NWConnection) {
-            let core = NetworkStream.Core(connection: connection, label: "lain.wifi.accepted")
+            let core = NetworkStream.Core(connection: connection, label: "lain.wifi.accepted") { [offered] in
+                offered.take(for: $0)
+            }
             let id = ObjectIdentifier(core)
             let admitted = pending.withLock { p -> Bool in
                 guard p != nil else { return false }
@@ -727,6 +772,9 @@ public final class NetworkStreamListener: Sendable {
             case .success(let opened):
                 let stream = NetworkStream(core: core, opened: opened)
                 guard wasPending else { return stream.close() }
+                if opened.pskIdentity == nil {
+                    log.error("TLS didn't report which PSK the client used: its ChannelHello will be refused")
+                }
                 onAccept(stream)
             case .failure(let error):
                 guard wasPending, let error = error as? NetworkStreamError else { return }
