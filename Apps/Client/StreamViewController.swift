@@ -9,8 +9,9 @@ import UIKit
 /// (CAMetalDisplayLink at 120 Hz on its own thread: input tick, newest decoded frame, local cursor);
 /// shows the connection state only while there's no video, the D19 overlay while the pointer isn't
 /// captured, and a HUD toggled with **Ctrl-Opt-Cmd-L** (matched by the character "l" the iPad layout
-/// produces, D18; the combo also reaches the Mac, where nothing uses it by default). All input logic
-/// lives in `ClientInputPipeline`; this class only adapts UIKit and GameController to it.
+/// produces, D18; the combo also reaches the Mac, where nothing uses it by default). The connect detail
+/// and the HUD's first line name the transport (USB, or Wi-Fi with its path and interface, §7.7). All
+/// input logic lives in `ClientInputPipeline`; this class only adapts UIKit and GameController to it.
 ///
 /// GameController handlers are `@Sendable` closures that capture only `input`, and their
 /// `handlerQueue` is `input.queue`, so they run on the input queue with no hop and never touch the
@@ -19,7 +20,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     let input: ClientInput
     let video: ClientVideoPipeline
 
-    var status = ClientStatus.waitingForMac {
+    var status = ClientStatus.waitingForMac(wifi: false) {
         didSet {
             UIApplication.shared.isIdleTimerDisabled = status.isConnected
             connected.set(status.isConnected)
@@ -237,12 +238,23 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             self.hasVideo = hasVideo
             render()
         }
-        if !hud.isHidden { hud.text = video.stats().hudText }
+        if !hud.isHidden { hud.text = hudText() }
     }
 
     private func toggleHUD() {
         hud.isHidden.toggle()
-        if !hud.isHidden { hud.text = video.stats().hudText }
+        if !hud.isHidden { hud.text = hudText() }
+    }
+
+    /// The link first ("USB", "Wi-Fi · AWDL awdl0 · Mac mini"), then the video numbers.
+    private func hudText() -> String {
+        let link: String
+        if case .session(let info) = status {
+            link = ClientStatus.describe(info.transport) + (info.hostName.isEmpty ? "" : " · \(info.hostName)")
+        } else {
+            link = "no link"
+        }
+        return link + "\n" + video.stats().hudText
     }
 
     // MARK: Pointer lock (D19)

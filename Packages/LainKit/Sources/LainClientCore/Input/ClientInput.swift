@@ -58,10 +58,16 @@ public struct CursorSnapshot: Sendable, Equatable {
 /// made. Calls made on `queue` itself (GCMouse and GCKeyboard handlers, whose `handlerQueue` is
 /// `queue`) run inline with no hop; calls from elsewhere are enqueued. No locks and no awaits: the
 /// cursor snapshot for the UI is published through relaxed atomics.
+///
+/// A session's calls can carry its link's generation (§7.7 D29): they apply only while that link is the
+/// adopted one, checked on `queue`, so a replaced link's late `HelloAck`, `DisplayLayout` or
+/// `CursorWarp` can't land after the adoption. Untagged calls always apply.
 public final class ClientInput: @unchecked Sendable {
     public let queue: DispatchQueue
     /// Touched only on `queue`.
     private let pipeline: ClientInputPipeline
+    /// The adopted link's generation (nil: none, so tagged calls are dropped). Touched only on `queue`.
+    private var link: UInt64?
     private let onQueueKey = DispatchSpecificKey<UInt8>()
     private let cursorX = Atomic<UInt64>(0)
     private let cursorY = Atomic<UInt64>(0)
@@ -80,36 +86,53 @@ public final class ClientInput: @unchecked Sendable {
 
     // MARK: Session
 
-    /// A session is up and configured: input now goes to `send`.
-    public func connect(send: @escaping @Sendable (Message) -> Void) {
-        perform { self.pipeline.send = send }
+    /// The session adopted the link with this generation (§7.7 D29): from now on only calls tagged with
+    /// it (and untagged ones) apply.
+    public func adopt(link generation: UInt64) {
+        perform { self.link = generation }
     }
 
-    /// The link is gone (invariant 4): forget everything held without sending, then drop output.
+    /// A session is up and configured: input now goes to `send`. Tagged: only for the adopted link.
+    public func connect(generation: UInt64? = nil, send: @escaping @Sendable (Message) -> Void) {
+        perform {
+            guard self.accepts(generation) else { return }
+            self.pipeline.send = send
+        }
+    }
+
+    /// The link is gone (invariant 4): forget everything held without sending, then drop output. Tagged
+    /// calls are dropped until the next `adopt`.
     public func disconnect() {
         perform {
             self.pipeline.releaseAll(.disconnect, notify: false)
             self.pipeline.send = { _ in }
+            self.link = nil
         }
     }
 
-    public func configure(_ ack: HelloAck) {
+    /// The Mac's settings (`HelloAck`). Tagged: only from the adopted link.
+    public func configure(_ ack: HelloAck, generation: UInt64? = nil) {
         perform {
+            guard self.accepts(generation) else { return }
             self.pipeline.configure(ack)
             self.publishCursor()
         }
     }
 
-    /// `DisplayLayout` from the Mac: the cursor's desktop and the streamed display.
-    public func applyLayout(_ layout: DisplayLayout) {
+    /// `DisplayLayout` from the Mac: the cursor's desktop and the streamed display. Tagged: only from
+    /// the adopted link.
+    public func applyLayout(_ layout: DisplayLayout, generation: UInt64? = nil) {
         perform {
+            guard self.accepts(generation) else { return }
             self.pipeline.applyLayout(layout)
             self.publishCursor()
         }
     }
 
-    public func warp(x: Double, y: Double) {
+    /// `CursorWarp` from the Mac. Tagged: only from the adopted link.
+    public func warp(x: Double, y: Double, generation: UInt64? = nil) {
         perform {
+            guard self.accepts(generation) else { return }
             self.pipeline.warp(x: x, y: y)
             self.publishCursor()
         }
@@ -223,6 +246,9 @@ public final class ClientInput: @unchecked Sendable {
     }
 
     // MARK: Private
+
+    /// On `queue`: an untagged call, or one from the adopted link.
+    private func accepts(_ generation: UInt64?) -> Bool { generation == nil || generation == link }
 
     private func perform(_ work: @escaping @Sendable () -> Void) {
         if DispatchQueue.getSpecific(key: onQueueKey) != nil {

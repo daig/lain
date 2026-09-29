@@ -1,4 +1,5 @@
 import Dispatch
+import Foundation
 import LainClientCore
 import LainInput
 import LainProtocol
@@ -174,5 +175,85 @@ let hello = Hello(deviceModel: "iPad16,6", pixelWidth: 2752, pixelHeight: 2064, 
             #expect(p.keyboard.macHeldKeys.isEmpty)
             #expect(p.heldButtons.mask == 0)
         }
+    }
+
+    /// §7.7 D29: a USB `HelloAck`'s host id is recorded as `mac:<id>` (usable over Wi-Fi) only if the
+    /// link authenticated with the USB account or that Mac's own: the id is public and self-asserted.
+    @Test func aUSBHelloAckRecordsTheMacForWiFiOnlyUnderItsOwnAccount() async throws {
+        let x = UUID().uuidString, y = UUID().uuidString
+        let yours = ChannelAuth.randomBytes(32)
+        let store = RecordingSecrets([PairingAccounts.mac(y): yours])
+        let statuses = Inbox<ClientSession.Status>()
+        let session = try ClientSession(port: 0, secrets: store, hello: hello) { statuses.put($0) }
+        defer { session.stop() }
+        func usbSession(claiming id: String) async throws {
+            let (link, _, paired) = try await HostLink.open(dialer: LoopbackDialer(port: session.port),
+                                                            secrets: InMemorySecretStore(["IPAD": yours]), peerID: "IPAD",
+                                                            allowPairing: false)
+            defer { link.close() }
+            #expect(!paired)
+            link.realtime.send(.helloAck(helloAck(hostId: id)))
+            #expect(await statuses.first { isConfigured($0) } != nil)
+        }
+        // Authenticated as Mac Y (its Wi-Fi account), claiming X: not recorded.
+        try await usbSession(claiming: x)
+        #expect(store.writeCount == 0 && store.secret(for: PairingAccounts.mac(x)) == nil)
+        // A malformed id isn't an account.
+        try await usbSession(claiming: y.lowercased())
+        #expect(store.writeCount == 0)
+        // Claiming Y itself: recorded (again).
+        try await usbSession(claiming: y)
+        #expect(store.writeCount == 1 && store.secret(for: PairingAccounts.mac(y)) == yours)
+        #expect(store.secret(for: PairingAccounts.usbHost) == nil)
+
+        // The USB account ("host", the Mac last paired by cable) may name any id.
+        store.setSecret(yours, for: PairingAccounts.usbHost)
+        store.removeSecret(for: PairingAccounts.mac(y))
+        try await usbSession(claiming: x)
+        #expect(store.secret(for: PairingAccounts.mac(x)) == yours)
+    }
+
+    @Test func aPairedUSBLinkRecordsTheMacForWiFi() async throws {
+        let x = UUID().uuidString
+        let store = RecordingSecrets()
+        let statuses = Inbox<ClientSession.Status>()
+        let session = try ClientSession(port: 0, secrets: store, hello: hello) { statuses.put($0) }
+        defer { session.stop() }
+        // A pairing whose Pair carries no host id stores "host" only; its HelloAck adds mac:<id>.
+        let hostStore = InMemorySecretStore()
+        let (link, _, paired) = try await HostLink.open(dialer: LoopbackDialer(port: session.port), secrets: hostStore,
+                                                        peerID: "IPAD", allowPairing: true)
+        defer { link.close() }
+        #expect(paired && store.allSecrets().keys.sorted() == [PairingAccounts.usbHost])
+        link.realtime.send(.helloAck(helloAck(hostId: x)))
+        #expect(await statuses.first { isConfigured($0) } != nil)
+        #expect(store.secret(for: PairingAccounts.mac(x)) == hostStore.secret(for: "IPAD"))
+    }
+
+    /// §7.7 D29: a Mac on the cable that speaks another protocol version is reported, not just dropped.
+    @Test func aMacOnTheCableOnAnotherProtocolVersionIsReported() async throws {
+        let statuses = Inbox<ClientSession.Status>()
+        let session = try ClientSession(port: 0, secrets: InMemorySecretStore(), hello: hello) { statuses.put($0) }
+        defer { session.stop() }
+        #expect(await statuses.next() == .listening(port: session.port))
+        // A v1 host's first frame: its pairing ChannelHello, framed in v1.
+        let v1 = try await LoopbackDialer(port: session.port).dial()
+        defer { v1.close() }
+        v1.start(queue: DispatchQueue(label: "test.v1"), onBytes: { _ in }, onClose: { _ in })
+        let token = ChannelAuth.randomBytes(ChannelHello.tokenSize)
+        v1.write(MessageCodec.encode(.channelHello(ChannelHello(protocolVersion: 1, connectionKind: .realtime, sessionToken: token,
+                                                                hmac: ChannelAuth.pairingMAC)),
+                                     sequence: 0, timestampNs: 0, version: 1))
+        let status = try #require(await statuses.next())
+        #expect(status == .versionMismatch(hostName: nil, remote: 1))
+        #expect(ClientStatus(status).title == "The Mac runs another lain")
+        #expect(ClientStatus(status).detail.contains("update lain on the Mac"))
+
+        // The next link (the Mac updated) clears it.
+        let (link, _, _) = try await HostLink.open(dialer: LoopbackDialer(port: session.port), secrets: InMemorySecretStore(),
+                                                   peerID: "IPAD", allowPairing: true)
+        #expect(await statuses.first { if case .connected = $0 { true } else { false } } != nil)
+        link.close()
+        #expect(await statuses.first { if case .listening = $0 { true } else { false } } == .listening(port: session.port))
     }
 }

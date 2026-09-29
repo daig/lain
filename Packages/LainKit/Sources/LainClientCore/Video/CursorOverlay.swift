@@ -82,6 +82,10 @@ public struct CursorSprite: Sendable, Equatable {
 /// The client's cursor sprite state (§5.4, §6.3): shapes from `CursorShape`, the selection from
 /// `CursorSelect`, and hide-while-typing. Written from the realtime and input queues, read by the
 /// renderer each tick (a version check, then a copy only when something changed).
+///
+/// Shape ids restart at 1 with every host session, so a replaced link's late shape could overwrite the
+/// new session's (§7.7 D29): messages tagged with a link generation apply only while that link is the
+/// one `reset` last named, checked under the lock.
 public final class CursorOverlay: Sendable {
     /// At most this many Mac shapes are kept, the host's live window: past it the host resends shapes
     /// under higher ids, so the lowest id is always the one to drop (`CursorShape.maxLive`).
@@ -91,6 +95,8 @@ public final class CursorOverlay: Sendable {
         var shapes: [UInt32: CursorShape] = [:]
         var selected: UInt32?
         var visible = true
+        /// The link whose tagged messages apply (nil: none).
+        var link: UInt64?
     }
     private let state = Mutex(State())
     private let versionCounter = Atomic<UInt64>(0)
@@ -101,25 +107,31 @@ public final class CursorOverlay: Sendable {
     /// Bumped whenever the sprite or the Mac's visibility changes.
     public var version: UInt64 { versionCounter.load(ordering: .acquiring) }
 
-    /// `CursorShape`/`CursorSelect` from the realtime connection; other messages are ignored.
-    public func apply(_ message: Message) {
+    /// `CursorShape`/`CursorSelect` from the realtime connection; other messages are ignored. With a
+    /// `generation`, only while that link is current (a stale one is dropped).
+    public func apply(_ message: Message, generation: UInt64? = nil) {
+        let applied: Bool
         switch message {
         case .cursorShape(let shape):
-            state.withLock { s in
+            applied = state.withLock { s in
+                guard generation == nil || generation == s.link else { return false }
                 if s.shapes.count >= Self.maxShapes, s.shapes[shape.shapeId] == nil, let victim = s.shapes.keys.min() {
                     s.shapes[victim] = nil
                 }
                 s.shapes[shape.shapeId] = shape
+                return true
             }
         case .cursorSelect(let select):
-            state.withLock { s in
+            applied = state.withLock { s in
+                guard generation == nil || generation == s.link else { return false }
                 s.selected = select.shapeId
                 s.visible = select.visible
+                return true
             }
         default:
             return
         }
-        versionCounter.add(1, ordering: .releasing)
+        if applied { versionCounter.add(1, ordering: .releasing) }
     }
 
     /// A key went down (not a modifier): hide the cursor until the pointer moves (§5.4).
@@ -127,9 +139,10 @@ public final class CursorOverlay: Sendable {
     public func pointerMoved() { typingHidden.store(false, ordering: .relaxed) }
     public var isHiddenForTyping: Bool { typingHidden.load(ordering: .relaxed) }
 
-    /// New session: back to the built-in arrow until the Mac sends shapes again.
-    public func reset() {
-        state.withLock { $0 = State() }
+    /// New session: back to the built-in arrow until the Mac sends shapes again. Tagged messages apply
+    /// only from link `generation` from now on (nil: from none).
+    public func reset(generation: UInt64? = nil) {
+        state.withLock { $0 = State(link: generation) }
         typingHidden.store(false, ordering: .relaxed)
         versionCounter.add(1, ordering: .releasing)
     }
