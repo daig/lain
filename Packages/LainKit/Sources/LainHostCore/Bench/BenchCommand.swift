@@ -5,12 +5,19 @@ import Foundation
 /// `LainHost --bench <name>` (D16): benchmarks run inside the host app so macOS attributes permissions
 /// to it, not to the terminal. Output goes to stdout; the process exits when the bench finishes.
 public enum BenchCommand {
-    public static let names = ["usbmux", "replug", "inject", "vdisplay", "headless", "vdisplay-identity"]
+    public static let names = ["usbmux", "replug", "inject", "vdisplay", "headless", "vdisplay-identity", "wifi"]
 
     /// The bench requested on the command line, if any.
     public static func requested(in arguments: [String] = CommandLine.arguments) -> String? {
         guard let i = arguments.firstIndex(of: "--bench") else { return nil }
         return i + 1 < arguments.count ? arguments[i + 1] : ""
+    }
+
+    /// The bench's own arguments: the words after its name, up to the next option (a negative number
+    /// is kept, for the bench to refuse): `--bench wifi awdl 180` → ["awdl", "180"].
+    public static func arguments(in arguments: [String] = CommandLine.arguments) -> [String] {
+        guard let i = arguments.firstIndex(of: "--bench"), i + 2 < arguments.count else { return [] }
+        return Array(arguments[(i + 2)...].prefix { !$0.hasPrefix("-") || Double($0) != nil })
     }
 
     public static func run(_ name: String) -> Never {
@@ -31,6 +38,9 @@ public enum BenchCommand {
                     exit(await InjectBench.run())
                 case "replug":
                     try await ReplugBench.run()
+                case "wifi":
+                    // `wifi [any|awdl|lan] [seconds]`, from Terminal as the app's binary (S9).
+                    exit(await WiFiBench.main(arguments: arguments()))
                 default:
                     print("unknown bench '\(name)'; available: \(names.joined(separator: ", "))")
                     exit(2)
