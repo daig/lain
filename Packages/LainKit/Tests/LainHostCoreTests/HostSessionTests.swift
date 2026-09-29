@@ -4,8 +4,10 @@ import LainProtocol
 import LainTestSupport
 import LainTransport
 import LainUSBMux
+import Synchronization
 import Testing
 @testable import LainHostCore
+@testable import LainTransport
 
 /// HostSession end to end: fake usbmuxd → a minimal fake client built from `ClientLinkListener`.
 @Suite(.serialized) struct HostSessionTests {
@@ -42,15 +44,16 @@ import Testing
         let statuses = Inbox<HostStatus>()
         let session: HostSession
 
-        init(cursor: CGPoint? = nil) throws {
+        init(cursor: CGPoint? = nil, devices: [FakeUSBMuxd.Device] = [.init(deviceID: 7, serialNumber: "IPAD-7")],
+             tuning: HostSession.Tuning = HostSession.Tuning()) throws {
             client = try FakeClient()
-            mux = try FakeUSBMuxd(devices: [.init(deviceID: 7, serialNumber: "IPAD-7")], targetPort: client.listener.port)
+            mux = try FakeUSBMuxd(devices: devices, targetPort: client.listener.port)
             self.cursor = FakeDisplay(display: HostSessionTests.display, cursor: cursor)
             let deps = HostSession.Dependencies(
                 usbmux: USBMuxClient(socketPath: mux.socketPath), secrets: InMemorySecretStore(), sink: sink,
                 display: self.cursor, power: power, settings: { HostSessionTests.settings })
             let statuses = statuses
-            session = HostSession(dependencies: deps) { statuses.put($0) }
+            session = HostSession(dependencies: deps, tuning: tuning) { statuses.put($0) }
         }
 
         func tearDown() {
@@ -112,7 +115,9 @@ import Testing
 
         link.close()
         #expect(await eventually { rig.sink.inputCalls.last == .releaseAll })
-        #expect(rig.sink.inputCalls == expected + [.releaseAll])
+        // The scroll the client began is ended by the host: the client can't once the link is gone.
+        #expect(rig.sink.inputCalls == expected + [.scroll(Scroll(dx: 0, dy: 0, phase: .cancelled, momentumPhase: .none)),
+                                                   .releaseAll])
         // (The session redials the still-attached fake iPad right away, so check the release count.)
         #expect(await eventually { rig.power.ends >= 1 })
         #expect(rig.power.activityCount >= 1)
@@ -157,6 +162,154 @@ import Testing
         // Synchronous: released before stop() returns.
         #expect(rig.sink.inputCalls.last == .releaseAll)
         #expect(!rig.power.holding)
+    }
+
+    @Test func detachDuringMomentumEndsItOnTheMac() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        let (link, _) = try await rig.connect()
+        link.realtime.send(.scroll(Scroll(dx: 0, dy: -8, phase: .began, momentumPhase: .none)))
+        link.realtime.send(.scroll(Scroll(dx: 0, dy: 0, phase: .ended, momentumPhase: .none)))
+        link.realtime.send(.scroll(Scroll(dx: 0, dy: -30, phase: .none, momentumPhase: .began)))
+        #expect(await eventually { rig.sink.inputCalls.count == 3 })
+        rig.mux.detach(deviceID: 7)   // the fling's momentum-ended will never arrive from the client
+        #expect(await eventually { rig.sink.inputCalls.last == .releaseAll })
+        #expect(Array(rig.sink.inputCalls.dropFirst(3)) == [.scroll(Scroll(dx: 0, dy: 0, phase: .none, momentumPhase: .ended)),
+                                                            .releaseAll])
+    }
+
+    /// Lets a test's hook reach the session it is built into.
+    final class SessionRef: Sendable {
+        let session = Mutex<HostSession?>(nil)
+        var status: HostStatus? { session.withLock { $0?.status } }
+    }
+
+    @Test func detachRightAfterRegistrationLeavesNoAssertionAndNoConnectedStatus() async throws {
+        let ref = SessionRef()
+        let once = Mutex(false)
+        let muxRef = Mutex<FakeUSBMuxd?>(nil)
+        var tuning = HostSession.Tuning()
+        // The iPad goes away between registering the connection and taking the power assertion.
+        tuning.afterRegistering = {
+            guard once.withLock({ o in defer { o = true }; return !o }) else { return }
+            muxRef.withLock { $0 }?.detach(deviceID: 7)
+            let deadline = DispatchTime.now().uptimeNanoseconds + 5_000_000_000
+            while ref.status != .waitingForIPad, DispatchTime.now().uptimeNanoseconds < deadline { usleep(1000) }
+        }
+        let rig = try Rig(tuning: tuning)
+        defer { rig.tearDown() }
+        ref.session.withLock { $0 = rig.session }
+        muxRef.withLock { $0 = rig.mux }
+        rig.session.start()
+        #expect(await eventually { once.withLock { $0 } && rig.session.status == .waitingForIPad })
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(rig.session.status == .waitingForIPad)
+        #expect(!rig.power.holding)
+        #expect(rig.power.begins == rig.power.ends)
+        #expect(rig.sink.inputCalls == [.releaseAll])
+    }
+
+    @Test func aDeviceWithoutLainDoesNotBlockTheIPad() async throws {
+        var tuning = HostSession.Tuning()
+        tuning.fastRetries = 2
+        tuning.fastRetryInterval = .milliseconds(10)
+        tuning.slowRetryInterval = .milliseconds(50)
+        // usbmuxd lists an iPhone (charging, no lain) before the iPad.
+        let rig = try Rig(devices: [.init(deviceID: 3, serialNumber: "IPHONE-3", acceptsConnect: false),
+                                    .init(deviceID: 7, serialNumber: "IPAD-7")], tuning: tuning)
+        defer { rig.tearDown() }
+        _ = try await rig.connect()
+        #expect(await rig.statuses.first { $0 == .connected(deviceModel: "iPad16,6") } != nil)
+    }
+
+    @Test func theIPadIsDialedWhenTheActiveDeviceDetaches() async throws {
+        var tuning = HostSession.Tuning()
+        tuning.fastRetries = 1_000   // never hands off on its own
+        tuning.fastRetryInterval = .milliseconds(10)
+        let rig = try Rig(devices: [.init(deviceID: 3, serialNumber: "IPHONE-3", acceptsConnect: false),
+                                    .init(deviceID: 7, serialNumber: "IPAD-7")], tuning: tuning)
+        defer { rig.tearDown() }
+        rig.session.start()
+        #expect(await eventually { rig.mux.connectCount == 0 && rig.session.status == .connecting })
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await rig.client.links.next(within: 0.1) == nil)   // only the iPhone is being dialed
+        rig.mux.detach(deviceID: 3)
+        #expect(await rig.client.links.next(within: 5) != nil)
+        #expect(await rig.statuses.first { $0 == .connected(deviceModel: "iPad16,6") } != nil)
+    }
+
+    @Test func displayChangeReconnectsWithTheNewBounds() async throws {
+        var tuning = HostSession.Tuning()
+        tuning.displayCheckIntervalNs = 20_000_000
+        let rig = try Rig(tuning: tuning)
+        defer { rig.tearDown() }
+        _ = try await rig.connect()
+        let bigger = HostDisplay(displayID: 1, origin: CGPoint(x: 100, y: 50), pointSize: CGSize(width: 1800, height: 1169))
+        rig.cursor.display.withLock { $0 = bigger }   // "More Space" chosen while connected
+        let ack = await rig.client.received.first { if case .helloAck = $0 { true } else { false } }
+        guard case .helloAck(let a) = try #require(ack) else { return }
+        #expect(a.displayPointWidth == 1800 && a.displayPointHeight == 1169)
+        #expect(rig.sink.inputCalls.contains(.releaseAll))
+    }
+
+    @Test func sameDeviceReattachFinishesTheOldConnectionFirst() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        let (link, _) = try await rig.connect()
+        link.realtime.send(.keyEvent(KeyEvent(usage: 0x04, isDown: true, modifiers: [])))
+        #expect(await eventually { rig.sink.inputCalls.count == 1 })
+        rig.mux.attach(.init(deviceID: 7, serialNumber: "IPAD-7"))
+        #expect(await rig.client.links.next(within: 5) != nil)
+        #expect(await eventually { rig.power.holding && rig.power.begins == 2 })
+        #expect(rig.power.ends == 1)
+        let calls = rig.sink.calls
+        let release = try #require(calls.firstIndex(of: .releaseAll))
+        let secondSetup = try #require(calls.indices.filter { calls[$0] == .keyboardType(.iso) }.dropFirst().first)
+        #expect(release < secondSetup)
+        #expect(calls.filter { $0 == .releaseAll }.count == 1)
+    }
+}
+
+/// `HostConnection` teardown ordering, without a socket.
+@Suite struct HostConnectionTests {
+    func makeConnection() -> (HostConnection, RecordingSink, RecordingPower) {
+        let sink = RecordingSink(), power = RecordingPower()
+        func channel() -> MessageChannel { MessageChannel(stream: MemoryStream.pair().0, label: "test") }
+        let link = Link(sessionToken: [], realtime: channel(), video: channel(), audio: channel())
+        let deps = HostSession.Dependencies(secrets: InMemorySecretStore(), sink: sink,
+                                            display: FakeDisplay(display: HostSessionTests.display, cursor: nil),
+                                            power: power, settings: { HostSessionTests.settings })
+        return (HostConnection(link: link, display: HostSessionTests.display, deps: deps, tuning: .init()), sink, power)
+    }
+
+    @Test func inputHandledAfterFinishIsDropped() {
+        let (connection, sink, power) = makeConnection()
+        #expect(connection.start())
+        let a = KeyEvent(usage: 0x04, isDown: true, modifiers: [])
+        connection.handle(.keyEvent(a))
+        connection.finish()
+        // Buffered input drained after the release must not press anything again (invariant 4).
+        connection.handle(.keyEvent(KeyEvent(usage: 0x05, isDown: true, modifiers: [])))
+        connection.handle(.pointerButton(PointerButton(button: .left, isDown: true, clickCount: 1, x: 1, y: 1, modifiers: [])))
+        #expect(sink.inputCalls == [.key(a), .releaseAll])
+        #expect(power.begins == 1 && power.ends == 1 && !power.holding)
+    }
+
+    @Test func startAfterFinishTakesNoAssertion() {
+        let (connection, _, power) = makeConnection()
+        connection.finish()   // a detach or stop raced the handshake
+        #expect(!connection.start())
+        #expect(power.begins == 0 && !power.holding)
+    }
+}
+
+@Suite struct InboxTests {
+    @Test func aStaleTimerDoesNotEndALaterWait() async {
+        let inbox = Inbox<Int>()
+        Task { try? await Task.sleep(for: .milliseconds(20)); inbox.put(1) }
+        #expect(await inbox.next(within: 0.2) == 1)   // answered; its 0.2 s timer is still pending
+        Task { try? await Task.sleep(for: .milliseconds(500)); inbox.put(2) }
+        #expect(await inbox.next(within: 5) == 2)     // must not get nil from the old timer at 0.2 s
     }
 }
 #endif

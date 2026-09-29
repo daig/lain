@@ -257,6 +257,51 @@ let ms: UInt64 = 1_000_000
         #expect(r.pipeline.keyboard.macHeldKeys.isEmpty)
     }
 
+    @Test func keyboardDisconnectLiftsHeldKeysAndStopsRepeat() {
+        let r = Recorder()
+        let p = r.pipeline
+        p.keyChanged(.leftShift, isDown: true, at: 0)
+        p.keyChanged(.key(0x2A), isDown: true, at: 1 * ms)   // Delete, held
+        p.tick(at: 400 * ms)
+        #expect(p.keyRepeat.isRepeating)
+        r.take()
+        p.keyboardDisconnected()   // no key-ups will come from a detached keyboard
+        #expect(r.keys.map(\.usage) == [0x2A, 0xE1] && r.keys.allSatisfy { !$0.isDown })
+        #expect(p.keyboard.macHeldKeys.isEmpty && !p.keyRepeat.isRepeating)
+        r.take()
+        p.tick(at: 2000 * ms)
+        #expect(r.sent.isEmpty)   // no more repeats
+    }
+
+    @Test func mouseDisconnectLiftsHeldButtons() {
+        let r = Recorder()
+        let p = r.pipeline
+        p.mouseButton(.left, isDown: true, at: 0)
+        r.take()
+        p.mouseDisconnected()
+        #expect(r.buttons.map(\.button) == [.left] && r.buttons.allSatisfy { !$0.isDown })
+        #expect(p.heldButtons.mask == 0)
+        r.take()
+        p.mouseMoved(dx: 3, dy: 0, at: 10 * ms)
+        #expect(r.moves.first?.buttons == 0)   // later moves are not drags
+        p.mouseDisconnected()   // nothing held: nothing sent
+        #expect(r.buttons.isEmpty)
+    }
+
+    @Test func wheelNotchesHaveNoPhaseAndNoMomentum() {
+        let r = Recorder()
+        let p = r.pipeline
+        p.scrollWheel(dx: 0, dy: 10, at: 0)
+        p.tick(at: 8 * ms)
+        p.tick(at: 16 * ms)
+        #expect(r.scrolls == [Scroll(dx: 0, dy: 10, phase: .none, momentumPhase: .none)])
+        #expect(!p.momentum.isActive)
+        r.take()
+        p.pointerEnabled = false
+        p.scrollWheel(dx: 0, dy: 10, at: 20 * ms)
+        #expect(r.sent.isEmpty)
+    }
+
     @Test func warpMovesTheTracker() {
         let r = Recorder()
         let p = r.pipeline

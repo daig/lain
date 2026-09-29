@@ -49,11 +49,12 @@ final class Inbox<T: Sendable>: Sendable {
     /// The first value matching `predicate` within `seconds`, skipping others.
     func first(within seconds: Double = 5, where predicate: (T) -> Bool) async -> T? {
         let deadline = MonotonicClock.now() + UInt64(seconds * 1e9)
-        while MonotonicClock.now() < deadline {
-            guard let v = await next(within: Double(deadline - MonotonicClock.now()) / 1e9) else { return nil }
+        while true {
+            let now = MonotonicClock.now()   // read once: a second read could pass the deadline and trap
+            guard now < deadline else { return nil }
+            guard let v = await next(within: Double(deadline - now) / 1e9) else { return nil }
             if predicate(v) { return v }
         }
-        return nil
     }
 }
 
@@ -81,6 +82,7 @@ let hello = Hello(deviceModel: "iPad16,6", pixelWidth: 2752, pixelHeight: 2064, 
         guard case .connected(let info) = configured else { Issue.record("no configured status"); return }
         #expect(info.displayPointWidth == 1376 && info.displayPointHeight == 1032)
         #expect(info.macInputSource == "com.apple.keylayout.Colemak")
+        session.input.sync { _ in }   // configure was queued on the input queue before the status went out
         #expect(session.input.cursor.displayPointWidth == 1376)
 
         // Input from the pipeline arrives on the host's realtime channel, in order.
@@ -103,6 +105,7 @@ let hello = Hello(deviceModel: "iPad16,6", pixelWidth: 2752, pixelHeight: 2064, 
         link.realtime.send(.ping(Ping(id: 9, sentAtNs: 1)))
         let pong = await received.first { if case .pong = $0 { true } else { false } }
         #expect(pong.map { if case .pong(let p) = $0 { p.id == 9 } else { false } } == true)
+        session.input.sync { _ in }   // the warp is queued on the input queue; the Pong isn't
         #expect(session.input.cursor.x == 12 && session.input.cursor.y == 34)
 
         // Video frames are acked (keeps --bench usbmux working).

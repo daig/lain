@@ -32,6 +32,9 @@ public struct MomentumSynthesizer: Sendable {
 
     public var isActive: Bool { velocity != nil }
 
+    /// One 120 Hz frame.
+    static let frameNs: UInt64 = 8_333_333
+
     /// A new touch (pan began). Returns a momentum-ended event if momentum was running.
     public mutating func touchBegan(at timeNs: UInt64) -> Scroll? {
         samples.removeAll(keepingCapacity: true)
@@ -41,9 +44,12 @@ public struct MomentumSynthesizer: Sendable {
 
     /// A `.changed` sample: the scroll delta in points since the previous one.
     public mutating func changed(dx: Double, dy: Double, at timeNs: UInt64) {
-        let dt = lastChangeNs.map { timeNs > $0 ? timeNs - $0 : 0 } ?? 8_333_333
+        let dt = lastChangeNs.map { timeNs > $0 ? timeNs - $0 : 0 } ?? Self.frameNs
         lastChangeNs = timeNs
-        samples.append((dx, dy, max(dt, 1_000_000), timeNs))
+        // The first sample after touch-down is the translation the pan carried at `.began`, built up over
+        // at least one frame but stamped right after `touchBegan`: count it as one frame, not ~0.
+        let minimum: UInt64 = samples.isEmpty ? Self.frameNs : 1_000_000
+        samples.append((dx, dy, max(dt, minimum), timeNs))
         if samples.count > 16 { samples.removeFirst(samples.count - 16) }
     }
 

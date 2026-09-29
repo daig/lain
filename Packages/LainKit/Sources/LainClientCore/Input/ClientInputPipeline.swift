@@ -81,6 +81,13 @@ public final class ClientInputPipeline {
         }
     }
 
+    /// The keyboard went away (Magic Keyboard detached): GameController sends no key-ups for keys that
+    /// were down, so lift them on the Mac now and stop repeating (invariant 4).
+    public func keyboardDisconnected() {
+        for event in keyboard.releaseAll() { send(.keyEvent(event)) }
+        keyRepeat.cancel()
+    }
+
     /// Teaches the layout map what a key types (UIKit `charactersIgnoringModifiers`, D18).
     public func learnCharacter(_ key: PhysicalKey, _ characters: String) {
         keyboard.layout.learn(key, character: characters)
@@ -106,6 +113,14 @@ public final class ClientInputPipeline {
             guard heldButtons.set(button, down: false) else { return }   // orphan up
             send(.pointerButton(PointerButton(button: button, isDown: false, clickCount: clicks.upCount(button),
                                               x: pointer.x, y: pointer.y, modifiers: keyboard.macModifiers)))
+        }
+    }
+
+    /// A mouse went away (the Magic Keyboard trackpad detached): no button-ups will come for buttons that
+    /// were down, so send them now.
+    public func mouseDisconnected() {
+        for up in heldButtons.releaseAll(x: pointer.x, y: pointer.y, modifiers: keyboard.macModifiers) {
+            send(.pointerButton(up))
         }
     }
 
@@ -147,6 +162,15 @@ public final class ClientInputPipeline {
             _ = momentum.touchBegan(at: timeNs)   // drop samples; no momentum for a scroll that never moved
         }
         scrollStarted = false
+    }
+
+    /// A mouse-wheel notch (discrete scroll): passed through with no phase and no momentum, as a
+    /// wheel scrolls on the Mac. Stops a running fling.
+    public func scrollWheel(dx: Double, dy: Double, at timeNs: UInt64) {
+        guard pointerEnabled, dx != 0 || dy != 0 else { return }
+        if let stop = momentum.cancel() { send(.scroll(stop)) }
+        let (sx, sy) = invertScroll ? (-dx, -dy) : (dx, dy)
+        send(.scroll(Scroll(dx: Float(sx), dy: Float(sy), phase: .none, momentumPhase: .none)))
     }
 
     /// The system cancelled the pan: end the phase without momentum.

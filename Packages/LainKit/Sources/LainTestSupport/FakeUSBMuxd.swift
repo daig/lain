@@ -11,10 +11,13 @@ public final class FakeUSBMuxd: Sendable {
         public var deviceID: Int
         public var serialNumber: String
         public var connectionType: String
-        public init(deviceID: Int, serialNumber: String, connectionType: String = "USB") {
+        /// false: `Connect` is refused, as on a device without lain running (an iPhone, say).
+        public var acceptsConnect: Bool
+        public init(deviceID: Int, serialNumber: String, connectionType: String = "USB", acceptsConnect: Bool = true) {
             self.deviceID = deviceID
             self.serialNumber = serialNumber
             self.connectionType = connectionType
+            self.acceptsConnect = acceptsConnect
         }
     }
 
@@ -123,8 +126,11 @@ public final class FakeUSBMuxd: Sendable {
             case "Connect":
                 let id = request.plist["DeviceID"] as? Int
                 let port = request.plist["PortNumber"] as? Int
-                let known = state.withLock { s in s.devices.contains { $0.deviceID == id } }
-                guard known else { try send(fd, USBMuxProtocol.result(tag: tag, number: 2)); Darwin.close(fd); return }
+                let device = state.withLock { s in s.devices.first { $0.deviceID == id } }
+                guard let device else { try send(fd, USBMuxProtocol.result(tag: tag, number: 2)); Darwin.close(fd); return }
+                guard device.acceptsConnect else {
+                    try send(fd, USBMuxProtocol.result(tag: tag, number: 3)); Darwin.close(fd); return
+                }
                 guard port == Int(expectedPort.bigEndian) else {
                     try send(fd, USBMuxProtocol.result(tag: tag, number: 3)); Darwin.close(fd); return
                 }

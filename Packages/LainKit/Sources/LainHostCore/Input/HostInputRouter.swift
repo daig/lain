@@ -30,6 +30,9 @@ public struct HostInputRouter: Sendable {
     /// The client's modifier state as of its last key or button event.
     public private(set) var modifiers: ModifierFlags = []
     private var loggedRotate = false
+    /// A scroll phase (began/changed) or momentum (began/changed) the Mac has seen start but not end.
+    public private(set) var scrollPhaseOpen = false
+    public private(set) var momentumOpen = false
 
     public init(sink: any InputSink, pinch: PinchZoomMapper = PinchZoomMapper()) {
         self.sink = sink
@@ -52,17 +55,41 @@ public struct HostInputRouter: Sendable {
             sink.button(b)
             return .injected(pointer: CGPoint(x: b.x, y: b.y))
         case .scroll(let s):
+            noteScroll(s)
             sink.scroll(s)
             return .injected(pointer: nil)
         case .gesture(let g):
             return gesture(g)
         case .releaseAll:
-            pinch.reset()
-            modifiers = []
-            sink.releaseAll()
+            releaseAll()
             return .released
         default:
             return .notInput
+        }
+    }
+
+    /// Invariant 4, host side: ends a scroll phase or momentum left open (the client can't once the
+    /// link is gone), then lifts every held key and button.
+    public mutating func releaseAll() {
+        if scrollPhaseOpen { sink.scroll(Scroll(dx: 0, dy: 0, phase: .cancelled, momentumPhase: .none)) }
+        if momentumOpen { sink.scroll(Scroll(dx: 0, dy: 0, phase: .none, momentumPhase: .ended)) }
+        scrollPhaseOpen = false
+        momentumOpen = false
+        pinch.reset()
+        modifiers = []
+        sink.releaseAll()
+    }
+
+    private mutating func noteScroll(_ s: Scroll) {
+        switch s.phase {
+        case .began, .changed, .mayBegin: scrollPhaseOpen = true
+        case .ended, .cancelled: scrollPhaseOpen = false
+        case .none: break
+        }
+        switch s.momentumPhase {
+        case .began, .changed: momentumOpen = true
+        case .ended: momentumOpen = false
+        case .none: break
         }
     }
 

@@ -65,6 +65,19 @@ private func pan(_ m: inout MomentumSynthesizer, dy: Double, frames: Int, start:
         #expect(seconds > 2 && seconds < 3)            // τ·ln(2400/12) ≈ 2.65 s
     }
 
+    @Test func translationCarriedByBeganCountsAsOneFrame() throws {
+        // A short flick: `.began` already carries 8 pt (sent right after touchBegan), then two 8 pt
+        // frames, lift. Real speed 8 pt per frame = 960 pt/s, not 24 pt / (1 + 2 frames) ms ≈ 1360.
+        var m = MomentumSynthesizer()
+        _ = m.touchBegan(at: 0)
+        m.changed(dx: 0, dy: 8, at: 10_000)
+        m.changed(dx: 0, dy: 8, at: 10_000 + frame)
+        m.changed(dx: 0, dy: 8, at: 10_000 + 2 * frame)
+        let result = m.ended(at: 10_000 + 2 * frame + 100_000)
+        let v = try #require(result)
+        #expect(abs(v.y - 960) < 1)
+    }
+
     @Test func newTouchCancels() throws {
         var m = MomentumSynthesizer()
         let t = pan(&m, dy: 20, frames: 10)

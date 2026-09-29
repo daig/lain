@@ -28,6 +28,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     private var observers: [NSObjectProtocol] = []
     private var pointerLocked = false
     private var lastScrollTranslation = CGPoint.zero
+    private var lastWheelTranslation = CGPoint.zero
 
     init(input: ClientInput) {
         self.input = input
@@ -140,6 +141,10 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         on(.GCMouseDidConnect) { vc in GCMouse.mice().forEach(vc.attach(mouse:)) }
         on(.GCMouseDidBecomeCurrent) { vc in GCMouse.mice().forEach(vc.attach(mouse:)) }
         on(.GCKeyboardDidConnect) { vc in GCKeyboard.coalesced.map(vc.attach(keyboard:)) }
+        // Nothing guarantees final ups from a detached Magic Keyboard; lift what it held (invariant 4).
+        // The scene stays active and Universal Control mice keep the pointer lock, so nothing else would.
+        on(.GCKeyboardDidDisconnect) { $0.input.keyboardDisconnected() }
+        on(.GCMouseDidDisconnect) { $0.input.mouseDisconnected() }
     }
 
     private func pointerLockChanged() {
@@ -209,11 +214,20 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
 
     private func setUpGestures() {
         let scroll = UIPanGestureRecognizer(target: self, action: #selector(scrollPan(_:)))
-        scroll.allowedScrollTypesMask = .all
-        scroll.allowedTouchTypes = []   // trackpad/wheel scroll only, not touch drags
+        scroll.allowedScrollTypesMask = .continuous   // trackpad: phases and synthesized momentum
+        let wheel = UIPanGestureRecognizer(target: self, action: #selector(wheelPan(_:)))
+        wheel.allowedScrollTypesMask = .discrete      // mouse wheel: plain deltas, no momentum
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinch(_:)))
         let rotate = UIRotationGestureRecognizer(target: self, action: #selector(rotate(_:)))
-        for recognizer in [scroll, pinch, rotate] as [UIGestureRecognizer] {
+        // Trackpad and wheel only: no touchscreen drags, pinches or rotations (§6.4: touch is off by
+        // default). Scroll pans take no touches at all (verified, §13); pinch and rotate keep only
+        // indirect-pointer input, which carries trackpad transform gestures.
+        scroll.allowedTouchTypes = []
+        wheel.allowedTouchTypes = []
+        let trackpadOnly = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
+        pinch.allowedTouchTypes = trackpadOnly
+        rotate.allowedTouchTypes = trackpadOnly
+        for recognizer in [scroll, wheel, pinch, rotate] as [UIGestureRecognizer] {
             recognizer.delegate = self
             view.addGestureRecognizer(recognizer)
         }
@@ -247,6 +261,16 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         let dx = t.x - lastScrollTranslation.x, dy = t.y - lastScrollTranslation.y
         lastScrollTranslation = t
         if dx != 0 || dy != 0 { input.scrollChanged(dx: Double(dx), dy: Double(dy)) }
+    }
+
+    /// Wheel notches: translation deltas with no phases or momentum.
+    @objc private func wheelPan(_ g: UIPanGestureRecognizer) {
+        let t = g.translation(in: view)
+        if g.state == .began { lastWheelTranslation = .zero }
+        guard g.state == .began || g.state == .changed || g.state == .ended else { return }
+        let dx = t.x - lastWheelTranslation.x, dy = t.y - lastWheelTranslation.y
+        lastWheelTranslation = t
+        input.scrollWheel(dx: Double(dx), dy: Double(dy))
     }
 
     /// The pinch recognizer's scale at the previous event (1 at `.began`).

@@ -85,6 +85,12 @@ public final class ClientInput: @unchecked Sendable {
         perform { self.pipeline.keyChanged(key, isDown: isDown, at: t) }
     }
 
+    /// GCKeyboardDidDisconnect: lift the keys it held (no key-ups will come).
+    public func keyboardDisconnected() { perform { self.pipeline.keyboardDisconnected() } }
+
+    /// GCMouseDidDisconnect: lift the buttons held (no button-ups will come).
+    public func mouseDisconnected() { perform { self.pipeline.mouseDisconnected() } }
+
     public func learnCharacter(_ key: PhysicalKey, _ characters: String) {
         perform { self.pipeline.learnCharacter(key, characters) }
     }
@@ -111,6 +117,11 @@ public final class ClientInput: @unchecked Sendable {
     public func scrollChanged(dx: Double, dy: Double) {
         let t = MonotonicClock.now()
         perform { self.pipeline.scrollChanged(dx: dx, dy: dy, at: t) }
+    }
+
+    public func scrollWheel(dx: Double, dy: Double) {
+        let t = MonotonicClock.now()
+        perform { self.pipeline.scrollWheel(dx: dx, dy: dy, at: t) }
     }
 
     public func scrollEnded() {

@@ -73,7 +73,35 @@ import Testing
         #expect(r.handle(.scroll(scroll)) == .injected(pointer: nil))
         #expect(r.handle(.releaseAll(ReleaseAll(reason: .focusLost))) == .released)
         #expect(r.modifiers == [])
-        #expect(sink.calls == [.key(key), .move(move), .button(button), .scroll(scroll), .releaseAll])
+        // The scroll phase the client left open is ended before the release.
+        #expect(sink.calls == [.key(key), .move(move), .button(button), .scroll(scroll),
+                               .scroll(Scroll(dx: 0, dy: 0, phase: .cancelled, momentumPhase: .none)), .releaseAll])
+    }
+
+    @Test func releaseAllEndsAnOpenScrollPhaseAndMomentum() {
+        var r = HostInputRouter(sink: sink)
+        _ = r.handle(.scroll(Scroll(dx: 0, dy: -8, phase: .began, momentumPhase: .none)))
+        _ = r.handle(.scroll(Scroll(dx: 0, dy: -8, phase: .ended, momentumPhase: .none)))
+        _ = r.handle(.scroll(Scroll(dx: 0, dy: -30, phase: .none, momentumPhase: .began)))
+        _ = r.handle(.scroll(Scroll(dx: 0, dy: -8, phase: .began, momentumPhase: .none)))   // new touch mid-fling
+        #expect(r.scrollPhaseOpen && r.momentumOpen)
+        sink.clear()
+        r.releaseAll()   // the host ending the session: the client can no longer close them
+        #expect(sink.calls == [.scroll(Scroll(dx: 0, dy: 0, phase: .cancelled, momentumPhase: .none)),
+                               .scroll(Scroll(dx: 0, dy: 0, phase: .none, momentumPhase: .ended)),
+                               .releaseAll])
+        #expect(!r.scrollPhaseOpen && !r.momentumOpen)
+    }
+
+    @Test func releaseAllAddsNothingWhenTheClientClosedTheScroll() {
+        var r = HostInputRouter(sink: sink)
+        for s in [Scroll(dx: 0, dy: -8, phase: .began, momentumPhase: .none),
+                  Scroll(dx: 0, dy: 0, phase: .cancelled, momentumPhase: .none),
+                  Scroll(dx: 0, dy: -30, phase: .none, momentumPhase: .began),
+                  Scroll(dx: 0, dy: 0, phase: .none, momentumPhase: .ended)] { _ = r.handle(.scroll(s)) }
+        sink.clear()
+        _ = r.handle(.releaseAll(ReleaseAll(reason: .focusLost)))
+        #expect(sink.calls == [.releaseAll])
     }
 
     @Test func nonInputMessagesAreLeftToTheCaller() {
