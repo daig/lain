@@ -13,6 +13,8 @@ public enum ClientStatus: Sendable, Equatable {
     case versionMismatch(hostName: String?, remote: UInt8?)
     case localNetworkDenied
     case hostBusy(hostName: String)
+    /// The Mac's Wi-Fi listener doesn't hold this iPad's key: one USB session pairs again.
+    case pairingRefused(hostName: String)
     case connecting(hostName: String, interfaces: [String])
     case connected(framesReceived: Int)
     /// A session is up (`ClientSession`); input flows once `info.isConfigured`.
@@ -34,6 +36,7 @@ public enum ClientStatus: Sendable, Equatable {
         case .versionMismatch(let name, let remote): self = .versionMismatch(hostName: name, remote: remote)
         case .localNetworkDenied: self = .localNetworkDenied
         case .hostBusy(let name): self = .hostBusy(hostName: name)
+        case .pairingRefused(let name): self = .pairingRefused(hostName: name)
         case .connecting(let name, let interfaces): self = .connecting(hostName: name, interfaces: interfaces)
         case .connected(let info): self = .session(info)
         }
@@ -54,6 +57,7 @@ public enum ClientStatus: Sendable, Equatable {
         case .versionMismatch(let name, _): "\(name ?? "The Mac") runs another lain"
         case .localNetworkDenied: "Local Network access is off"
         case .hostBusy(let name): "\(name) is busy"
+        case .pairingRefused(let name): "\(name) doesn't recognize this iPad"
         case .connecting(let name, _): "Connecting to \(name)"
         case .connected: "Connected to Mac"
         case .session(let info): "Connected to \(info.hostName.isEmpty ? "Mac" : info.hostName)"
@@ -77,6 +81,8 @@ public enum ClientStatus: Sendable, Equatable {
             "Allow lain in Settings › Privacy & Security › Local Network, or connect the cable"
         case .hostBusy:
             "It has another session (a cable connection wins); trying again shortly"
+        case .pairingRefused:
+            "Connect the USB-C cable once to pair again"
         case .connecting(_, let interfaces):
             "over Wi-Fi" + (interfaces.isEmpty ? "" : " (\(interfaces.joined(separator: ", ")))")
         case .connected(let n):

@@ -11,9 +11,10 @@ import Synchronization
 ///
 /// Links are adopted on one serial queue, `lain.client.session` (§7.7 D29), and USB wins: a USB link is
 /// always installed (closing the one it replaces); a finished Wi-Fi dial is installed only if no link
-/// came up since the loop decided to dial and the session isn't stopped, and is otherwise closed before
-/// `Hello`. Each adopted link gets a generation: a replaced link's late messages are dropped where they
-/// land (video, cursor overlay, input), and statuses go out only for the current link, in order.
+/// came up since the loop decided to dial, the scene is in front and the session isn't stopped, and is
+/// otherwise closed before `Hello`. Each adopted link gets a generation: a replaced link's late messages
+/// are dropped where they land (video, cursor overlay, input), and statuses go out only for the current
+/// link, in order. A link that stops being current has its handlers released, so it is freed.
 ///
 /// Invariant 4: when a link closes, or a new link replaces it, the pipeline forgets everything held
 /// locally (the host releases on its side when the link drops).
@@ -50,6 +51,10 @@ public final class ClientSession: Sendable {
         case localNetworkDenied
         /// The Mac answered `Error(busy)` (it has another session, e.g. over USB); retrying later.
         case hostBusy(hostName: String)
+        /// The Mac's Wi-Fi listener refused this iPad's key twice in a row (TLS: no PSK under our identity,
+        /// or another key under it), and nothing else in sight can be dialed: it lost or replaced the
+        /// pairing. One USB session pairs again; the loop keeps retrying meanwhile.
+        case pairingRefused(hostName: String)
         /// Dialing, or about to dial, a paired Mac over Wi-Fi, seen on these interfaces.
         case connecting(hostName: String, interfaces: [String])
         case connected(ConnectionInfo)
@@ -100,7 +105,8 @@ public final class ClientSession: Sendable {
         core.queue.async { [core] in core.sceneBecameActive() }
     }
 
-    /// The scene went to the background: the Wi-Fi loop stops browsing (iPadOS suspends the app soon).
+    /// The scene went to the background: the Wi-Fi loop stops browsing and dialing (iPadOS suspends the
+    /// app soon), and a dial that finishes meanwhile is closed unused; back in front, it dials again.
     public func sceneDidEnterBackground() {
         core.queue.async { [core] in core.sceneEnteredBackground() }
     }
@@ -213,6 +219,7 @@ final class SessionCore: @unchecked Sendable {
             input.disconnect()
             video?.disconnect()
             c.link.close()
+            release(c.link)
         }
     }
 
@@ -224,11 +231,22 @@ final class SessionCore: @unchecked Sendable {
         adopt(accepted.link, via: .usb(peer: accepted.peer, paired: accepted.paired, secret: accepted.secret))
     }
 
-    /// A finished Wi-Fi dial, installed only if no link is current, none came up since the loop decided
-    /// to dial (`epoch`), and the session isn't stopped. Otherwise it is closed before `Hello`.
+    /// A finished Wi-Fi dial, installed only if the session isn't stopped, no link is current, none came
+    /// up since the loop decided to dial (`epoch`), and the scene is in front (in the background the Mac
+    /// would start a session for an app iPadOS is about to suspend; the loop dials again once the scene
+    /// is back). Otherwise it is closed before `Hello`.
     func adoptWiFi(_ link: Link, host: DiscoveredHost, decidedAt epoch: UInt64) -> Bool {
-        guard !stopped, current == nil, self.epoch == epoch else {
-            log.notice("Wi-Fi: closing the link to \(host.name, privacy: .public) unused: another link came up while it was dialing")
+        let refused: String? = if stopped {
+            "the session stopped"
+        } else if current != nil || self.epoch != epoch {
+            "another link came up while it was dialing"
+        } else if wifi?.paused == true {
+            "the scene is in the background"
+        } else {
+            nil
+        }
+        if let refused {
+            log.notice("Wi-Fi: closing the link to \(host.name, privacy: .public) unused: \(refused, privacy: .public)")
             link.close()
             return false
         }
@@ -251,11 +269,12 @@ final class SessionCore: @unchecked Sendable {
             log.notice("\(via.name, privacy: .public) link replaces the \(displaced.via.name, privacy: .public) link")
             input.disconnect()   // transport switch: nothing stays held from the old link
             displaced.link.close()
+            release(displaced.link)
         } else {
             log.notice("\(via.name, privacy: .public) link up (\(String(describing: link.transport), privacy: .public))")
         }
         input.adopt(link: g)
-        wifiLinkAdopted(via)
+        wifiLinkAdopted()
         wire(link, generation: g, via: via, state: state)
         emit(.connected(info))
     }
@@ -355,10 +374,22 @@ final class SessionCore: @unchecked Sendable {
         input.disconnect()
         video?.disconnect()
         c.link.close()
+        release(c.link)
         let outcome = c.state.outcome.withLock { $0 }
         log.notice("\(c.via.name, privacy: .public) link closed\(outcome.gotHelloAck ? "" : " before HelloAck", privacy: .public)")
         wifiLinkEnded(c.via, outcome: outcome)
         publish()
+    }
+
+    /// Replaces the handlers of a link that stopped being current (as `HostConnection.finish` does on the
+    /// Mac): a channel keeps its handlers for life, and ours hold the link (the realtime one answers
+    /// pings on it and may close it), so otherwise the link, its streams and the video channel's
+    /// keyframe-sized parse buffer would never be freed. Whatever still arrives is dropped.
+    private func release(_ link: Link) {
+        for channel in link.channels {
+            channel.setHandler { _ in }
+            channel.setCloseHandler { _ in }
+        }
     }
 
     /// On `queue`, in the order the link's snapshots were taken.
@@ -370,8 +401,7 @@ final class SessionCore: @unchecked Sendable {
                 wifi?.config.lastHost.set(ack.hostId)
             }
         case .wifi(let host):
-            wifi?.config.lastHost.set(host.hostId)   // and no secret is written: Wi-Fi never pairs (D13)
-            wifiSessionStarted(host)
+            wifiSessionStarted(host)   // no secret is written: Wi-Fi never pairs (D13)
         }
         publish(info, generation: g)
     }
