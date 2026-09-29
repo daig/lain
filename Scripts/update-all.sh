@@ -1,12 +1,13 @@
 #!/bin/zsh
 # Update lain on the Mac and on the iPad in one go, from Terminal on the lain display. On a headless Mac the
 # iPad is the only screen and input, and a host and an iPad app on different protocol versions can't hold a
-# session, so this builds everything first and then swaps both apps back to back:
-#   1. builds the iPad app (Debug, for the connected iPad) and the host (Release); if either build fails,
-#      nothing is installed and lain keeps running;
+# session, so this prepares everything first and then swaps both apps back to back:
+#   1. finds the iPad, builds the iPad app (Debug, for that iPad) and the host (Release), and copies the host
+#      next to the installed one (Scripts/install-host.sh --stage); if any of that fails, nothing is installed
+#      and lain keeps running;
 #   2. installs the iPad app (the screen goes dark here); if that fails, the iPad's current app is launched
 #      again and nothing on the Mac has changed;
-#   3. installs the host and restarts its agent (Scripts/install-host.sh --no-build);
+#   3. swaps the host copy in and restarts its agent (Scripts/install-host.sh --swap-staged: two renames);
 #   4. launches lain on the iPad (no console): the session comes back on the new versions.
 # The screen is dark for about 20–40 s: keep the iPad unlocked with lain in front, and the cable plugged in
 # (over Wi-Fi alone the session can only come back if both sides already have Local Network access).
@@ -38,6 +39,7 @@ retry() {
   done
   return 1
 }
+nothing_installed() { echo "Nothing was installed; lain keeps running."; exit 1; }
 
 cat <<'EOF'
 Updating lain on the Mac and on the iPad.
@@ -52,10 +54,18 @@ if [[ "$(ioreg -p IOUSB -w0)" != *"-o iPad@"* ]]; then
   echo "the session can only come back over Wi-Fi once macOS has allowed it."
 fi
 
+# Once the iPad app is replaced, whatever is left must not fail for a reason found only then: one device for
+# every step, looked up now, and a host copy that is made and checked now.
+if (( ${#device} == 0 )); then
+  udid=$(Scripts/ipad.sh --print-udid) && [[ -n $udid ]] || nothing_installed
+  device=("$udid")
+fi
 echo "==> building the iPad app"
-Scripts/ipad.sh --build-only $device || { echo "Nothing was installed; lain keeps running."; exit 1; }
+Scripts/ipad.sh --build-only $device || nothing_installed
 echo "==> building the host"
-Scripts/install-host.sh --build-only || { echo "Nothing was installed; lain keeps running."; exit 1; }
+Scripts/install-host.sh --build-only || nothing_installed
+echo "==> staging the host"
+Scripts/install-host.sh --stage || nothing_installed
 
 echo "==> both builds done: swapping in 5 s (the screen goes dark for about 20–40 s; Ctrl-C now cancels)"
 sleep 5
@@ -68,7 +78,7 @@ if ! retry 3 Scripts/ipad.sh --install-only $device; then
 fi
 echo "==> installing the host"
 host=1
-Scripts/install-host.sh --no-build --no-wait || host=0
+Scripts/install-host.sh --swap-staged --no-wait || host=0
 echo "==> launching lain on the iPad"
 launched=1
 retry 3 Scripts/ipad.sh --launch-only --no-console $device || launched=0
