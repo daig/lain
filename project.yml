@@ -22,7 +22,14 @@ targets:
   LainHost:
     type: application
     platform: macOS
-    sources: [Apps/Host]
+    sources:
+      - Apps/Host
+      # The login LaunchAgent (§5.7), registered with SMAppService.agent(plistName:).
+      - path: Apps/HostAgent
+        buildPhase:
+          copyFiles:
+            destination: wrapper
+            subpath: Contents/Library/LaunchAgents
     dependencies:
       - package: LainKit
         product: LainHostCore

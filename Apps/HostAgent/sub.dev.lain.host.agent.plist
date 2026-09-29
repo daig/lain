@@ -1,0 +1,30 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<!-- lain host as a login LaunchAgent (§5.7, D12), registered with SMAppService.agent(plistName:).
+     Starts at login in the GUI session; restarted by launchd if it crashes or is killed, but not after
+     a clean "Quit lain" (exit 0). -->
+<plist version="1.0">
+<dict>
+	<key>Label</key>
+	<string>sub.dev.lain.host.agent</string>
+	<key>BundleProgram</key>
+	<string>Contents/MacOS/LainHost</string>
+	<key>AssociatedBundleIdentifiers</key>
+	<array>
+		<string>sub.dev.lain.host</string>
+	</array>
+	<key>RunAtLoad</key>
+	<true/>
+	<key>KeepAlive</key>
+	<dict>
+		<key>SuccessfulExit</key>
+		<false/>
+	</dict>
+	<key>ThrottleInterval</key>
+	<integer>5</integer>
+	<key>LimitLoadToSessionType</key>
+	<string>Aqua</string>
+	<key>ProcessType</key>
+	<string>Interactive</string>
+</dict>
+</plist>

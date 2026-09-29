@@ -6,8 +6,26 @@ import SwiftUI
 enum LainHostEntry {
     static func main() {
         if let bench = BenchCommand.requested() { BenchCommand.run(bench) }
+        if CommandLine.arguments.contains("--agent-status") {   // diagnostics: SMAppService state (+ --register)
+            print("login agent: \(LoginAgent.state), installed: \(LoginAgent.isInstalled), bundle: \(Bundle.main.bundlePath)")
+            if CommandLine.arguments.contains("--register") {
+                do { try LoginAgent.register(); print("register: ok → \(LoginAgent.state)") }
+                catch { print("register failed: \(error)") }
+            }
+            exit(0)
+        }
+        if CommandLine.arguments.contains("--unregister-agent") {   // Scripts/install-host.sh --uninstall
+            try? LoginAgent.unregister()
+            exit(0)
+        }
+        // As a test host (LainHostTests) the app must neither hand over to the installed agent nor start a
+        // session that would compete with the real host for the iPad.
+        if !isTestHost { LoginAgent.settleInstance() }   // one host only; the launchd-managed agent wins (§5.7)
         LainHostApp.main()
     }
+
+    static let isTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        || ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil
 }
 
 /// Menu-bar agent (LSUIElement). Runs the `HostSession`: the iPad is an extra display of this Mac
@@ -29,6 +47,17 @@ struct LainHostApp: App {
                 ForEach(video, id: \.self) { Text($0) }
             }
             Divider()
+            switch host.loginAgent {
+            case .enabled:
+                Button("✓ Start at Login") { host.setStartAtLogin(false) }
+            case .requiresApproval:
+                Text("Start at Login needs approval")
+                Button("Allow in Login Items…") { LoginAgent.openLoginItemsSettings() }
+            case .notRegistered:
+                Button("Start at Login") { host.setStartAtLogin(true) }
+            case .notFound:
+                Text("Start at Login: install with Scripts/install-host.sh")
+            }
             Text(HostStatus.protocolDescription)
             Button("Quit lain") { NSApplication.shared.terminate(nil) }
                 .keyboardShortcut("q")
@@ -41,6 +70,7 @@ struct LainHostApp: App {
 final class HostController {
     private(set) var status = HostStatus.waitingForIPad
     private(set) var hasAccessibility = InputInjector.hasAccess
+    private(set) var loginAgent = LoginAgent.state
     /// The live session's video numbers (or why it has none), refreshed once a second.
     private(set) var videoLines: [String]?
 
@@ -48,6 +78,7 @@ final class HostController {
     @ObservationIgnored private var accessPoll: Task<Void, Never>?
 
     init() {
+        guard !LainHostEntry.isTestHost else { return }
         let session = HostSession(dependencies: .init(sink: InputInjector(), video: { HostVideoPipeline.live() })) {
             [weak self] status in
             // Main-queue hops keep status updates in order.
@@ -63,10 +94,23 @@ final class HostController {
                 try? await Task.sleep(for: .seconds(1))
                 let granted = InputInjector.hasAccess
                 if self?.hasAccessibility != granted { self?.hasAccessibility = granted }
+                let agent = LoginAgent.state
+                if self?.loginAgent != agent { self?.loginAgent = agent }
                 let lines = Self.videoLines(session)
                 if self?.videoLines != lines { self?.videoLines = lines }
             }
         }
+    }
+
+    /// Registering loads the agent (RunAtLoad): launchd then starts the managed instance, which replaces
+    /// this one. Unregistering leaves this instance running until Quit.
+    func setStartAtLogin(_ on: Bool) {
+        do {
+            if on { try LoginAgent.register() } else { try LoginAgent.unregister() }
+        } catch {
+            NSLog("lain: login agent \(on ? "register" : "unregister") failed: \(error)")
+        }
+        loginAgent = LoginAgent.state
     }
 
     private static func videoLines(_ session: HostSession) -> [String]? {
