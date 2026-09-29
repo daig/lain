@@ -15,6 +15,13 @@ public final class VideoDecoder: @unchecked Sendable {
         public var image: CVPixelBuffer?
         public var status: OSStatus
         public var decodeDoneNs: UInt64
+
+        public init(frameId: UInt32, image: CVPixelBuffer?, status: OSStatus, decodeDoneNs: UInt64) {
+            self.frameId = frameId
+            self.image = image
+            self.status = status
+            self.decodeDoneNs = decodeDoneNs
+        }
     }
 
     public let config: VideoConfig
