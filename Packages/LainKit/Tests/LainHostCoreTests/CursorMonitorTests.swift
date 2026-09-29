@@ -97,6 +97,18 @@ final class SequenceCursor: CursorImageSource {
         monitor.stop()
         #expect(describe(sent.withLock { $0 }) == ["shape 1", "select 1"])
     }
+
+    /// The video pipeline's `stop()` can win the race with its `start` (a USB takeover, §7.7 D29): a start
+    /// after the stop does nothing, and doesn't trap (a timer source released before activation would).
+    @Test func startAfterStopDoesNothing() async throws {
+        let sent = Mutex<[Message]>([])
+        let monitor = CursorMonitor(source: SequenceCursor([image(1)])) { m in sent.withLock { $0.append(m) } }
+        monitor.stop()
+        monitor.start(hz: 200)
+        monitor.start(hz: 200)
+        try await Task.sleep(for: .milliseconds(50))
+        #expect(sent.withLock { $0 }.isEmpty)
+    }
 }
 
 #if os(macOS)

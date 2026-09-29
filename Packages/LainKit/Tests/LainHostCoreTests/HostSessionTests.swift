@@ -305,6 +305,73 @@ import Testing
         #expect(await rig.statuses.first { $0 == .connected(deviceModel: "iPad16,6") } != nil)
     }
 
+    /// lain on the iPad speaking another protocol, behind the fake usbmuxd (§7.7 D29 decision 4): a v1
+    /// app can't parse our frames and closes each connection without a word (`answer` nil); a newer one
+    /// answers in its own framing, then closes.
+    final class OtherProtocolIPad: Sendable {
+        final class Sockets: Sendable { let all = Mutex<[SocketStream]>([]) }
+        let listener: TCPListener
+        private let sockets = Sockets()
+
+        init(answer: [UInt8]?) throws {
+            let sockets = sockets, queue = DispatchQueue(label: "test.other-protocol")
+            listener = try TCPListener(port: 0, queue: queue) { socket in
+                sockets.all.withLock { $0.append(socket) }
+                socket.start(queue: queue, onBytes: { [weak socket] _ in
+                    if let answer { socket?.write(answer) }
+                    socket?.close()
+                }, onClose: { _ in })
+            }
+        }
+
+        func cancel() {
+            listener.cancel()
+            sockets.all.withLock { $0.forEach { $0.close() } }
+        }
+
+        /// A host session dialing it, with the statuses it publishes.
+        func session(retryEvery interval: Duration) throws -> (HostSession, FakeUSBMuxd, Inbox<HostStatus>) {
+            let mux = try FakeUSBMuxd(devices: [.init(deviceID: 7, serialNumber: "IPAD-7")], targetPort: listener.port)
+            var tuning = HostSession.Tuning()
+            tuning.fastRetryInterval = interval
+            let statuses = Inbox<HostStatus>()
+            let deps = HostSession.Dependencies(
+                usbmux: USBMuxClient(socketPath: mux.socketPath), secrets: InMemorySecretStore(), sink: RecordingSink(),
+                display: FakeDisplay(display: HostSessionTests.display, cursor: nil), power: RecordingPower(),
+                settings: { HostSessionTests.settings })
+            return (HostSession(dependencies: deps, tuning: tuning) { statuses.put($0) }, mux, statuses)
+        }
+    }
+
+    @Test func aV1AppClosingRightAfterChannelHelloIsAskedToUpdate() async throws {
+        let ipad = try OtherProtocolIPad(answer: nil)
+        defer { ipad.cancel() }
+        let (session, mux, statuses) = try ipad.session(retryEvery: .milliseconds(250))
+        defer { session.stop(); mux.stop() }
+        session.start()
+        // Dialing as usual until it has closed on us three times in a row: three link attempts of three
+        // connections each (the fourth is 250 ms away).
+        #expect(await statuses.first { $0 == .connecting } != nil)
+        #expect(await statuses.next() == HostStatus.iPadNeedsUpdate)
+        #expect(mux.connectCount == 9)
+        #expect(session.status.title == "Error: lain on the iPad speaks another protocol: update it")
+        // Unplugged, it is just waiting again.
+        mux.detach(deviceID: 7)
+        #expect(await statuses.first { $0 == .waitingForIPad } != nil)
+    }
+
+    @Test func aNewerAppAnsweringVersionMismatchIsAskedToUpdate() async throws {
+        let answer = MessageCodec.encode(.error(ErrorMessage(code: .versionMismatch, message: "lain here speaks protocol v3")),
+                                         sequence: 0, timestampNs: 0, version: 3)
+        let ipad = try OtherProtocolIPad(answer: answer)
+        defer { ipad.cancel() }
+        let (session, mux, statuses) = try ipad.session(retryEvery: .seconds(1))
+        defer { session.stop(); mux.stop() }
+        session.start()
+        #expect(await statuses.first { $0 == HostStatus.iPadNeedsUpdate } != nil)
+        #expect(mux.connectCount == 3)   // the first link attempt said so
+    }
+
     @Test func sameDeviceReattachFinishesTheOldConnectionFirst() async throws {
         let rig = try Rig()
         defer { rig.tearDown() }

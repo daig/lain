@@ -128,12 +128,32 @@ public struct DisplayLayoutProvider: DisplayProvider {
 /// Display-sleep prevention and user-activity declarations (§5.5 Power), behind a protocol so tests
 /// can record them.
 public protocol PowerAssertions: Sendable {
-    /// Held while a client is connected. Idempotent.
+    /// Held while a client is connected. Counted: each session begins once and ends once, and the
+    /// assertion is held while begins outnumber ends, so a hand-over between two sessions (USB taking
+    /// over from Wi-Fi, §7.7) can't drop it.
     func beginPreventingDisplaySleep()
-    /// Idempotent.
+    /// Balances one `beginPreventingDisplaySleep`; an end without a begin is ignored.
     func endPreventingDisplaySleep()
     /// Injected input counts as user activity (resets the idle timers). The session throttles calls.
     func declareUserActivity()
+}
+
+/// The begin/end count behind `IOPMPowerAssertions` (§5.5 Power), apart from IOKit so it can be tested.
+struct PowerAssertionCount: Sendable, Equatable {
+    private(set) var count = 0
+
+    /// Returns whether this begin must create the assertion (0 → 1).
+    mutating func begin() -> Bool {
+        count += 1
+        return count == 1
+    }
+
+    /// Returns whether this end must release the assertion (1 → 0). An unmatched end changes nothing.
+    mutating func end() -> Bool {
+        guard count > 0 else { return false }
+        count -= 1
+        return count == 0
+    }
 }
 
 /// The Mac's input settings the client needs in `HelloAck` (§7.5).
@@ -192,23 +212,33 @@ extension DisplayLayoutProvider {
     }
 }
 
-/// IOPM assertions: `PreventUserIdleDisplaySleep` while connected, `IOPMAssertionDeclareUserActivity`
-/// for injected input.
+/// IOPM assertions: `PreventUserIdleDisplaySleep` while connected (counted: held while begins outnumber
+/// ends), `IOPMAssertionDeclareUserActivity` for injected input.
 public final class IOPMPowerAssertions: PowerAssertions {
     private struct State {
+        var count = PowerAssertionCount()
         var displayAssertion: IOPMAssertionID?
         var activityAssertion: IOPMAssertionID = IOPMAssertionID(0)
+
+        mutating func release() {
+            if let id = displayAssertion { IOPMAssertionRelease(id) }
+            displayAssertion = nil
+            if activityAssertion != 0 {
+                IOPMAssertionRelease(activityAssertion)
+                activityAssertion = 0
+            }
+        }
     }
     private let state = Mutex(State())
     private let name: String
 
     public init(name: String = "lain: iPad connected") { self.name = name }
 
-    deinit { endPreventingDisplaySleep() }
+    deinit { state.withLock { $0.release() } }
 
     public func beginPreventingDisplaySleep() {
         state.withLock { s in
-            guard s.displayAssertion == nil else { return }
+            guard s.count.begin(), s.displayAssertion == nil else { return }
             var id = IOPMAssertionID(0)
             let rc = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
                                                  IOPMAssertionLevel(kIOPMAssertionLevelOn), name as CFString, &id)
@@ -218,12 +248,8 @@ public final class IOPMPowerAssertions: PowerAssertions {
 
     public func endPreventingDisplaySleep() {
         state.withLock { s in
-            if let id = s.displayAssertion { IOPMAssertionRelease(id) }
-            s.displayAssertion = nil
-            if s.activityAssertion != 0 {
-                IOPMAssertionRelease(s.activityAssertion)
-                s.activityAssertion = 0
-            }
+            guard s.count.end() else { return }
+            s.release()
         }
     }
 

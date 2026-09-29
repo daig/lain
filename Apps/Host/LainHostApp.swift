@@ -29,15 +29,17 @@ enum LainHostEntry {
 }
 
 /// Menu-bar agent (LSUIElement). Runs the `HostSession`: the iPad is an extra display of this Mac
-/// (the lain virtual display, streamed over USB, M3) and its keyboard and trackpad drive the whole
-/// desktop. Accessibility is requested only from the menu, never at launch; Screen Recording is asked
-/// for by macOS when the first session starts capture.
+/// (the lain virtual display, streamed over USB, M3, or Wi-Fi, M6) and its keyboard and trackpad drive
+/// the whole desktop. Accessibility is requested only from the menu, never at launch; Screen Recording is
+/// asked for by macOS when the first session starts capture, Local Network when the Wi-Fi listener first
+/// advertises.
 struct LainHostApp: App {
     @State private var host = HostController()
 
     var body: some Scene {
         MenuBarExtra("lain", systemImage: "ipad.landscape") {
             Text(host.status.title)
+            Text(host.wifiLine)
             if !host.hasAccessibility {
                 Text("Input is off until lain has Accessibility")
                 Button("Grant Accessibility…") { host.requestAccessibility() }
@@ -69,6 +71,8 @@ struct LainHostApp: App {
 @MainActor @Observable
 final class HostController {
     private(set) var status = HostStatus.waitingForIPad
+    /// The Wi-Fi listener (§7.7): advertising, blocked by Local Network privacy, off or failed.
+    private(set) var wifiLine = HostWiFiStatus.starting.title
     private(set) var hasAccessibility = InputInjector.hasAccess
     private(set) var loginAgent = LoginAgent.state
     /// The live session's video numbers (or why it has none), refreshed once a second.
@@ -79,7 +83,20 @@ final class HostController {
 
     init() {
         guard !LainHostEntry.isTestHost else { return }
-        let session = HostSession(dependencies: .init(sink: InputInjector(), video: { HostVideoPipeline.live() })) {
+        // Who this Mac is to its iPads over Wi-Fi (§7.7 D29). Without it the session stays USB-only rather
+        // than advertise an id that changes.
+        let identity: HostIdentity?
+        do {
+            identity = try HostIdentity.load()
+        } catch {
+            NSLog("lain: couldn't load this Mac's host id (\(error)); Wi-Fi stays off")
+            identity = nil
+        }
+        // The Wi-Fi listener exists only here, after the test-host guard: a test host never listens or
+        // advertises (§7.7 D29 decision 12).
+        let session = HostSession(dependencies: .init(sink: InputInjector(), video: { HostVideoPipeline.live() },
+                                                      identity: identity,
+                                                      wifi: identity.map { _ in HostWiFiConfig(advertise: true) })) {
             [weak self] status in
             // Main-queue hops keep status updates in order.
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.status = status } }
@@ -98,6 +115,8 @@ final class HostController {
                 if self?.loginAgent != agent { self?.loginAgent = agent }
                 let lines = Self.videoLines(session)
                 if self?.videoLines != lines { self?.videoLines = lines }
+                let wifi = identity == nil ? "Wi-Fi: off: this Mac's lain id couldn't be loaded" : session.wifiStatus.title
+                if self?.wifiLine != wifi { self?.wifiLine = wifi }
             }
         }
     }

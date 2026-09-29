@@ -399,5 +399,125 @@ func noRefinement() -> HostVideoPipeline.Options {
         #expect(source.config == nil)
         #expect(client.all.isEmpty)
     }
+
+    /// A stop may land anywhere in `start` (a USB takeover finishing a Wi-Fi session that is just starting
+    /// its video, §7.7 D29): wherever it lands, the start ends (`stopped`, or running and then stopped),
+    /// nothing traps (releasing a timer source that was never activated would) and no display is left.
+    @Test func aStopAnywhereInStartLeavesNothingBehind() async throws {
+        for i in 0..<48 {
+            let display = FakeStreamedDisplay(), source = FakeFrameSource(), client = VideoClient()
+            let pipeline = HostVideoPipeline(display: display, frameSource: source, cursorSource: FakeCursor(),
+                                             options: noRefinement())
+            let start = Task {
+                try await pipeline.start(hello: hello([.hevcMain]), videoChannel: client.host, sendRealtime: { _ in })
+            }
+            // From another thread, at staggered moments: during create, the encoder's setup, the install,
+            // or once it runs.
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global().asyncAfter(deadline: .now() + .microseconds(250 * (i % 24))) {
+                    pipeline.stop()
+                    c.resume()
+                }
+            }
+            var createdExpected = 1
+            do {
+                try await start.value
+            } catch HostVideoError.stopped {
+                // stopped before it ran
+            } catch HostVideoError.alreadyStarted {
+                createdExpected = 0   // stopped before it even began
+            }
+            await pipeline.waitUntilStopped()
+            #expect(!pipeline.isRunning && !display.alive && display.created == createdExpected, "stop \(i)")
+        }
+    }
+
+    /// A display whose `create()` waits until the test lets it finish (the window server bringing a new
+    /// display up), and which leaves the active list a while after `destroy()`.
+    final class SuspendingDisplay: StreamedDisplayProvider {
+        let display = StreamedDisplay(displayID: 4343, pixelWidth: testWidth, pixelHeight: testHeight,
+                                      bounds: CGRect(x: 0, y: 0, width: 688, height: 516), refreshRate: 120)
+        struct Counts: Equatable { var created = 0, destroyed = 0, removed = 0, alive = false }
+        private struct State {
+            var counts = Counts()
+            var creating: CheckedContinuation<Void, Never>?
+            var released = false
+            var removing = false
+        }
+        private let state = Mutex(State())
+        var counts: Counts { state.withLock { $0.counts } }
+        var isCreating: Bool { state.withLock { $0.creating != nil } }
+
+        func create() async throws -> StreamedDisplay {
+            state.withLock { $0.counts.created += 1; $0.counts.alive = true }
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                let go = state.withLock { s -> Bool in
+                    if !s.released { s.creating = c }
+                    return s.released
+                }
+                if go { c.resume() }
+            }
+            return display
+        }
+
+        /// Lets a suspended `create()` return.
+        func finishCreating() {
+            let c = state.withLock { s -> CheckedContinuation<Void, Never>? in
+                s.released = true
+                defer { s.creating = nil }
+                return s.creating
+            }
+            c?.resume()
+        }
+
+        func currentBounds() -> CGRect? { counts.alive ? display.bounds : nil }
+
+        func destroy() {
+            state.withLock { s in
+                guard s.counts.alive else { return }
+                s.counts.alive = false
+                s.counts.destroyed += 1
+                s.removing = true
+            }
+        }
+
+        func waitUntilRemoved() async {
+            guard state.withLock({ $0.removing }) else { return }
+            try? await Task.sleep(for: .milliseconds(150))
+            state.withLock { s in
+                if s.removing { s.counts.removed += 1 }
+                s.removing = false
+            }
+        }
+    }
+
+    /// A stop while `create()` is still bringing the display up (§7.7 D29: USB taking over from a Wi-Fi
+    /// session that is just starting): `waitUntilStopped` returns only once that display has been
+    /// destroyed and has left the active list, so the next session never sees two lain displays.
+    @Test func stopDuringStartWaitsForTheDisplayItCreated() async throws {
+        let display = SuspendingDisplay(), source = FakeFrameSource(), client = VideoClient()
+        let pipeline = HostVideoPipeline(display: display, frameSource: source, cursorSource: nil)
+        let start = Task {
+            try await pipeline.start(hello: hello([.hevcMain]), videoChannel: client.host, sendRealtime: { _ in })
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !display.isCreating, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(display.isCreating)
+
+        pipeline.stop()
+        let stopped = Mutex<SuspendingDisplay.Counts?>(nil)
+        let waiter = Task {
+            await pipeline.waitUntilStopped()
+            stopped.withLock { $0 = display.counts }
+        }
+        try await Task.sleep(for: .milliseconds(200))
+        #expect(stopped.withLock { $0 } == nil)   // the display the start is creating still exists
+
+        display.finishCreating()
+        await #expect(throws: HostVideoError.stopped) { try await start.value }
+        await waiter.value
+        #expect(stopped.withLock { $0 } == SuspendingDisplay.Counts(created: 1, destroyed: 1, removed: 1, alive: false))
+        #expect(source.config == nil && client.all.isEmpty)
+    }
 }
 #endif
