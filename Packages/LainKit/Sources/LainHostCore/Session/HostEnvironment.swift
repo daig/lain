@@ -28,9 +28,14 @@ public protocol DisplayProvider: Sendable {
     func desktopLayout() -> DisplayLayout
     /// The real cursor location in global display space (top-left origin, points), if known.
     func cursorLocation() -> CGPoint?
+    /// This provider with the streamed display chosen by `displayID` (a session binds it to its video
+    /// pipeline's virtual display). The default ignores it: fixed providers (tests) stay as they are.
+    func streaming(_ displayID: @escaping @Sendable () -> UInt32?) -> any DisplayProvider
 }
 
 extension DisplayProvider {
+    public func streaming(_ displayID: @escaping @Sendable () -> UInt32?) -> any DisplayProvider { self }
+
     public func desktopLayout() -> DisplayLayout {
         let d = targetDisplay()
         return DisplayLayout(displays: [DisplayLayout.Display(
@@ -114,6 +119,10 @@ public struct DisplayLayoutProvider: DisplayProvider {
     }
 
     public func cursorLocation() -> CGPoint? { cursor() }
+
+    public func streaming(_ displayID: @escaping @Sendable () -> UInt32?) -> any DisplayProvider {
+        DisplayLayoutProvider(source: source, streamedDisplayID: displayID, cursor: cursor)
+    }
 }
 
 /// Display-sleep prevention and user-activity declarations (§5.5 Power), behind a protocol so tests

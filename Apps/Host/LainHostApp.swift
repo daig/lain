@@ -10,8 +10,10 @@ enum LainHostEntry {
     }
 }
 
-/// Menu-bar agent (LSUIElement). Runs the M2 `HostSession`: the iPad's keyboard and trackpad drive
-/// this Mac over USB. Accessibility is requested only from the menu, never at launch.
+/// Menu-bar agent (LSUIElement). Runs the `HostSession`: the iPad is an extra display of this Mac
+/// (the lain virtual display, streamed over USB, M3) and its keyboard and trackpad drive the whole
+/// desktop. Accessibility is requested only from the menu, never at launch; Screen Recording is asked
+/// for by macOS when the first session starts capture.
 struct LainHostApp: App {
     @State private var host = HostController()
 
@@ -21,6 +23,10 @@ struct LainHostApp: App {
             if !host.hasAccessibility {
                 Text("Input is off until lain has Accessibility")
                 Button("Grant Accessibility…") { host.requestAccessibility() }
+            }
+            if let video = host.videoLines {
+                Divider()
+                ForEach(video, id: \.self) { Text($0) }
             }
             Divider()
             Text(HostStatus.protocolDescription)
@@ -35,12 +41,15 @@ struct LainHostApp: App {
 final class HostController {
     private(set) var status = HostStatus.waitingForIPad
     private(set) var hasAccessibility = InputInjector.hasAccess
+    /// The live session's video numbers (or why it has none), refreshed once a second.
+    private(set) var videoLines: [String]?
 
     @ObservationIgnored private var session: HostSession?
     @ObservationIgnored private var accessPoll: Task<Void, Never>?
 
     init() {
-        let session = HostSession(dependencies: .init(sink: InputInjector())) { [weak self] status in
+        let session = HostSession(dependencies: .init(sink: InputInjector(), video: { HostVideoPipeline.live() })) {
+            [weak self] status in
             // Main-queue hops keep status updates in order.
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.status = status } }
         }
@@ -51,11 +60,28 @@ final class HostController {
         // The grant happens in System Settings; notice it without restarting.
         accessPoll = Task { [weak self] in
             while !Task.isCancelled {
-                try? await Task.sleep(for: .seconds(2))
+                try? await Task.sleep(for: .seconds(1))
                 let granted = InputInjector.hasAccess
                 if self?.hasAccessibility != granted { self?.hasAccessibility = granted }
+                let lines = Self.videoLines(session)
+                if self?.videoLines != lines { self?.videoLines = lines }
             }
         }
+    }
+
+    private static func videoLines(_ session: HostSession) -> [String]? {
+        guard session.status.isConnected else { return nil }
+        guard let v = session.videoStats else {
+            return ["No video: \(session.videoError ?? "starting")"]
+        }
+        func ms(_ x: Double?) -> String { x.map { String(format: "%.1f", $0) } ?? "–" }
+        return [
+            "Video \(v.pixelWidth)×\(v.pixelHeight) \(v.chroma == .yuv444 ? "4:4:4 10-bit" : "4:2:0")",
+            String(format: "%.1f Mb/s, %d sent, %d keyframes, %d refinements", v.bytesPerSecond * 8 / 1e6, v.sent,
+                   v.keyframes, v.refinements),
+            "Encode p50 \(ms(v.encodeMsP50)) / p95 \(ms(v.encodeMsP95)) ms, ack RTT p50 \(ms(v.ackRttMsP50)) ms",
+            "Dropped before encode \(v.droppedBeforeEncode), in flight \(v.inFlight) (peak \(v.peakInFlight))",
+        ]
     }
 
     func requestAccessibility() {

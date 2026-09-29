@@ -2,10 +2,11 @@ import CoreGraphics
 import LainProtocol
 
 extension HelloAck {
-    /// The host's answer to `Hello` (§7.5 handshake step 3). M2 streams no video yet; the codec,
-    /// display-mode, bitrate and audio fields state what M3–M5 will use.
-    public static func host(display: HostDisplay, settings: HostInputSettings) -> HelloAck {
-        HelloAck(codec: .hevc, chroma: .yuv444, bitDepth: 10, displayMode: .extend, bitrate: 60_000_000,
+    /// The host's answer to `Hello` (§7.5 handshake step 3). `display` is the streamed display (M3: the
+    /// lain virtual display) and `chroma` what the video pipeline streams; the audio fields state what
+    /// M5 will use.
+    public static func host(display: HostDisplay, settings: HostInputSettings, chroma: ChromaFormat = .yuv444) -> HelloAck {
+        HelloAck(codec: .hevc, chroma: chroma, bitDepth: chroma == .yuv444 ? 10 : 8, displayMode: .extend, bitrate: 60_000_000,
                  refreshRate: 120,
                  displayPointWidth: UInt32(max(display.pointSize.width, 0).rounded()),
                  displayPointHeight: UInt32(max(display.pointSize.height, 0).rounded()),
@@ -23,7 +24,9 @@ import LainTransport
 import LainUSBMux
 import Synchronization
 
-/// The host runtime (§5.7): watches usbmuxd, dials lain on an attached iPad, answers `Hello`, sends
+/// The host runtime (§5.7): watches usbmuxd, dials lain on an attached iPad, starts the session's video
+/// (M3: the lain virtual display, captured, encoded and streamed with frame-ack backpressure), answers
+/// `Hello`, sends
 /// the desktop's `DisplayLayout` (right after `HelloAck`, and again whenever the arrangement changes),
 /// routes the client's input into the `InputSink` (global points), answers pings, reflects cursor
 /// warps (§5.4, global) and holds the display awake while connected (§5.5 Power). Reconnects on its
@@ -42,12 +45,17 @@ public final class HostSession: Sendable {
         public var settings: @Sendable () -> HostInputSettings
         /// Monotonic nanoseconds.
         public var now: @Sendable () -> UInt64
+        /// Makes one session's video pipeline (`HostVideoPipeline.live()` in the app, fakes in tests).
+        /// nil: no video (the M2 input-only session, streaming the main display's geometry).
+        public var video: (@Sendable () -> HostVideoPipeline)?
 
         public init(usbmux: USBMuxClient = USBMuxClient(), secrets: any SecretStore = KeychainSecretStore(),
                     sink: any InputSink, display: any DisplayProvider = DisplayLayoutProvider.system(),
                     power: any PowerAssertions = IOPMPowerAssertions(),
                     settings: @escaping @Sendable () -> HostInputSettings = { .current },
-                    now: @escaping @Sendable () -> UInt64 = { MonotonicClock.now() }) {
+                    now: @escaping @Sendable () -> UInt64 = { MonotonicClock.now() },
+                    video: (@Sendable () -> HostVideoPipeline)? = nil) {
+            self.video = video
             self.usbmux = usbmux
             self.secrets = secrets
             self.sink = sink
@@ -98,6 +106,11 @@ public final class HostSession: Sendable {
         /// tried when it detaches or lain doesn't answer on it (an iPhone charging, say).
         var attached: [USBMuxDevice] = []
         var connection: HostConnection?
+        /// The latest session's video pipeline: a new session waits for its teardown (capture stopped,
+        /// virtual display removed) before creating its own display.
+        var video: HostVideoPipeline?
+        /// Why the latest session has no video (Screen Recording missing, say), for the menu.
+        var videoError: String?
 
         /// Returns whether the status changed.
         mutating func set(_ new: HostStatus) -> Bool {
@@ -116,6 +129,14 @@ public final class HostSession: Sendable {
     }
 
     public var status: HostStatus { state.withLock { $0.status } }
+
+    /// The live session's video numbers (nil when no session has video).
+    public var videoStats: HostVideoStats? {
+        state.withLock { s in s.connection != nil ? s.video : nil }.flatMap { $0.isRunning ? $0.stats : nil }
+    }
+
+    /// Why the current session streams no video, if it failed to start.
+    public var videoError: String? { state.withLock { $0.videoError } }
 
     /// Starts watching usbmuxd. Idempotent.
     public func start() {
@@ -268,21 +289,34 @@ public final class HostSession: Sendable {
             link.close()
             return
         }
-        let display = deps.display.targetDisplay()
+        // The streamed display is the session's virtual display once video is up (§5.1); until then, or
+        // without video, the provider falls back to the main display.
+        let video = deps.video?()
+        let provider = video.map { v in deps.display.streaming { v.streamedDisplayID } } ?? deps.display
         deps.sink.setKeyboardType(hello.keyboardType)
-        let connection = HostConnection(link: link, display: display, deps: deps, tuning: tuning)
-        let registered = state.withLock { s -> Bool in
-            guard !s.stopped, !Task.isCancelled, s.device?.generation == generation else { return false }
+        let connection = HostConnection(link: link, display: provider.targetDisplay(), provider: provider, video: video,
+                                        deps: deps, tuning: tuning)
+        let previousVideo = state.withLock { s -> HostVideoPipeline?? in
+            guard !s.stopped, !Task.isCancelled, s.device?.generation == generation else { return .none }
             s.connection = connection
-            return true
+            defer { if video != nil { s.video = video; s.videoError = nil } }
+            return .some(s.video)
         }
-        guard registered else { link.close(); return }
+        guard let previousVideo else { link.close(); return }
         tuning.afterRegistering?()
 
         // A detach or stop from here on finishes `connection`; `start()` then refuses, so the power
         // assertion is only taken by a connection that will also release it.
         if connection.start() {
-            link.realtime.send(.helloAck(.host(display: display, settings: deps.settings())))
+            // One lain display at a time: the last session's display must be gone before this one's
+            // appears (they share the persistent identity macOS remembers the arrangement by).
+            if let previousVideo, previousVideo !== video { await previousVideo.waitUntilStopped() }
+            let chroma = await startVideo(connection, hello: hello)
+            // HelloAck after video start, so it carries the virtual display's point size and the chroma
+            // actually streamed. The first frames may overtake it on the video connection; the client
+            // decodes them regardless.
+            let display = provider.targetDisplay()
+            link.realtime.send(.helloAck(.host(display: display, settings: deps.settings(), chroma: chroma ?? .yuv444)))
             connection.sendLayoutIfChanged()   // the first one always goes
             setStatus(.connected(deviceModel: hello.deviceModel), generation: generation)
             await withTaskCancellationHandler {
@@ -293,7 +327,30 @@ public final class HostSession: Sendable {
         }
         connection.finish()
         state.withLock { s in if s.connection === connection { s.connection = nil } }
+        await video?.waitUntilStopped()
         log.notice("session ended")
+    }
+
+    /// Starts the connection's video, if it has any. Returns the chroma streamed, or nil without video.
+    /// A failure (no Screen Recording grant, say) leaves an input-only session on the main display.
+    private func startVideo(_ connection: HostConnection, hello: Hello) async -> ChromaFormat? {
+        guard let video = connection.video else { return nil }
+        let link = connection.link, log = self.log
+        do {
+            try await video.start(hello: hello, videoChannel: link.video, sendRealtime: { link.realtime.send($0) },
+                                  onError: { error in
+                                      // Capture stopped on its own: end the session; the reconnect starts afresh.
+                                      log.error("video capture stopped: \(String(describing: error), privacy: .public); ending the session")
+                                      link.close()
+                                  })
+            return video.chroma
+        } catch HostVideoError.stopped {
+            return nil
+        } catch {
+            log.error("video unavailable: \(String(describing: error), privacy: .public); input only")
+            state.withLock { s in if s.video === video { s.videoError = String(describing: error) } }
+            return nil
+        }
     }
 
     /// With `generation`, only while that connect loop still owns the device (a detached or replaced
@@ -313,6 +370,10 @@ public final class HostSession: Sendable {
 final class HostConnection: Sendable {
     let link: Link
     let display: HostDisplay
+    /// The session's displays and cursor, with the streamed display bound to `video`'s virtual display.
+    let provider: any DisplayProvider
+    /// The session's video (M3); stopped by `finish()`.
+    let video: HostVideoPipeline?
     private let deps: HostSession.Dependencies
     private let tuning: HostSession.Tuning
     private let activityQueue = DispatchQueue(label: "lain.host.activity", qos: .utility)
@@ -335,9 +396,12 @@ final class HostConnection: Sendable {
     /// Set once the realtime connection has closed or the session was finished; `waiter` is `run()`.
     private let ended = Mutex<(done: Bool, waiter: CheckedContinuation<Void, Never>?)>((false, nil))
 
-    init(link: Link, display: HostDisplay, deps: HostSession.Dependencies, tuning: HostSession.Tuning) {
+    init(link: Link, display: HostDisplay, provider: (any DisplayProvider)? = nil, video: HostVideoPipeline? = nil,
+         deps: HostSession.Dependencies, tuning: HostSession.Tuning) {
         self.link = link
         self.display = display
+        self.provider = provider ?? deps.display
+        self.video = video
         self.deps = deps
         self.tuning = tuning
         var warp = tuning.warp
@@ -365,7 +429,9 @@ final class HostConnection: Sendable {
             }
             if alreadyEnded { return c.resume() }
             link.realtime.setHandler { [self] env in handle(env) }
-            link.video.setHandler { _ in }
+            // Frame acks (and any KeyframeRequest) go to the video pipeline, which installed this same
+            // routing when it started; without video they're dropped.
+            link.video.setHandler { [video] env in video?.handleVideo(env) }
             link.audio.setHandler { _ in }
             // Realtime carries the input: the session ends when it closes, after its last message has
             // been handled. If video or audio drop alone, close the rest shortly after.
@@ -387,8 +453,10 @@ final class HostConnection: Sendable {
         waiter?.resume()
     }
 
-    /// Idempotent teardown: stop sampling, close the link, release everything, drop the assertion.
+    /// Idempotent teardown: stop video (the virtual display goes in the background), stop sampling,
+    /// close the link, release everything, drop the assertion.
     func finish() {
+        video?.stop()
         timers.withLock { t in
             for timer in t { timer.cancel() }
             t = []
@@ -419,6 +487,10 @@ final class HostConnection: Sendable {
         case .ping(let p):
             let received = deps.now()
             link.realtime.send(.pong(Pong(id: p.id, pingSentAtNs: p.sentAtNs, receivedAtNs: received, sentAtNs: deps.now())))
+            return
+        case .keyframeRequest(let r):
+            // D22: loss recovery (and the client coming back to the foreground) is a keyframe.
+            video?.requestKeyframe(reason: r.reason)
             return
         default:
             break
@@ -465,7 +537,7 @@ final class HostConnection: Sendable {
     /// The real cursor in global points, anywhere on the desktop: a warp for the client when it moved on
     /// its own (§5.4).
     private func sampleCursor() {
-        guard let global = deps.display.cursorLocation() else { return }
+        guard let global = provider.cursorLocation() else { return }
         let now = deps.now()
         let warp = rt.withLock { s -> CGPoint? in
             guard !s.finished else { return nil }
@@ -480,7 +552,7 @@ final class HostConnection: Sendable {
     /// goes). A resolution change, a display added or removed, a new arrangement or a new streamed
     /// display just updates the client, which re-clamps its cursor; the session goes on.
     func sendLayoutIfChanged() {
-        let layout = deps.display.desktopLayout()
+        let layout = provider.desktopLayout()
         guard !layout.displays.isEmpty else { return }
         lastLayout.withLock { last in
             guard layout != last, !ended.withLock({ $0.done }) else { return }

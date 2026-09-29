@@ -33,6 +33,18 @@ public struct CursorSnapshot: Sendable, Equatable {
         self.onStream = onStream ?? (x >= 0 && y >= 0 && x < displayPointWidth && y < displayPointHeight)
     }
 
+    /// Where the renderer draws the local cursor: streamed-display points while the cursor is on the
+    /// streamed display, nil while it's on another Mac display or no display is streamed (§6.3).
+    public var streamedPoint: (x: Double, y: Double)? {
+        guard onStream, displayPointWidth > 0, displayPointHeight > 0 else { return nil }
+        return (x, y)
+    }
+
+    /// The streamed display's size in points (the renderer's cursor space), nil if none is streamed.
+    public var streamedSize: (width: Double, height: Double)? {
+        displayPointWidth > 0 && displayPointHeight > 0 ? (displayPointWidth, displayPointHeight) : nil
+    }
+
     /// From a global position and the streamed display's global bounds (nil: none streamed).
     public init(globalX: Double, globalY: Double, streamed: DesktopDisplay?) {
         let s = streamed ?? DesktopDisplay(x: 0, y: 0, width: 0, height: 0)

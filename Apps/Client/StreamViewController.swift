@@ -159,16 +159,11 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             let loop = try StreamRenderLoop(
                 video: video,
                 cursorPosition: {
-                    // Streamed-display points. The integrator rewires this to the multi-display
-                    // snapshot (nil while the cursor is on another Mac display).
-                    let c = input.cursor
-                    guard connected.value, c.displayPointWidth > 0, c.displayPointHeight > 0 else { return nil }
-                    return (c.x, c.y)
+                    // Full desktop (§6.3): the cursor roams every Mac display; it's drawn here only
+                    // while it's on the streamed one, in that display's points.
+                    connected.value ? input.cursor.streamedPoint : nil
                 },
-                displayPointSize: {
-                    let c = input.cursor
-                    return c.displayPointWidth > 0 && c.displayPointHeight > 0 ? (c.displayPointWidth, c.displayPointHeight) : nil
-                },
+                displayPointSize: { input.cursor.streamedSize },
                 tick: { input.tick() })
             view.layer.addSublayer(loop.layer)
             loop.start()

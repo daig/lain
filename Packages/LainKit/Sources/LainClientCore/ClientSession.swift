@@ -80,14 +80,14 @@ public final class ClientSession: Sendable {
                     // The full desktop: the cursor roams every display; the streamed one sets the size.
                     guard current.isCurrent(link) else { return }
                     input.applyLayout(layout)
-                    if let s = layout.displays.first(where: \.isStreamed) {
-                        info.withLock { i in
+                    info.withLock { i in
+                        if let s = layout.displays.first(where: \.isStreamed) {
                             i.displayPointWidth = UInt32(max(s.width, 0).rounded())
                             i.displayPointHeight = UInt32(max(s.height, 0).rounded())
-                            i.displayCount = layout.displays.count
                         }
-                        publish()
+                        i.displayCount = layout.displays.count
                     }
+                    publish()
                 case .cursorWarp(let w):
                     input.warp(x: w.x, y: w.y)
                 case .cursorShape, .cursorSelect:
