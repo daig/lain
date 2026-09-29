@@ -249,10 +249,17 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         if dx != 0 || dy != 0 { input.scrollChanged(dx: Double(dx), dy: Double(dy)) }
     }
 
+    /// The pinch recognizer's scale at the previous event (1 at `.began`).
+    private var lastPinchScale: CGFloat = 1
+
     @objc private func pinch(_ g: UIPinchGestureRecognizer) {
         guard let phase = Self.phase(g.state) else { return }
-        let value = Float(g.scale - 1)   // incremental scale change since the last event
-        g.scale = 1
+        // Wire contract (§6.4): value = change in the gesture's absolute scale since the previous event,
+        // so the host's 1 + Σ value is the recognizer's scale. (Resetting `scale` to 1 each event would
+        // send ratios instead, which sum to ln(scale).)
+        if phase == .began { lastPinchScale = 1 }
+        let value = Float(g.scale - lastPinchScale)
+        lastPinchScale = g.scale
         input.gesture(.magnify, phase: phase, value: phase == .began || phase == .changed ? value : 0)
     }
 

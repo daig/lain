@@ -160,7 +160,8 @@ public final class ClientInputPipeline {
 
     // MARK: Gestures
 
-    /// Pinch (value = incremental scale change) or rotate (value = incremental radians).
+    /// Pinch (value = change in the absolute gesture scale since the previous event, so the host sees
+    /// 1 + Σ value; `.ended`/`.cancelled` last) or rotate (value = incremental radians).
     public func gesture(_ kind: Gesture.Kind, phase: GesturePhase, value: Float, at timeNs: UInt64) {
         guard pointerEnabled || phase == .ended || phase == .cancelled else { return }
         send(.gesture(Gesture(kind: kind, phase: phase, value: value)))

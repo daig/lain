@@ -54,6 +54,7 @@ let package = Package(
         .testTarget(name: "LainTransportTests", dependencies: ["LainTransport", "LainTestSupport", "LainTelemetry"]),
         // Host ↔ client end to end on macOS (the client core is platform-neutral where it matters).
         .testTarget(name: "LainLoopbackTests",
-                    dependencies: ["LainHostCore", "LainClientCore", "LainMedia", "LainTransport", "LainTelemetry", "LainTestSupport"]),
+                    dependencies: ["LainHostCore", "LainClientCore", "LainInput", "LainMedia", "LainTransport", "LainTelemetry",
+                                   "LainUSBMux", "LainTestSupport"]),
     ]
 )
