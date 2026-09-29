@@ -341,6 +341,46 @@ public struct Pair: WireMessage {
     public init(from r: inout ByteReader) throws(ProtocolError) { secret = try r.raw(Self.secretSize) }
 }
 
+/// Every Mac display in global point coordinates (top-left origin, main display at 0,0), so the
+/// client's cursor can roam the whole desktop while only the streamed display is shown (§5.1 target
+/// setup, §6.3). Sent after `HelloAck` and whenever the arrangement changes.
+public struct DisplayLayout: WireMessage {
+    public static let type = MessageType.displayLayout
+
+    public struct Display: Sendable, Equatable {
+        public var displayID: UInt32
+        public var x: Double
+        public var y: Double
+        public var width: Double
+        public var height: Double
+        /// The display shown on the iPad (at most one).
+        public var isStreamed: Bool
+        public init(displayID: UInt32, x: Double, y: Double, width: Double, height: Double, isStreamed: Bool) {
+            self.displayID = displayID; self.x = x; self.y = y; self.width = width; self.height = height
+            self.isStreamed = isStreamed
+        }
+    }
+
+    public var displays: [Display]
+    public init(displays: [Display]) { self.displays = displays }
+
+    public func encode(into w: inout ByteWriter) {
+        w.u8(UInt8(min(displays.count, 255)))
+        for d in displays.prefix(255) { w.u32(d.displayID); w.f64(d.x); w.f64(d.y); w.f64(d.width); w.f64(d.height); w.bool(d.isStreamed) }
+    }
+
+    public init(from r: inout ByteReader) throws(ProtocolError) {
+        let n = Int(try r.u8())
+        guard r.remaining >= n * 37 else { throw .truncated }
+        var out: [Display] = []
+        for _ in 0..<n {
+            out.append(Display(displayID: try r.u32(), x: try r.f64(), y: try r.f64(), width: try r.f64(), height: try r.f64(),
+                               isStreamed: try r.bool()))
+        }
+        displays = out
+    }
+}
+
 // MARK: - Video
 
 /// Color tags use ITU-T H.273 code points: P3-D65 primaries = 12, sRGB/IEC 61966-2-1 transfer = 13,

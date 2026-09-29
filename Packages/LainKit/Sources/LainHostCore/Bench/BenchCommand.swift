@@ -5,7 +5,7 @@ import Foundation
 /// `LainHost --bench <name>` (D16): benchmarks run inside the host app so macOS attributes permissions
 /// to it, not to the terminal. Output goes to stdout; the process exits when the bench finishes.
 public enum BenchCommand {
-    public static let names = ["usbmux", "replug", "inject", "vdisplay", "headless"]
+    public static let names = ["usbmux", "replug", "inject", "vdisplay", "headless", "vdisplay-identity"]
 
     /// The bench requested on the command line, if any.
     public static func requested(in arguments: [String] = CommandLine.arguments) -> String? {
@@ -21,6 +21,8 @@ public enum BenchCommand {
                 case "usbmux":
                     // Persistent pairing: the first run pairs over USB, later runs authenticate.
                     print(try await USBMuxBench.run(secrets: KeychainSecretStore()))
+                case "vdisplay-identity":
+                    exit(await DisplayIdentityBench.run())
                 case "headless":
                     exit(await HeadlessBench.run())
                 case "vdisplay":

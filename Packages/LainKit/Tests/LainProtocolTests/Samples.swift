@@ -21,6 +21,11 @@ enum Samples {
                                        pointHeight: 1032, refreshRate: 60)),
         .error(ErrorMessage(code: .versionMismatch, message: "host speaks v2")),
         .pair(Pair(secret: Array(200..<232))),
+        .displayLayout(DisplayLayout(displays: [
+            DisplayLayout.Display(displayID: 2, x: 0, y: 0, width: 1680, height: 1050, isStreamed: false),
+            DisplayLayout.Display(displayID: 18, x: 0, y: 1050, width: 1376, height: 1032, isStreamed: true),
+            DisplayLayout.Display(displayID: 3, x: -1920, y: 0, width: 1920, height: 1200, isStreamed: false),
+        ])),
         .videoConfig(VideoConfig(configId: 3, codec: .hevc, chroma: .yuv444, bitDepth: 10, width: 2752, height: 2064,
                                  fullRange: true, colorPrimaries: 12, transferFunction: 13, matrix: 1,
                                  parameterSets: [[0x40, 0x01], [0x42, 0x01, 0x01], [0x44, 0x01]])),
