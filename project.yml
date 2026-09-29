@@ -41,6 +41,10 @@ targets:
         CFBundleVersion: $(CURRENT_PROJECT_VERSION)
         LSUIElement: true              # menu-bar agent, no Dock icon
         LSApplicationCategoryType: public.app-category.utilities
+        # Wi-Fi (§7.7 D29): the host advertises _lain._tcp and accepts the iPad's TLS-PSK connections;
+        # macOS asks the owner once for Local Network access.
+        NSLocalNetworkUsageDescription: lain lets your iPad find this Mac and use it over Wi-Fi.
+        NSBonjourServices: [_lain._tcp]
     entitlements:
       path: Generated/LainHost.entitlements
       properties:

@@ -101,16 +101,17 @@ public final class CursorMonitor: Sendable {
 
     /// Starts periodic sampling (the first sample is immediate).
     public func start(hz: Double = 60) {
-        let timer = DispatchSource.makeTimerSource(queue: queue)
         let interval = Int((1e9 / hz).rounded())
-        timer.schedule(deadline: .now(), repeating: .nanoseconds(interval), leeway: .milliseconds(2))
-        timer.setEventHandler { [weak self] in self?.sampleNow() }
-        let started = state.withLock { s -> Bool in
-            guard !s.stopped, s.timer == nil else { return false }
+        // Created only if it will run: releasing a never-activated source traps (a stop that won the race).
+        let timer = state.withLock { s -> DispatchSourceTimer? in
+            guard !s.stopped, s.timer == nil else { return nil }
+            let timer = DispatchSource.makeTimerSource(queue: queue)
+            timer.schedule(deadline: .now(), repeating: .nanoseconds(interval), leeway: .milliseconds(2))
+            timer.setEventHandler { [weak self] in self?.sampleNow() }
             s.timer = timer
-            return true
+            return timer
         }
-        if started { timer.resume() }
+        timer?.resume()
     }
 
     /// Samples once and sends whatever changed. Also used by tests.

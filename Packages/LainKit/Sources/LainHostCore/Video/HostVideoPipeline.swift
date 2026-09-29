@@ -108,6 +108,8 @@ public final class HostVideoPipeline: Sendable {
     public let cursorSource: (any CursorImageSource)?
     public let options: Options
     private let state: Mutex<State>
+    /// A `start` that is still creating its display, for a `stop()` that interrupts it to wait on.
+    private let starting = StartInProgress()
     /// Serializes "record in flight + send" per encoded frame, so an ack can never overtake the gate's
     /// bookkeeping and `VideoConfig` always precedes the frames that use it.
     private let sendLock = Mutex(())
@@ -154,6 +156,7 @@ public final class HostVideoPipeline: Sendable {
         let claimed = state.withLock { s -> Bool in
             guard s.phase == .idle else { return false }
             s.phase = .starting
+            starting.begin()
             return true
         }
         guard claimed else { throw HostVideoError.alreadyStarted }
@@ -162,10 +165,13 @@ public final class HostVideoPipeline: Sendable {
         do {
             display = try await displayProvider.create()
         } catch {
-            abortStart()
+            await abandonStart()
             throw error
         }
-        guard stillStarting() else { throw HostVideoError.stopped }
+        guard state.withLock({ $0.phase == .starting }) else {
+            await abandonStart()
+            throw HostVideoError.stopped
+        }
 
         var settings = VideoEncoder.Settings(width: display.pixelWidth, height: display.pixelHeight)
         settings.chroma = Self.requestedChroma(for: hello)
@@ -175,20 +181,22 @@ public final class HostVideoPipeline: Sendable {
         do {
             encoder = try VideoEncoder(settings: settings) { [weak self] out in self?.encoded(out) }
         } catch {
-            displayProvider.destroy()
-            abortStart()
+            await abandonStart()
             throw error
         }
         let gate = FrameGate<Item>(maxInFlight: options.maxInFlight, isStale: { [weak self] item in
             self.map { item.capture < $0.newestCapture.load(ordering: .acquiring) } ?? false
         }) { [weak self] item in self?.submit(item) }
         let cursor = cursorSource.map { CursorMonitor(source: $0, send: sendRealtime) }
-        let timer = DispatchSource.makeTimerSource(queue: idleQueue)
-        timer.schedule(deadline: .now(), repeating: .milliseconds(options.idleCheckMs), leeway: .milliseconds(2))
-        timer.setEventHandler { [weak self] in self?.idleTick() }
+        let idleCheckMs = options.idleCheckMs
 
-        let installed = state.withLock { s -> Bool in
-            guard s.phase == .starting else { return false }
+        // The idle timer exists only once installed: libdispatch traps on releasing a source that was
+        // never activated, which a start abandoned here would do.
+        let installed = state.withLock { s -> DispatchSourceTimer? in
+            guard s.phase == .starting else { return nil }
+            let timer = DispatchSource.makeTimerSource(queue: idleQueue)
+            timer.schedule(deadline: .now(), repeating: .milliseconds(idleCheckMs), leeway: .milliseconds(2))
+            timer.setEventHandler { [weak self] in self?.idleTick() }
             s.phase = .running
             s.display = display
             s.encoder = encoder
@@ -200,16 +208,18 @@ public final class HostVideoPipeline: Sendable {
             s.stats.chroma = encoder.chroma
             s.stats.pixelWidth = display.pixelWidth
             s.stats.pixelHeight = display.pixelHeight
-            return true
+            return timer
         }
-        guard installed else {
-            displayProvider.destroy()
+        guard let timer = installed else {
+            await abandonStart()
             throw HostVideoError.stopped
         }
+        // Running: the display is the pipeline's now, and `stop()` removes it.
+        starting.end()
         log.notice("video: display \(display.displayID) \(display.pixelWidth)×\(display.pixelHeight), \(encoder.chroma == .yuv444 ? "4:4:4 10-bit" : "4:2:0") (client \(hello.decodeCapabilities.contains(.hevcMain44410Hardware) ? "decodes" : "lacks") hardware 4:4:4)")
         videoChannel.setHandler { [weak self] env in self?.handleVideo(env) }
         videoChannel.start()
-        timer.resume()
+        timer.resume()   // a `stop()` since has cancelled it: activating a cancelled source is fine
         cursor?.start(hz: options.cursorHz)
 
         let config = FrameSourceConfig(displayID: display.displayID, pixelWidth: display.pixelWidth,
@@ -232,45 +242,48 @@ public final class HostVideoPipeline: Sendable {
     /// Stops capture, releases the encoder and gate, stops the cursor monitor and removes the display.
     /// Idempotent and synchronous: nothing is sent on the video connection after it returns (except by
     /// a VideoToolbox callback already past its check); the capture stop and display removal finish in
-    /// the background (`waitUntilStopped`).
+    /// the background (`waitUntilStopped`). A stop while `start` is still creating the display lets the
+    /// start remove it, and the background part waits for that too.
     public func stop() {
         struct Taken {
             var timer: DispatchSourceTimer?
             var cursor: CursorMonitor?
             var encoder: VideoEncoder?
             var gate: FrameGate<Item>?
-            var hadDisplay: Bool
         }
+        let source = frameSource, provider = displayProvider, starting = starting
         let taken = state.withLock { s -> Taken? in
             guard s.phase != .stopped else { return nil }
-            let wasStarting = s.phase == .starting
+            // A start still creating the display removes it itself when it sees `.stopped`.
+            let removeDisplay = s.display != nil && s.phase != .starting
             s.phase = .stopped
             defer {
                 s.timer = nil; s.cursor = nil; s.encoder = nil; s.gate = nil; s.channel = nil; s.lastCaptured = nil
             }
-            // A start still creating the display removes it itself when it sees `.stopped`.
-            return Taken(timer: s.timer, cursor: s.cursor, encoder: s.encoder, gate: s.gate,
-                         hadDisplay: s.display != nil && !wasStarting)
+            // Set with the phase, so a `waitUntilStopped` can never see a stopped pipeline without it.
+            s.teardown = Task.detached {
+                await source.stop()
+                // An interrupted start removes the display it created itself (§7.7 D29): until it has, a
+                // display from this pipeline may still exist.
+                await starting.wait()
+                if removeDisplay {
+                    provider.destroy()
+                    await provider.waitUntilRemoved()
+                }
+            }
+            return Taken(timer: s.timer, cursor: s.cursor, encoder: s.encoder, gate: s.gate)
         }
         guard let taken else { return }
         taken.timer?.cancel()
         taken.cursor?.stop()
-        let source = frameSource, provider = displayProvider, removeDisplay = taken.hadDisplay
-        let task = Task.detached {
-            await source.stop()
-            if removeDisplay {
-                provider.destroy()
-                await provider.waitUntilRemoved()
-            }
-        }
-        state.withLock { $0.teardown = task }
         // The encoder is invalidated when its last reference (an in-flight callback, at most) goes.
         withExtendedLifetime(taken.encoder) {}
         log.notice("video stopped")
     }
 
     /// Waits for the background part of `stop()` (capture stopped, display removed and gone from the
-    /// active display list).
+    /// active display list): afterwards no display from this pipeline exists, even if `stop()`
+    /// interrupted `start`.
     public func waitUntilStopped() async {
         await state.withLock { $0.teardown }?.value
     }
@@ -425,14 +438,41 @@ public final class HostVideoPipeline: Sendable {
         if let item { offer(item, gate: gate) }
     }
 
-    private func stillStarting() -> Bool {
-        let ok = state.withLock { $0.phase == .starting }
-        if !ok { displayProvider.destroy() }
-        return ok
+    /// A start that won't run (failed, or stopped meanwhile): removes the display it may have created
+    /// (`destroy` is idempotent), waits until that has left the active display list, goes back to idle
+    /// unless stopped, and lets a waiting `stop()` finish.
+    private func abandonStart() async {
+        displayProvider.destroy()
+        await displayProvider.waitUntilRemoved()
+        state.withLock { s in if s.phase == .starting { s.phase = .idle } }
+        starting.end()
+    }
+}
+
+/// Whether a `start` is between claiming `.starting` and being done with its display: running (the
+/// display is then the pipeline's, removed by `stop()`), or abandoned with the display removed.
+private final class StartInProgress: Sendable {
+    private let state = Mutex<(active: Bool, waiters: [CheckedContinuation<Void, Never>])>((false, []))
+
+    func begin() { state.withLock { $0.active = true } }
+
+    func end() {
+        let waiters = state.withLock { s -> [CheckedContinuation<Void, Never>] in
+            defer { s = (false, []) }
+            return s.waiters
+        }
+        waiters.forEach { $0.resume() }
     }
 
-    private func abortStart() {
-        state.withLock { s in if s.phase == .starting { s.phase = .idle } }
+    /// Returns at once when no start is under way.
+    func wait() async {
+        await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+            let idle = state.withLock { s -> Bool in
+                if s.active { s.waiters.append(c) }
+                return !s.active
+            }
+            if idle { c.resume() }
+        }
     }
 }
 
