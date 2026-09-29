@@ -10,8 +10,8 @@ import Synchronization
 /// source, so they look like hardware to everything downstream. Tracks what it holds so `releaseAll`
 /// (invariant 4) and disconnects can let go of everything.
 ///
-/// Positions arrive in the streamed display's point space; `displayOrigin` maps them into the global
-/// display space (the virtual display's origin, §5.1).
+/// Positions arrive in global display points (the client's cursor roams the whole desktop) and are
+/// posted as they are.
 public final class InputInjector: InputSink, @unchecked Sendable {
     public static var hasAccess: Bool { CGPreflightPostEventAccess() }
     /// Shows the Accessibility prompt the first time (§2). Returns the current state.
@@ -19,7 +19,6 @@ public final class InputInjector: InputSink, @unchecked Sendable {
 
     private let source: CGEventSource?
     private struct State {
-        var displayOrigin = CGPoint.zero
         var heldKeys: [UInt16] = []          // macOS keycodes, press order
         var buttons = HeldButtons()
         var modifiers: ModifierFlags = []
@@ -31,8 +30,6 @@ public final class InputInjector: InputSink, @unchecked Sendable {
         source = CGEventSource(stateID: .hidSystemState)
         if let kbd = Self.cgKeyboardType(keyboardType) { source?.keyboardType = kbd }
     }
-
-    public func setDisplayOrigin(_ origin: CGPoint) { state.withLock { $0.displayOrigin = origin } }
 
     /// Set from the client's `Hello` at session start, before any key is posted.
     public func setKeyboardType(_ type: KeyboardType) {
@@ -62,7 +59,7 @@ public final class InputInjector: InputSink, @unchecked Sendable {
 
     public func move(_ m: PointerMove) {
         let (point, buttons, mods) = state.withLock { s in
-            s.position = CGPoint(x: s.displayOrigin.x + m.x, y: s.displayOrigin.y + m.y)
+            s.position = CGPoint(x: m.x, y: m.y)
             return (s.position, s.buttons.mask, s.modifiers)
         }
         let (type, button) = Self.moveType(buttons: buttons)
@@ -75,7 +72,7 @@ public final class InputInjector: InputSink, @unchecked Sendable {
 
     public func button(_ b: PointerButton) {
         let (point, changed) = state.withLock { s -> (CGPoint, Bool) in
-            s.position = CGPoint(x: s.displayOrigin.x + b.x, y: s.displayOrigin.y + b.y)
+            s.position = CGPoint(x: b.x, y: b.y)
             s.modifiers = b.modifiers
             return (s.position, s.buttons.set(b.button, down: b.isDown))
         }

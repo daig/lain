@@ -8,7 +8,7 @@ import Synchronization
 final class RecordingSink: InputSink {
     enum Call: Equatable, Sendable {
         case key(KeyEvent), move(PointerMove), button(PointerButton), scroll(Scroll), releaseAll
-        case displayOrigin(CGPoint), keyboardType(KeyboardType)
+        case keyboardType(KeyboardType)
     }
 
     private let log = Mutex<[Call]>([])
@@ -17,7 +17,7 @@ final class RecordingSink: InputSink {
     var inputCalls: [Call] {
         calls.filter {
             switch $0 {
-            case .displayOrigin, .keyboardType: false
+            case .keyboardType: false
             default: true
             }
         }
@@ -29,7 +29,6 @@ final class RecordingSink: InputSink {
     func button(_ button: PointerButton) { log.withLock { $0.append(.button(button)) } }
     func scroll(_ scroll: Scroll) { log.withLock { $0.append(.scroll(scroll)) } }
     func releaseAll() { log.withLock { $0.append(.releaseAll) } }
-    func setDisplayOrigin(_ origin: CGPoint) { log.withLock { $0.append(.displayOrigin(origin)) } }
     func setKeyboardType(_ type: KeyboardType) { log.withLock { $0.append(.keyboardType(type)) } }
 }
 
@@ -51,13 +50,22 @@ final class FakeDisplay: DisplayProvider {
     let display: Mutex<HostDisplay>
     /// Global cursor location, or nil for "unknown" (no warps).
     let cursor: Mutex<CGPoint?>
+    /// The desktop; nil: the target display alone (the protocol's default).
+    let layout: Mutex<DisplayLayout?>
 
-    init(display: HostDisplay, cursor: CGPoint?) {
+    init(display: HostDisplay, cursor: CGPoint?, layout: DisplayLayout? = nil) {
         self.display = Mutex(display)
         self.cursor = Mutex(cursor)
+        self.layout = Mutex(layout)
     }
 
     func targetDisplay() -> HostDisplay { display.withLock { $0 } }
+    func desktopLayout() -> DisplayLayout {
+        if let l = layout.withLock({ $0 }) { return l }
+        let d = targetDisplay()
+        return DisplayLayout(displays: [.init(displayID: d.displayID, x: d.origin.x, y: d.origin.y,
+                                              width: d.pointSize.width, height: d.pointSize.height, isStreamed: true)])
+    }
     func cursorLocation() -> CGPoint? { cursor.withLock { $0 } }
 }
 

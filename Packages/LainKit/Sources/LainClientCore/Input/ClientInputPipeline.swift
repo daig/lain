@@ -43,6 +43,7 @@ public final class ClientInputPipeline {
         self.send = send
         keyboard = KeyboardProcessor(table: table)
         pointer = PointerTracker(width: displayPointWidth, height: displayPointHeight, curve: curve)
+        streamedDisplay = DesktopDisplay(x: 0, y: 0, width: displayPointWidth, height: displayPointHeight)
         clicks = ClickCounter()
         self.momentum = MomentumSynthesizer(config: momentum)
         keyRepeat = KeyRepeatGenerator()
@@ -50,15 +51,47 @@ public final class ClientInputPipeline {
 
     // MARK: Configuration
 
-    /// Applies the Mac's settings from `HelloAck`: display size in points (the cursor space, recentred),
-    /// double-click interval, key-repeat delay and interval.
+    /// Applies the Mac's settings from `HelloAck`: the streamed display's size in points, double-click
+    /// interval, key-repeat delay and interval. Until a `DisplayLayout` arrives, the cursor space is that
+    /// one display at (0, 0), recentred (the M2 behaviour, and the fallback for a host that sends none).
     public func configure(_ ack: HelloAck) {
-        pointer = PointerTracker(width: Double(ack.displayPointWidth), height: Double(ack.displayPointHeight),
-                                 curve: pointer.curve)
+        let display = DesktopDisplay(x: 0, y: 0, width: Double(ack.displayPointWidth),
+                                     height: Double(ack.displayPointHeight))
+        pointer = PointerTracker(displays: [display], curve: pointer.curve)
+        streamedDisplay = display
+        hasLayout = false
         clicks = ClickCounter(intervalMs: ack.doubleClickIntervalMs, maxDistance: clicks.maxDistance)
         keyRepeat = KeyRepeatGenerator(delayMs: ack.keyRepeatDelayMs, intervalMs: ack.keyRepeatIntervalMs)
         macInputSource = ack.macInputSource
         isConfigured = true
+    }
+
+    /// The Mac's display arrangement (full-desktop cursor, §5.1 target setup): the cursor roams every
+    /// display in global points. The session's first layout recentres the cursor on the streamed display
+    /// (a `CursorWarp` follows with the real position); later ones keep its global position, snapped
+    /// onto the nearest display if its display went away or shrank. An empty layout is ignored.
+    public func applyLayout(_ layout: DisplayLayout) {
+        guard !layout.displays.isEmpty else { return }
+        let rects = layout.displays.map { DesktopDisplay(x: $0.x, y: $0.y, width: $0.width, height: $0.height) }
+        let streamed = layout.displays.firstIndex(where: \.isStreamed)
+        streamedDisplay = streamed.map { rects[$0] }
+        if hasLayout {
+            pointer.setDesktop(rects)
+        } else {
+            pointer = PointerTracker(displays: rects, startIndex: streamed ?? 0, curve: pointer.curve)
+            hasLayout = true
+        }
+    }
+
+    /// The display shown on the iPad, in global points; nil if the layout marks none.
+    public private(set) var streamedDisplay: DesktopDisplay?
+    /// A `DisplayLayout` has been applied since the last `configure`.
+    public private(set) var hasLayout = false
+
+    /// The cursor is on the streamed display (the renderer draws it only then).
+    public var cursorOnStream: Bool {
+        guard let s = streamedDisplay else { return false }
+        return pointer.x >= s.x && pointer.x < s.x + s.width && pointer.y >= s.y && pointer.y < s.y + s.height
     }
 
     public var curve: AccelerationCurve {
@@ -124,7 +157,7 @@ public final class ClientInputPipeline {
         }
     }
 
-    /// `CursorWarp` from the Mac overwrites the position (§6.3).
+    /// `CursorWarp` from the Mac overwrites the position (§6.3; global points, any display).
     public func warp(x: Double, y: Double) {
         pointer.warp(x: x, y: y)
     }

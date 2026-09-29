@@ -13,7 +13,7 @@ public struct HostInputRouter: Sendable {
         case notInput
         /// An input message with no effect on the Mac (e.g. rotate in v1).
         case ignored
-        /// Input was injected. `pointer` is the commanded position (display points) for pointer events.
+        /// Input was injected. `pointer` is the commanded position (global points) for pointer events.
         case injected(pointer: CGPoint?)
         /// `ReleaseAll`: everything held was released.
         case released

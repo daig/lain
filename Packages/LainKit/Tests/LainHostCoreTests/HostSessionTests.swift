@@ -83,7 +83,7 @@ import Testing
         #expect(ack.chroma == .yuv444 && ack.bitDepth == 10 && ack.displayMode == .extend && ack.refreshRate == 120)
         #expect(await rig.statuses.first { $0 == .connected(deviceModel: "iPad16,6") } != nil)
         #expect(rig.power.holding)
-        #expect(rig.sink.calls.prefix(2) == [.keyboardType(.iso), .displayOrigin(CGPoint(x: 100, y: 50))])
+        #expect(rig.sink.calls.first == .keyboardType(.iso))
 
         let inputs: [Message] = [
             .keyEvent(KeyEvent(usage: 0xE3, isDown: true, modifiers: [.command])),
@@ -125,18 +125,62 @@ import Testing
         #expect(await rig.statuses.first { $0 == .connecting } != nil)
     }
 
-    @Test func realCursorIsReflectedAsWarp() async throws {
-        // Global (300, 250) on a display at (100, 50) → (200, 200) display-relative.
+    @Test func realCursorIsReflectedAsGlobalWarp() async throws {
+        // Warps are global points: the client's cursor roams the whole desktop.
         let rig = try Rig(cursor: CGPoint(x: 300, y: 250))
         defer { rig.tearDown() }
         _ = try await rig.connect()
         let warp = await rig.client.received.first { if case .cursorWarp = $0 { true } else { false } }
-        #expect(warp == .cursorWarp(CursorWarp(x: 200, y: 200)))
+        #expect(warp == .cursorWarp(CursorWarp(x: 300, y: 250)))
 
-        // The Mac's own mouse moves it later: reflected again once no input is in flight.
-        rig.cursor.cursor.withLock { $0 = CGPoint(x: 5000, y: -10) }   // clamped to the display
+        // The Mac's own mouse moves it later, onto another display: reflected as is (no clamping).
+        rig.cursor.cursor.withLock { $0 = CGPoint(x: -1500, y: 700) }
         let second = await rig.client.received.first { if case .cursorWarp = $0 { true } else { false } }
-        #expect(second == .cursorWarp(CursorWarp(x: 1512, y: 0)))
+        #expect(second == .cursorWarp(CursorWarp(x: -1500, y: 700)))
+    }
+
+    static let desktop = DisplayLayout(displays: [
+        .init(displayID: 1, x: 0, y: 0, width: 1680, height: 1050, isStreamed: false),
+        .init(displayID: 9, x: 0, y: 1050, width: 1376, height: 1032, isStreamed: true),
+        .init(displayID: 4, x: -1920, y: 0, width: 1920, height: 1080, isStreamed: false),
+    ])
+
+    @Test func displayLayoutFollowsHelloAck() async throws {
+        let rig = try Rig()
+        defer { rig.tearDown() }
+        rig.cursor.layout.withLock { $0 = Self.desktop }
+        _ = try await rig.connect()
+        // The very next realtime message after HelloAck is the layout (before any warp).
+        let next = await rig.client.received.next(within: 5)
+        #expect(next == .displayLayout(Self.desktop))
+    }
+
+    @Test func displayChangeSendsANewLayoutWithoutReconnecting() async throws {
+        var tuning = HostSession.Tuning()
+        tuning.displayCheckIntervalNs = 20_000_000
+        let rig = try Rig(tuning: tuning)
+        defer { rig.tearDown() }
+        rig.cursor.layout.withLock { $0 = Self.desktop }
+        let (link, _) = try await rig.connect()
+        #expect(await rig.client.received.first { $0 == .displayLayout(Self.desktop) } != nil)
+        link.realtime.send(.keyEvent(KeyEvent(usage: 0x04, isDown: true, modifiers: [])))
+        #expect(await eventually { rig.sink.inputCalls.count == 1 })
+
+        // "More Space" on the iPad display and the side monitor unplugged, while connected.
+        let changed = DisplayLayout(displays: [
+            .init(displayID: 1, x: 0, y: 0, width: 1680, height: 1050, isStreamed: false),
+            .init(displayID: 9, x: 0, y: 1050, width: 1600, height: 1200, isStreamed: true),
+        ])
+        rig.cursor.layout.withLock { $0 = changed }
+        #expect(await rig.client.received.first { $0 == .displayLayout(changed) } != nil)
+        // Sent once per change, and the session goes on: no new link, nothing released, input still flows.
+        try await Task.sleep(for: .milliseconds(100))
+        #expect(await rig.client.received.first(within: 0.1) { if case .displayLayout = $0 { true } else { false } } == nil)
+        #expect(await rig.client.links.next(within: 0.1) == nil)
+        #expect(!rig.sink.inputCalls.contains(.releaseAll))
+        #expect(rig.session.status == .connected(deviceModel: "iPad16,6"))
+        link.realtime.send(.keyEvent(KeyEvent(usage: 0x04, isDown: false, modifiers: [])))
+        #expect(await eventually { rig.sink.inputCalls.count == 2 })
     }
 
     @Test func detachReleasesEverything() async throws {
@@ -236,20 +280,6 @@ import Testing
         rig.mux.detach(deviceID: 3)
         #expect(await rig.client.links.next(within: 5) != nil)
         #expect(await rig.statuses.first { $0 == .connected(deviceModel: "iPad16,6") } != nil)
-    }
-
-    @Test func displayChangeReconnectsWithTheNewBounds() async throws {
-        var tuning = HostSession.Tuning()
-        tuning.displayCheckIntervalNs = 20_000_000
-        let rig = try Rig(tuning: tuning)
-        defer { rig.tearDown() }
-        _ = try await rig.connect()
-        let bigger = HostDisplay(displayID: 1, origin: CGPoint(x: 100, y: 50), pointSize: CGSize(width: 1800, height: 1169))
-        rig.cursor.display.withLock { $0 = bigger }   // "More Space" chosen while connected
-        let ack = await rig.client.received.first { if case .helloAck = $0 { true } else { false } }
-        guard case .helloAck(let a) = try #require(ack) else { return }
-        #expect(a.displayPointWidth == 1800 && a.displayPointHeight == 1169)
-        #expect(rig.sink.inputCalls.contains(.releaseAll))
     }
 
     @Test func sameDeviceReattachFinishesTheOldConnectionFirst() async throws {
