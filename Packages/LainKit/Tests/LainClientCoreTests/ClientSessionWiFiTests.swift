@@ -3,11 +3,11 @@ import Foundation
 import LainInput
 import LainProtocol
 import LainTelemetry
-import LainTransport
 import Network
 import Synchronization
 import Testing
 @testable import LainClientCore
+@testable import LainTransport
 
 // ClientSession over Wi-Fi (§7.7 D29), loopback only: the "Mac" is a TLS-PSK listener bound to
 // 127.0.0.1 and never advertised, and discovery is a FixedHostDiscovery (nothing browses).
@@ -66,17 +66,18 @@ final class WiFiMac: Sendable {
     let received: Inbox<Message>
     /// Closes of links that sent `Hello` (the client's, unless the reply closes).
     let closes: Inbox<Bool>
-    /// TLS handshakes the listener refused.
-    let refused: Inbox<NetworkStreamError>
+    /// TLS handshakes the listener refused, with when.
+    let refused: Inbox<Stamped<NetworkStreamError>>
     private let listener: NetworkStreamListener
     private let acceptor: LinkAcceptor
     let port: UInt16
 
+    /// `psks`: the listener's keys, if not the pairing's own (a Mac that lost or replaced the pairing).
     init(secret: [UInt8], hostId: String = UUID().uuidString, name: String = "Mac mini",
-         reply: Reply? = nil) async throws {
+         reply: Reply? = nil, psks: [WiFiPSK]? = nil) async throws {
         let script = Script(reply ?? .helloAck(hostId: hostId))
         let links = Inbox<AcceptedLink>(), hellos = Inbox<Stamped<Hello>>(), unused = Inbox<Bool>()
-        let received = Inbox<Message>(), closes = Inbox<Bool>(), refused = Inbox<NetworkStreamError>()
+        let received = Inbox<Message>(), closes = Inbox<Bool>(), refused = Inbox<Stamped<NetworkStreamError>>()
         let ready = Inbox<UInt16>()
         let acceptor = LinkAcceptor(secrets: InMemorySecretStore(["IPAD": secret]), pairing: .refuse, label: "test.mac") { accepted in
             links.put(accepted)
@@ -107,10 +108,10 @@ final class WiFiMac: Sendable {
                 }
             }
         }
-        let listener = try NetworkStreamListener(psks: [WiFiPSK(secret: secret)], options: .loopback, onEvent: { event in
+        let listener = try NetworkStreamListener(psks: psks ?? [WiFiPSK(secret: secret)], options: .loopback, onEvent: { event in
             switch event {
             case .state(.ready(let port)): ready.put(port)
-            case .rejected(let error): refused.put(error)
+            case .rejected(let error): refused.put(Stamped(value: error, at: MonotonicClock.now()))
             default: break
             }
         }, onAccept: { acceptor.accept($0) })
@@ -246,9 +247,9 @@ final class HoldingStream: ByteStream {
     }
 }
 
-/// Interposes on each Wi-Fi attempt's dialer: optionally holds the dial once its last connection is up
-/// (until `gate` opens, whatever happened to the attempt meanwhile), and optionally wraps each stream in
-/// a `HoldingStream`.
+/// Interposes on each Wi-Fi attempt's dialer: records where it goes and (weakly) the streams it opens,
+/// optionally holds the dial once its last connection is up (until `gate` opens, whatever happened to
+/// the attempt meanwhile), and optionally wraps each stream in a `HoldingStream`.
 final class DialProbe: Sendable {
     let holdsDial: Bool
     let wrapsStreams: Bool
@@ -258,15 +259,25 @@ final class DialProbe: Sendable {
     /// A held dial went on after the gate opened.
     let released = Inbox<Bool>()
     let streams = Mutex<[ConnectionKind: HoldingStream]>([:])
+    private let attempts = Mutex<[NWEndpoint]>([])
+    private let opened = Mutex<[WeakStream]>([])
 
     init(holdsDial: Bool = false, wrapsStreams: Bool = false) {
         self.holdsDial = holdsDial
         self.wrapsStreams = wrapsStreams
     }
 
-    func interpose(_ inner: any StreamDialer) -> any StreamDialer { Dialer(inner: inner, probe: self) }
+    func interpose(_ inner: any StreamDialer) -> any StreamDialer {
+        if let wifi = inner as? WiFiLinkDialer { attempts.withLock { $0.append(wifi.endpoint) } }
+        return Dialer(inner: inner, probe: self)
+    }
 
     func stream(_ kind: ConnectionKind) -> HoldingStream? { streams.withLock { $0[kind] } }
+
+    /// The endpoint of each attempt, in order.
+    var dialed: [NWEndpoint] { attempts.withLock { $0 } }
+    /// Streams the attempts opened that are still in memory.
+    var liveStreams: Int { opened.withLock { $0.filter { $0.stream != nil }.count } }
 
     struct Dialer: StreamDialer {
         let inner: any StreamDialer
@@ -276,6 +287,7 @@ final class DialProbe: Sendable {
 
         func dial(kind: ConnectionKind) async throws -> any ByteStream {
             var stream = try await inner.dial(kind: kind)
+            probe.opened.withLock { $0.append(WeakStream(stream)) }
             if probe.wrapsStreams {
                 let holding = HoldingStream(stream)
                 probe.streams.withLock { $0[kind] = holding }
@@ -289,6 +301,69 @@ final class DialProbe: Sendable {
             return stream
         }
     }
+}
+
+/// A stream held weakly, to see it freed.
+final class WeakStream: @unchecked Sendable {
+    weak var stream: (any ByteStream)?
+    init(_ stream: any ByteStream) { self.stream = stream }
+}
+
+/// A service that accepts TCP and never answers: a TLS handshake with it stalls until the dial times
+/// out (what anyone copying a Mac's public host id into its own TXT record can do). Loopback only.
+final class StallingService: Sendable {
+    let port: UInt16
+    private let listener: TCPListener
+    private let held: Held
+
+    private final class Held: Sendable {
+        let sockets = Mutex<[SocketStream]>([])
+    }
+
+    init() throws {
+        let held = Held()
+        listener = try TCPListener(port: 0, queue: DispatchQueue(label: "test.stalling")) { socket in
+            held.sockets.withLock { $0.append(socket) }
+        }
+        port = listener.port
+        self.held = held
+    }
+
+    /// Connections it took (each one a dial it stalled).
+    var accepted: Int { held.sockets.withLock { $0.count } }
+
+    /// Listed under `hostId`, as `name`.
+    func discovered(claiming hostId: String, name: String) -> DiscoveredHost {
+        DiscoveredHost(hostId: hostId, name: name, protocolVersion: LainProtocol.majorVersion,
+                       endpoint: .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!),
+                       interfaceNames: ["lo0"])
+    }
+
+    func cancel() {
+        listener.cancel()
+        held.sockets.withLock { s in
+            s.forEach { $0.close() }
+            s = []
+        }
+    }
+}
+
+/// A closed loopback port: one the kernel just handed out, released again. (A socket kept bound but
+/// not listening would be a black hole, which drops the SYN instead of refusing.)
+func closedLoopbackPort() throws -> UInt16 {
+    let fd = socket(AF_INET, SOCK_STREAM, 0)
+    guard fd >= 0 else { throw TransportError.posix("socket", errno) }
+    defer { close(fd) }
+    var addr = sockaddr_in()
+    addr.sin_len = UInt8(MemoryLayout<sockaddr_in>.size)
+    addr.sin_family = sa_family_t(AF_INET)
+    addr.sin_addr = in_addr(s_addr: INADDR_LOOPBACK.bigEndian)
+    var len = socklen_t(MemoryLayout<sockaddr_in>.size)
+    let ok = withUnsafeMutablePointer(to: &addr) {
+        $0.withMemoryRebound(to: sockaddr.self, capacity: 1) { bind(fd, $0, len) == 0 && getsockname(fd, $0, &len) == 0 }
+    }
+    guard ok else { throw TransportError.posix("bind", errno) }
+    return UInt16(bigEndian: addr.sin_port)
 }
 
 /// Short times for tests; loopback only.
@@ -495,6 +570,75 @@ func eventually(within seconds: Double = 5, _ body: () -> Bool) async -> Bool {
         #expect(session.input.sync { $0.isConfigured } == false)
     }
 
+    /// The owner switches away while a dial is under way: iPadOS suspends the app soon, so the finished
+    /// dial is closed without `Hello` (the Mac starts no session for it); back in front, the loop dials
+    /// again.
+    @Test func aDialFinishingInTheBackgroundIsClosedUnusedAndRedialedInFront() async throws {
+        let mac = try await WiFiMac(secret: secret)
+        defer { mac.cancel() }
+        let probe = DialProbe(holdsDial: true)
+        let discoveries = Discoveries([mac.discovered()])
+        let statuses = Inbox<ClientSession.Status>()
+        let session = try ClientSession(port: 0, secrets: RecordingSecrets([PairingAccounts.mac(mac.hostId): secret]),
+                                        hello: hello, wifi: testWiFi(discoveries, probe: probe)) { statuses.put($0) }
+        defer { session.stop() }
+
+        #expect(await probe.held.next() == true)
+        session.sceneDidEnterBackground()
+        let first = try #require(discoveries.all.first)
+        #expect(await eventually { first.isCancelled })   // the background reached the loop
+
+        // The dial finishes in the background: its link reaches the Mac and is closed unused.
+        probe.gate.open()
+        #expect(await probe.released.next() == true)
+        #expect(await mac.unused.next() == true)
+        #expect(await mac.hellos.next(within: 0.5) == nil)
+        #expect(await statuses.first(within: 0.3) { if case .connected = $0 { true } else { false } } == nil)
+
+        // In front again: a new discovery, a new dial, a session.
+        session.sceneDidBecomeActive()
+        #expect(await mac.hellos.next() != nil)
+        #expect(await statuses.first { isNetwork($0) } != nil)
+        #expect(discoveries.all.count == 2)
+    }
+
+    /// A link that stops being current is freed, streams and all (its channels keep their handlers for
+    /// life, and those hold the link): when the Mac ends it, when USB replaces it, and at `stop()`.
+    @Test func aLinkThatStopsBeingCurrentIsFreed() async throws {
+        let mac = try await WiFiMac(secret: secret)
+        defer { mac.cancel() }
+        let probe = DialProbe()
+        let store = RecordingSecrets([PairingAccounts.usbHost: secret, PairingAccounts.mac(mac.hostId): secret])
+        let statuses = Inbox<ClientSession.Status>()
+        let session = try ClientSession(port: 0, secrets: store, hello: hello, video: ClientVideoPipeline(),
+                                        wifi: testWiFi(Discoveries([mac.discovered()]), probe: probe)) { statuses.put($0) }
+        defer { session.stop() }
+
+        // The Mac ends a Wi-Fi session.
+        #expect(await statuses.first { isNetwork($0) } != nil)
+        #expect(probe.liveStreams == 3)
+        try #require(await mac.links.next()).link.close()
+        #expect(await eventually { probe.liveStreams == 0 })
+
+        // The next one is replaced by USB.
+        #expect(await statuses.first { isNetwork($0) } != nil)
+        #expect(probe.liveStreams == 3)
+        let (usb, _, _) = try await HostLink.open(dialer: LoopbackDialer(port: session.port),
+                                                  secrets: InMemorySecretStore(["IPAD": secret]), peerID: "IPAD",
+                                                  allowPairing: false)
+        usb.realtime.send(.helloAck(helloAck(hostId: mac.hostId)))
+        #expect(await statuses.first { isConfigured($0, via: .usb) } != nil)
+        #expect(await eventually { probe.liveStreams == 0 })
+
+        // The cable goes: a third Wi-Fi session is current when the session stops.
+        usb.close()
+        #expect(await statuses.first { isNetwork($0) } != nil)
+        #expect(probe.liveStreams == 3)
+        session.stop()
+        #expect(await eventually { probe.liveStreams == 0 })
+        #expect(probe.dialed.count == 3)
+    }
+
     @Test func busyDelaysTheNextDialByTheBusyBackoff() async throws {
         let mac = try await WiFiMac(secret: secret, reply: .close)
         defer { mac.cancel() }
@@ -566,7 +710,8 @@ func eventually(within seconds: Double = 5, _ body: () -> Bool) async -> Bool {
         let cursor = session.input.cursor, version = video.cursor.version
         #expect(cursor.x == 688 && cursor.y == 516)   // recentred by the USB HelloAck
 
-        // Now the stale messages land, on the replaced link's handlers.
+        // Now the stale messages land. The replaced link's channels drop them (its handlers were
+        // released); the generation gating covers a message already in a handler (LinkGenerationTests).
         await realtime.release()
         await wifiVideo.release()
         session.input.sync { _ in }
@@ -645,6 +790,221 @@ func eventually(within seconds: Double = 5, _ body: () -> Bool) async -> Bool {
     }
 }
 
+// MARK: The loop's policies over Wi-Fi
+
+/// What the Wi-Fi loop does between links: browsing, backoffs, the dial order among one Mac's services,
+/// a Mac that refuses the key.
+@Suite(.serialized) struct ClientWiFiLoopTests {
+    let secret = ChannelAuth.randomBytes(32)
+
+    /// No browse while a Wi-Fi link through the LAN is up (it would keep AWDL busy for nothing, next to
+    /// the LAN's channel); browsing resumes when the link ends. (Over a peer-to-peer link it goes on:
+    /// `WiFiPolicyTests.onlyAPeerToPeerLinkKeepsTheBrowse`.)
+    @Test func browsingStopsDuringALANSessionAndResumesAfterIt() async throws {
+        let mac = try await WiFiMac(secret: secret)
+        defer { mac.cancel() }
+        let discoveries = Discoveries([mac.discovered()])
+        let statuses = Inbox<ClientSession.Status>()
+        let session = try ClientSession(port: 0, secrets: RecordingSecrets([PairingAccounts.mac(mac.hostId): secret]),
+                                        hello: hello, wifi: testWiFi(discoveries)) { statuses.put($0) }
+        defer { session.stop() }
+
+        let status = try #require(await statuses.first { isNetwork($0) })
+        guard case .connected(let info) = status, case .network(_, peerToPeer: false) = info.transport else {
+            Issue.record("not a LAN link: \(status)")
+            return
+        }
+        #expect(discoveries.all.count == 1 && discoveries.all[0].isCancelled)
+
+        _ = await mac.hellos.next()
+        try #require(await mac.links.next()).link.close()
+        #expect(await eventually { discoveries.all.count == 2 })
+        #expect(await mac.hellos.next() != nil)
+        #expect(await statuses.first { isNetwork($0) } != nil)
+        #expect(discoveries.all.count == 2 && discoveries.all[1].isCancelled)
+    }
+
+    /// A Mac whose listener doesn't hold this iPad's key (it lost or replaced the pairing): after two
+    /// refusals in a row the status says so, and what fixes it; the loop keeps retrying every
+    /// `maxBackoff` without the status flipping back to "Connecting". A service that leaves the list
+    /// is forgotten: back, it is dialed afresh.
+    @Test func aMacThatRefusesTheKeyIsReportedAndStillRetried() async throws {
+        let mac = try await WiFiMac(secret: ChannelAuth.randomBytes(32))   // another iPad's pairing
+        defer { mac.cancel() }
+        let discoveries = Discoveries([mac.discovered()])
+        let statuses = Inbox<ClientSession.Status>()
+        let session = try ClientSession(port: 0, secrets: RecordingSecrets([PairingAccounts.mac(mac.hostId): secret]),
+                                        hello: hello, wifi: testWiFi(discoveries)) { statuses.put($0) }
+        defer { session.stop() }
+
+        #expect(await mac.refused.next()?.value == .unknownIdentity)
+        #expect(await statuses.first { $0 == .connecting(hostName: "Mac mini", interfaces: ["lo0"]) } != nil)
+        // One refusal isn't news (the next dial comes after the 0.1 s service backoff).
+        #expect(await statuses.first(within: 0.05) { $0 == .pairingRefused(hostName: "Mac mini") } == nil)
+        let second = try #require(await mac.refused.next())
+        #expect(await statuses.first { $0 == .pairingRefused(hostName: "Mac mini") } != nil)
+        #expect(ClientStatus(.pairingRefused(hostName: "Mac mini")).detail == "Connect the USB-C cable once to pair again")
+
+        // Retried at the longest backoff (0.4 s here, where the doubling would be at 0.2 s), and the
+        // status stays put through the redials.
+        let third = try #require(await mac.refused.next(within: 3))
+        #expect(elapsed(second.at, third.at) >= 0.35)
+        #expect(await mac.refused.next(within: 3) != nil)
+        #expect(await statuses.next(within: 0.1) == nil)
+        #expect(await mac.links.next(within: 0.1) == nil)
+
+        // It leaves the list and comes back (say the Mac restarted): a new service, not yet refusing.
+        discoveries.all.forEach { $0.update(hosts: []) }
+        #expect(await statuses.first { $0 == .searching } != nil)
+        discoveries.all.forEach { $0.update(hosts: [mac.discovered()]) }
+        #expect(await statuses.next() == .connecting(hostName: "Mac mini", interfaces: ["lo0"]))
+    }
+
+    /// The same with a listener that holds a key under this iPad's identity, but not its key.
+    @Test func aMacWithAnotherKeyUnderThisIPadsIdentityIsReportedToo() async throws {
+        let wrong = WiFiPSK(identity: WiFiPSK(secret: secret).identity, key: ChannelAuth.randomBytes(32))
+        let mac = try await WiFiMac(secret: secret, psks: [wrong])
+        defer { mac.cancel() }
+        let statuses = Inbox<ClientSession.Status>()
+        let session = try ClientSession(port: 0, secrets: RecordingSecrets([PairingAccounts.mac(mac.hostId): secret]),
+                                        hello: hello, wifi: testWiFi(Discoveries([mac.discovered()]))) { statuses.put($0) }
+        defer { session.stop() }
+        #expect(await statuses.first { $0 == .pairingRefused(hostName: "Mac mini") } != nil)
+        #expect(await mac.links.next(within: 0.1) == nil)
+    }
+
+    /// Two services claim the Mac's id and nothing listens at the first: the loop goes on to the second.
+    @Test func aFailingServiceFallsThroughToTheMacsOtherService() async throws {
+        let mac = try await WiFiMac(secret: secret)
+        defer { mac.cancel() }
+        let dead = DiscoveredHost(hostId: mac.hostId, name: "A Mac", protocolVersion: LainProtocol.majorVersion,
+                                  endpoint: .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: try closedLoopbackPort())!),
+                                  interfaceNames: ["lo0"])
+        let probe = DialProbe()
+        let statuses = Inbox<ClientSession.Status>()
+        let session = try ClientSession(port: 0, secrets: RecordingSecrets([PairingAccounts.mac(mac.hostId): secret]),
+                                        hello: hello, wifi: testWiFi(Discoveries([dead, mac.discovered()]), probe: probe)) {
+            statuses.put($0)
+        }
+        defer { session.stop() }
+        #expect(await mac.hellos.next(within: 3) != nil)
+        #expect(await statuses.first { isNetwork($0) } != nil)
+        #expect(probe.dialed == [dead.endpoint, mac.discovered().endpoint])
+    }
+
+    /// Services that copy the Mac's public host id and stall TLS can't keep the Mac from being dialed:
+    /// one Mac's services are taken in turn, each stalling one only once before the Mac's turn.
+    @Test func stallingServicesCannotStarveTheMac() async throws {
+        let mac = try await WiFiMac(secret: secret)
+        let rogues = try (1...3).map { _ in try StallingService() }
+        defer {
+            mac.cancel()
+            rogues.forEach { $0.cancel() }
+        }
+        // Listed first, as Bonjour sorts by name.
+        let hosts = rogues.enumerated().map { $1.discovered(claiming: mac.hostId, name: "A rogue \($0)") } + [mac.discovered()]
+        var config = testWiFi(Discoveries(hosts))
+        config.dialTimeout = 0.5
+        let started = MonotonicClock.now()
+        let session = try ClientSession(port: 0, secrets: RecordingSecrets([PairingAccounts.mac(mac.hostId): secret]),
+                                        hello: hello, wifi: config) { _ in }
+        defer { session.stop() }
+
+        let first = try #require(await mac.hellos.next(within: 5))
+        #expect(rogues.map(\.accepted) == [1, 1, 1])
+        #expect(elapsed(started, first.at) < WiFiTimes.grace + 3 * config.dialTimeout + 1.5)
+    }
+
+    /// Nor can one that reappears under a new endpoint after each stall: a service listed later waits
+    /// behind the Mac's other services.
+    @Test func aServiceReappearingUnderNewEndpointsCannotStarveTheMac() async throws {
+        let mac = try await WiFiMac(secret: secret)
+        let first = try StallingService(), second = try StallingService()
+        defer {
+            mac.cancel()
+            first.cancel()
+            second.cancel()
+        }
+        let discoveries = Discoveries([first.discovered(claiming: mac.hostId, name: "A rogue"), mac.discovered()])
+        var config = testWiFi(discoveries)
+        config.dialTimeout = 0.5
+        let session = try ClientSession(port: 0, secrets: RecordingSecrets([PairingAccounts.mac(mac.hostId): secret]),
+                                        hello: hello, wifi: config) { _ in }
+        defer { session.stop() }
+
+        // Dialed first (listed first); while that dial stalls, it moves.
+        #expect(await eventually { first.accepted == 1 })
+        let moved = [second.discovered(claiming: mac.hostId, name: "A rogue (2)"), mac.discovered()]
+        discoveries.show(moved)
+        discoveries.all.forEach { $0.update(hosts: moved) }
+        #expect(await mac.hellos.next(within: 3) != nil)
+        #expect(second.accepted == 0)
+    }
+
+    /// The service that last answered with `HelloAck` is remembered with the Mac and dialed first next
+    /// time, wherever discovery lists it.
+    @Test func theServiceThatLastAnsweredIsDialedFirst() async throws {
+        let mac = try await WiFiMac(secret: secret)
+        let rogue = try StallingService()
+        defer {
+            mac.cancel()
+            rogue.cancel()
+        }
+        let store = RecordingSecrets([PairingAccounts.mac(mac.hostId): secret])
+        let lastHost = LastConnectedHost.memory()
+        let discoveries = Discoveries([mac.discovered()])
+        let before = try ClientSession(port: 0, secrets: store, hello: hello, wifi: testWiFi(discoveries, lastHost: lastHost)) { _ in }
+        defer { before.stop() }
+        #expect(await mac.hellos.next() != nil)
+        #expect(await eventually { lastHost.service(mac.hostId) == WiFiDialPlan.serviceKey(mac.discovered().endpoint) })
+        before.stop()
+
+        discoveries.show([rogue.discovered(claiming: mac.hostId, name: "A rogue"), mac.discovered()])
+        let probe = DialProbe()
+        let after = try ClientSession(port: 0, secrets: store, hello: hello,
+                                      wifi: testWiFi(discoveries, lastHost: lastHost, probe: probe)) { _ in }
+        defer { after.stop() }
+        #expect(await mac.hellos.next() != nil)
+        #expect(rogue.accepted == 0 && probe.dialed == [mac.discovered().endpoint])
+    }
+
+    /// Links that end before `HelloAck` back off 0.05, 0.1, 0.2, 0.4 s (doubling); a session that ran
+    /// resets that, and the next dial waits the grace instead.
+    @Test func failuresBeforeHelloAckDoubleTheBackoffAndASessionResetsIt() async throws {
+        let mac = try await WiFiMac(secret: secret, reply: .close)
+        defer { mac.cancel() }
+        var config = testWiFi(Discoveries([mac.discovered()]))
+        config.failureBackoff = 0.05
+        config.maxBackoff = 3.2
+        let statuses = Inbox<ClientSession.Status>()
+        let session = try ClientSession(port: 0, secrets: RecordingSecrets([PairingAccounts.mac(mac.hostId): secret]),
+                                        hello: hello, wifi: config) { statuses.put($0) }
+        defer { session.stop() }
+
+        var hellos: [UInt64] = []
+        for n in 1...5 {
+            if n == 5 { mac.answer(.helloAck(hostId: mac.hostId)) }   // read at the 5th link
+            hellos.append(try #require(await mac.hellos.next(within: 5)).at)
+        }
+        for (i, least) in [0.05, 0.1, 0.2, 0.4].enumerated() {
+            #expect(elapsed(hellos[i], hellos[i + 1]) >= least, "gap \(i + 1)")
+        }
+
+        // The 5th link got HelloAck: a session. The Mac ends it; the next dial comes after the grace, and
+        // the next failure backs off 0.05 s again (not the 0.8 s the doubling had reached).
+        #expect(await statuses.first { isNetwork($0) } != nil)
+        mac.answer(.close)
+        var session5: AcceptedLink?
+        while let link = await mac.links.next(within: 0.1) { session5 = link }
+        let ended = MonotonicClock.now()
+        try #require(session5).link.close()
+        let afterSession = try #require(await mac.hellos.next(within: 5)).at
+        #expect(elapsed(ended, afterSession) >= WiFiTimes.grace)
+        let next = try #require(await mac.hellos.next(within: 5)).at
+        #expect(elapsed(afterSession, next) >= 0.05 && elapsed(afterSession, next) < 0.75)
+    }
+}
+
 func isPong(_ message: Message, _ id: UInt32) -> Bool {
     if case .pong(let p) = message { p.id == id } else { false }
 }
@@ -671,6 +1031,48 @@ func isPong(_ message: Message, _ id: UInt32) -> Bool {
         #expect(WiFiDialPlan(hosts: hosts, preferring: nil) { stored[$0] }.candidates.map(\.host.name) == ["X", "Y", "Y (2)"])
     }
 
+    /// Among one Mac's services: the one that last answered first, then the least recently tried (ties
+    /// in discovery order); Macs keep their order.
+    @Test func oneMacsServicesAreTriedLastAnsweredFirstThenInTurn() {
+        let x = UUID().uuidString, y = UUID().uuidString
+        func host(_ id: String, _ name: String, port: UInt16) -> DiscoveredHost {
+            DiscoveredHost(hostId: id, name: name, protocolVersion: LainProtocol.majorVersion,
+                           endpoint: .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!))
+        }
+        let hosts = [host(x, "A", port: 1), host(y, "B", port: 2), host(x, "C", port: 3), host(x, "D", port: 4)]
+        let stored = [PairingAccounts.mac(x): [UInt8](repeating: 1, count: 32), PairingAccounts.mac(y): [UInt8](repeating: 2, count: 32)]
+        func order(preferring: String? = nil, lastGood: [String: String] = [:], tried: [UInt16: UInt64]) -> [String] {
+            WiFiDialPlan(hosts: hosts, preferring: preferring) { stored[$0] }
+                .ordered(lastGood: { lastGood[$0] }, lastTried: { endpoint in
+                    guard case .hostPort(_, let port) = endpoint else { return 0 }
+                    return tried[port.rawValue] ?? 0
+                })
+                .candidates.map(\.host.name)
+        }
+        // X's services, least recently tried first, then Y's; ties keep discovery order.
+        #expect(order(tried: [1: 30, 3: 10, 4: 20]) == ["C", "D", "A", "B"])
+        #expect(order(tried: [:]) == ["A", "C", "D", "B"])
+        // The one that last answered goes first, however recently it was tried.
+        #expect(order(lastGood: [x: WiFiDialPlan.serviceKey(hosts[0].endpoint)], tried: [1: 30, 3: 10, 4: 20]) == ["A", "C", "D", "B"])
+        // What another Mac last answered on doesn't reorder this one's services; the last-connected Mac leads.
+        #expect(order(preferring: y, lastGood: [y: WiFiDialPlan.serviceKey(hosts[3].endpoint)], tried: [1: 30, 3: 10, 4: 20])
+                == ["B", "C", "D", "A"])
+        // A Bonjour service is named by name, type and domain, whatever interface it was resolved on.
+        #expect(WiFiDialPlan.serviceKey(.service(name: "Mac mini", type: "_lain._tcp", domain: "local.", interface: nil))
+                == "Mac mini._lain._tcp.local.")
+    }
+
+    /// Browsing goes on only with no link, or over a peer-to-peer Wi-Fi link.
+    @Test func onlyAPeerToPeerLinkKeepsTheBrowse() {
+        let mac = DiscoveredHost(hostId: UUID().uuidString, name: "Mac mini", protocolVersion: LainProtocol.majorVersion,
+                                 endpoint: .hostPort(host: .ipv4(.loopback), port: 1))
+        #expect(WiFiLoop.browses(during: nil))
+        #expect(!WiFiLoop.browses(during: (.usb(peer: PairingAccounts.usbHost, paired: false, secret: []), .usb)))
+        #expect(!WiFiLoop.browses(during: (.wifi(mac), .network(interface: "en1", peerToPeer: false))))
+        #expect(!WiFiLoop.browses(during: (.wifi(mac), .network(interface: nil, peerToPeer: false))))
+        #expect(WiFiLoop.browses(during: (.wifi(mac), .network(interface: "awdl0", peerToPeer: true))))
+    }
+
     @Test func statusesSayWhatToDo() {
         #expect(ClientStatus(.listening(port: 1)).detail == "Connect your iPad to the Mac with a USB-C cable")
         #expect(ClientStatus(.listening(port: 1, wifi: true)).detail.contains("paired Mac with Wi-Fi on"))
@@ -679,6 +1081,8 @@ func isPong(_ message: Message, _ id: UInt32) -> Bool {
         #expect(ClientStatus(.versionMismatch(hostName: nil, remote: 1)).title == "The Mac runs another lain")
         #expect(ClientStatus(.versionMismatch(hostName: "Mac mini", remote: 3)).detail.contains("update lain on this iPad"))
         #expect(ClientStatus(.connecting(hostName: "Mac mini", interfaces: ["en0", "awdl0"])).detail == "over Wi-Fi (en0, awdl0)")
+        #expect(ClientStatus(.pairingRefused(hostName: "Mac mini")).title == "Mac mini doesn't recognize this iPad")
+        #expect(ClientStatus(.pairingRefused(hostName: "Mac mini")).detail == "Connect the USB-C cable once to pair again")
         #expect(ClientStatus.describe(.usb) == "USB")
         #expect(ClientStatus.describe(.network(interface: "awdl0", peerToPeer: true)) == "Wi-Fi · AWDL awdl0")
         #expect(ClientStatus.describe(.network(interface: "en1", peerToPeer: false)) == "Wi-Fi · LAN en1")
