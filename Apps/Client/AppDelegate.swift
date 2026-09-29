@@ -9,32 +9,46 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         config.delegateClass = SceneDelegate.self
         return config
     }
+
+    /// Strips the app's own main menu (§6.4): the default iPadOS menu claims Cmd-Z/X/C/V/A/F/… and would
+    /// swallow them before they reach the Mac.
+    override func buildMenu(with builder: UIMenuBuilder) {
+        super.buildMenu(with: builder)
+        guard builder.system == .main, let root = builder.menu(for: .root) else { return }
+        let extra: [UIMenu.Identifier] = [.quit, .close, .hide, .bringAllToFront, .minimizeAndZoom, .fullscreen]
+        for id in root.children.compactMap({ ($0 as? UIMenu)?.identifier }) + extra { builder.remove(menu: id) }
+    }
 }
 
 final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
-    private var endpoint: ClientEndpoint?
+    private let input = ClientInput()
+    private var session: ClientSession?
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
-        let connect = ConnectViewController()
+        let stream = StreamViewController(input: input)
         let window = UIWindow(windowScene: windowScene)
-        window.rootViewController = connect
+        window.rootViewController = stream
         window.makeKeyAndVisible()
         self.window = window
-        startEndpoint(screen: windowScene.screen, view: connect)
+        startSession(screen: windowScene.screen, view: stream)
     }
+
+    // Invariant 4: anything that takes focus away releases everything on the Mac.
+    func sceneWillResignActive(_ scene: UIScene) { input.releaseAll(.focusLost) }
+    func sceneDidEnterBackground(_ scene: UIScene) { input.releaseAll(.focusLost) }
 
     /// The loopback listener the Mac dials through usbmuxd (§7.2). It only accepts while the app is in
     /// the foreground; iPadOS suspends it otherwise.
-    private func startEndpoint(screen: UIScreen, view: ConnectViewController) {
+    private func startSession(screen: UIScreen, view: StreamViewController) {
         let native = screen.nativeBounds.size
         let hello = Hello(deviceModel: Self.modelIdentifier(), pixelWidth: UInt32(max(native.width, native.height)),
                           pixelHeight: UInt32(min(native.width, native.height)), scale: UInt8(screen.nativeScale),
                           maxRefreshRate: UInt16(screen.maximumFramesPerSecond), decodeCapabilities: [.hevcMain],
                           keyboardType: .unknown)
         do {
-            endpoint = try ClientEndpoint(secrets: KeychainSecretStore(), hello: hello) { [weak view] status in
+            session = try ClientSession(secrets: KeychainSecretStore(), hello: hello, input: input) { [weak view] status in
                 Task { @MainActor in view?.status = ClientStatus(status) }
             }
         } catch {

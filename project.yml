@@ -129,4 +129,5 @@ schemes:
         - package: LainKit/LainInputTests
         - package: LainKit/LainTransportTests   # listener + pairing on the iPadOS runtime
         - package: LainKit/LainMediaTests
+        - package: LainKit/LainClientCoreTests  # input pipeline + ClientSession over loopback TCP
         - LainClientTests
