@@ -184,10 +184,25 @@ public enum VirtualDisplayBench {
             let pb = raw == SCFrameStatus.complete.rawValue ? CMSampleBufferGetImageBuffer(sb) : nil
             let format = pb.map(CVPixelBufferGetPixelFormatType) ?? 0
             let size = pb.map { CGSize(width: CVPixelBufferGetWidth($0), height: CVPixelBufferGetHeight($0)) } ?? .zero
-            let primaries = pb.flatMap { CVBufferCopyAttachments($0, .shouldPropagate) as? [String: Any] }.map { a in
-                ["CVImageBufferColorPrimaries", "CVImageBufferTransferFunction", "CVImageBufferYCbCrMatrix"]
-                    .map { "\($0.replacingOccurrences(of: "CVImageBuffer", with: ""))=\(a[$0].map { "\($0)" } ?? "-")" }
-                    .joined(separator: " ")
+            // Both attachment buckets, plus the per-key lookup (which searches both and reports the mode).
+            let primaries = pb.map { buffer -> String in
+                let keys = [kCVImageBufferColorPrimariesKey, kCVImageBufferTransferFunctionKey, kCVImageBufferYCbCrMatrixKey]
+                let perKey = keys.map { key -> String in
+                    var mode = CVAttachmentMode.shouldPropagate
+                    let v = CVBufferCopyAttachment(buffer, key, &mode)
+                    let short = (key as String).replacingOccurrences(of: "CVImageBuffer", with: "")
+                    return "\(short)=\(v.map { "\($0) [\(mode == .shouldPropagate ? "propagate" : "don't propagate")]" } ?? "-")"
+                }
+                let prop = (CVBufferCopyAttachments(buffer, .shouldPropagate) as? [String: Any])?.keys.sorted() ?? []
+                let noProp = (CVBufferCopyAttachments(buffer, .shouldNotPropagate) as? [String: Any])?.keys.sorted() ?? []
+                var csText = "none"
+                if let raw = CVBufferCopyAttachment(buffer, kCVImageBufferCGColorSpaceKey, nil) {
+                    let cs = raw as! CGColorSpace
+                    csText = "\(cs.name.map { $0 as String } ?? "unnamed") model \(cs.model.rawValue), "
+                        + VirtualDisplayBench.primariesDescription(cs)
+                }
+                return perKey.joined(separator: " ") + " | propagate bucket: \(prop) | don't-propagate bucket: \(noProp)"
+                    + " | attached CGColorSpace: \(csText)"
             }
             // Keep copies of up to 60 frames for the encode pass (SCK recycles its surfaces).
             let needCopy = pb != nil && state.withLock { $0.kept.count < 60 }
