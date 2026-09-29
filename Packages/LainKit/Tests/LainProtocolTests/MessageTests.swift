@@ -71,7 +71,25 @@ import Testing
     }
 
     @Test func versionMismatchIsReported() {
-        #expect(throws: ProtocolError.versionMismatch(remote: 2)) { try MessageCodec.decode(mutated(2, 2)) }
+        let newer = LainProtocol.majorVersion + 1
+        #expect(throws: ProtocolError.versionMismatch(remote: newer)) { try MessageCodec.decode(mutated(2, newer)) }
+    }
+
+    @Test func encodesInAMismatchedPeersVersion() {
+        // An acceptor answers a v1 peer with Error(versionMismatch) in a v1 header, so the peer can read why.
+        let why = "host speaks v2"
+        let error = Message.error(ErrorMessage(code: .versionMismatch, message: why))
+        let v1 = MessageCodec.encode(error, sequence: 0, timestampNs: 0, version: 1)
+        #expect(v1[2] == 1)
+        var ours = v1
+        ours[2] = LainProtocol.majorVersion
+        #expect(ours == MessageCodec.encode(error, sequence: 0, timestampNs: 0))   // only the version byte differs
+        // v1's ErrorMessage layout: u16 code, then a u16-prefixed UTF-8 message.
+        #expect(Array(v1[FrameHeader.size...]) == [1, 0, UInt8(why.utf8.count), 0] + Array(why.utf8))
+        #expect(throws: ProtocolError.versionMismatch(remote: 1)) { try MessageCodec.decode(v1) }
+        var parser = FrameParser()
+        parser.append(v1)
+        #expect(throws: ProtocolError.versionMismatch(remote: 1)) { try parser.next() }
     }
 
     @Test func unknownAndReservedTypes() {
@@ -127,6 +145,40 @@ import Testing
         b.replaceSubrange(24..., with: w.bytes)
         b[20] = 2
         #expect(throws: ProtocolError.truncated) { try MessageCodec.decode(b) }
+    }
+}
+
+/// Protocol v2 (M6a). A v1 peer is refused by the header version first (`HeaderValidation`); these
+/// document that v1's payloads don't decode either, and the new `Error` code.
+@Suite struct VersionTwoPayloads {
+    @Test func v1HelloAckNoLongerDecodes() {
+        // v1's HelloAck ended at `macInputSource`.
+        var v1 = ByteWriter()
+        v1.u8(VideoCodec.hevc.rawValue); v1.u8(ChromaFormat.yuv444.rawValue); v1.u8(10); v1.u8(DisplayMode.extend.rawValue)
+        v1.u32(60_000_000); v1.u16(120); v1.u32(1376); v1.u32(1032); v1.u32(48_000); v1.u8(2)
+        v1.u8(AudioEncoding.pcm16LE.rawValue); v1.u32(500); v1.u32(225); v1.u32(30); v1.string("com.apple.keylayout.Colemak")
+        var v2 = ByteWriter()
+        HelloAck(codec: .hevc, chroma: .yuv444, bitDepth: 10, displayMode: .extend, bitrate: 60_000_000, refreshRate: 120,
+                 displayPointWidth: 1376, displayPointHeight: 1032, audioSampleRate: 48_000, audioChannels: 2,
+                 audioEncoding: .pcm16LE, doubleClickIntervalMs: 500, keyRepeatDelayMs: 225, keyRepeatIntervalMs: 30,
+                 macInputSource: "com.apple.keylayout.Colemak").encode(into: &v2)
+        #expect(v2.bytes == v1.bytes + [0, 0, 0, 0])   // the same values in v2: plus two (here empty) strings
+        #expect(throws: ProtocolError.truncated) { try Message.decode(type: .helloAck, payload: v1.bytes[...]) }
+    }
+
+    @Test func v1PairNoLongerDecodes() {
+        let v1: [UInt8] = Array(200..<232)   // v1's Pair: the 32-byte secret alone
+        #expect(throws: ProtocolError.truncated) { try Message.decode(type: .pair, payload: v1[...]) }
+    }
+
+    @Test func errorBusyRoundTrips() throws {
+        let busy = Message.error(ErrorMessage(code: .busy, message: "a USB session is live"))
+        let bytes = MessageCodec.encode(busy, sequence: 0, timestampNs: 0)
+        #expect(Array(bytes[24..<26]) == [6, 0])
+        #expect(try MessageCodec.decode(bytes).message == busy)
+        var unknown = bytes
+        unknown[24] = 7   // an unknown code is fatal: new codes need a new major version
+        #expect(throws: ProtocolError.malformed("error code 7")) { try MessageCodec.decode(unknown) }
     }
 }
 

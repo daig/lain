@@ -134,11 +134,17 @@ public struct HelloAck: WireMessage {
     public var keyRepeatIntervalMs: UInt32
     /// The Mac's current keyboard input source (D18), e.g. "com.apple.keylayout.Colemak".
     public var macInputSource: String
+    /// The host's stable id, a canonical UUID (Bonjour TXT `id`, §7.7). Over USB the client stores the
+    /// link's secret under `mac:<hostId>` for Wi-Fi; over Wi-Fi it must be the dialed id. Empty: unknown.
+    public var hostId: String
+    /// The Mac's computer name, for the client's status.
+    public var hostName: String
 
     public init(codec: VideoCodec, chroma: ChromaFormat, bitDepth: UInt8, displayMode: DisplayMode, bitrate: UInt32,
                 refreshRate: UInt16, displayPointWidth: UInt32, displayPointHeight: UInt32, audioSampleRate: UInt32,
                 audioChannels: UInt8, audioEncoding: AudioEncoding, doubleClickIntervalMs: UInt32,
-                keyRepeatDelayMs: UInt32, keyRepeatIntervalMs: UInt32, macInputSource: String) {
+                keyRepeatDelayMs: UInt32, keyRepeatIntervalMs: UInt32, macInputSource: String, hostId: String = "",
+                hostName: String = "") {
         self.codec = codec
         self.chroma = chroma
         self.bitDepth = bitDepth
@@ -154,13 +160,15 @@ public struct HelloAck: WireMessage {
         self.keyRepeatDelayMs = keyRepeatDelayMs
         self.keyRepeatIntervalMs = keyRepeatIntervalMs
         self.macInputSource = macInputSource
+        self.hostId = hostId
+        self.hostName = hostName
     }
 
     public func encode(into w: inout ByteWriter) {
         w.u8(codec.rawValue); w.u8(chroma.rawValue); w.u8(bitDepth); w.u8(displayMode.rawValue); w.u32(bitrate)
         w.u16(refreshRate); w.u32(displayPointWidth); w.u32(displayPointHeight); w.u32(audioSampleRate)
         w.u8(audioChannels); w.u8(audioEncoding.rawValue); w.u32(doubleClickIntervalMs); w.u32(keyRepeatDelayMs)
-        w.u32(keyRepeatIntervalMs); w.string(macInputSource)
+        w.u32(keyRepeatIntervalMs); w.string(macInputSource); w.string(hostId); w.string(hostName)
     }
 
     public init(from r: inout ByteReader) throws(ProtocolError) {
@@ -169,7 +177,7 @@ public struct HelloAck: WireMessage {
         displayPointWidth = try r.u32(); displayPointHeight = try r.u32(); audioSampleRate = try r.u32()
         audioChannels = try r.u8(); audioEncoding = try r.enumValue(AudioEncoding.self)
         doubleClickIntervalMs = try r.u32(); keyRepeatDelayMs = try r.u32(); keyRepeatIntervalMs = try r.u32()
-        macInputSource = try r.string()
+        macInputSource = try r.string(); hostId = try r.string(); hostName = try r.string()
     }
 }
 
@@ -315,6 +323,9 @@ public struct ErrorMessage: WireMessage {
     public static let type = MessageType.error
     public enum Code: UInt16, Sendable {
         case versionMismatch = 1, authenticationFailed = 2, permissionMissing = 3, displayUnavailable = 4, `internal` = 5
+        /// The host won't start this session now: another is live (e.g. over USB, which is preferred) or it
+        /// is backing off. Retry later (§7.7).
+        case busy = 6
     }
     public var code: Code
     public var message: String
@@ -333,12 +344,16 @@ public struct Pair: WireMessage {
     public static let type = MessageType.pair
     public static let secretSize = 32
     public var secret: [UInt8]
-    public init(secret: [UInt8]) {
+    /// The host's id, as in `HelloAck`: the client stores the secret for USB and for Wi-Fi
+    /// (`mac:<hostId>`) together, so a cable pull can't leave a stale Wi-Fi secret (§7.7). Empty: unknown.
+    public var hostId: String
+    public init(secret: [UInt8], hostId: String = "") {
         precondition(secret.count == Self.secretSize)
         self.secret = secret
+        self.hostId = hostId
     }
-    public func encode(into w: inout ByteWriter) { w.raw(secret) }
-    public init(from r: inout ByteReader) throws(ProtocolError) { secret = try r.raw(Self.secretSize) }
+    public func encode(into w: inout ByteWriter) { w.raw(secret); w.string(hostId) }
+    public init(from r: inout ByteReader) throws(ProtocolError) { secret = try r.raw(Self.secretSize); hostId = try r.string() }
 }
 
 /// Every Mac display in global point coordinates (top-left origin, main display at 0,0), so the

@@ -2,6 +2,9 @@
 
 /// One representative value of every message type, with non-default values in every field.
 enum Samples {
+    /// A canonical host id, as `UUID().uuidString` writes it.
+    static let hostId = "0B5D5C4E-6A1F-4E53-9C2D-7F3A8E91B264"
+
     static let all: [Message] = [
         .channelHello(ChannelHello(connectionKind: .video, sessionToken: Array(0..<16), hmac: Array(100..<132))),
         .hello(Hello(deviceModel: "iPad16,6 ✓", pixelWidth: 2752, pixelHeight: 2064, scale: 2, maxRefreshRate: 120,
@@ -9,7 +12,8 @@ enum Samples {
         .helloAck(HelloAck(codec: .hevc, chroma: .yuv444, bitDepth: 10, displayMode: .primary, bitrate: 60_000_000,
                            refreshRate: 120, displayPointWidth: 1376, displayPointHeight: 1032, audioSampleRate: 48_000,
                            audioChannels: 2, audioEncoding: .pcm16LE, doubleClickIntervalMs: 500, keyRepeatDelayMs: 225,
-                           keyRepeatIntervalMs: 30, macInputSource: "com.apple.keylayout.Colemak")),
+                           keyRepeatIntervalMs: 30, macInputSource: "com.apple.keylayout.Colemak", hostId: hostId,
+                           hostName: "Mac mini ✓")),
         .start(Start()),
         .stop(Stop(reason: .backgrounded)),
         .ping(Ping(id: 7, sentAtNs: 123_456_789_012)),
@@ -20,7 +24,7 @@ enum Samples {
         .displayChanged(DisplayChanged(displayID: 5, pixelWidth: 2752, pixelHeight: 2064, pointWidth: 1376,
                                        pointHeight: 1032, refreshRate: 60)),
         .error(ErrorMessage(code: .versionMismatch, message: "host speaks v2")),
-        .pair(Pair(secret: Array(200..<232))),
+        .pair(Pair(secret: Array(200..<232), hostId: hostId)),
         .displayLayout(DisplayLayout(displays: [
             DisplayLayout.Display(displayID: 2, x: 0, y: 0, width: 1680, height: 1050, isStreamed: false),
             DisplayLayout.Display(displayID: 18, x: 0, y: 1050, width: 1376, height: 1032, isStreamed: true),
