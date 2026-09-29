@@ -112,6 +112,7 @@ import Testing
             inner.setSecret(secret, for: peer)
         }
         func removeSecret(for peer: String) throws { inner.removeSecret(for: peer) }
+        func allSecrets() throws -> [String: [UInt8]] { inner.allSecrets() }
     }
 
     final class Recorder<T: Sendable>: Sendable {

@@ -2,6 +2,7 @@ import Foundation
 import Dispatch
 import LainProtocol
 import LainTelemetry
+import Security
 import Testing
 @testable import LainTransport
 
@@ -109,6 +110,376 @@ struct ClientHarness {
     }
 }
 
+/// Dialer and acceptor roles (§7.7 D29): candidate secrets, the read-failure rules, pairing policy,
+/// the client-dials direction, session bookkeeping, and the USB socket options.
+@Suite(.serialized) struct LinkRoles {
+    @Test func theAcceptorReportsWhichStoredAccountMatched() async throws {
+        let usb = ChannelAuth.randomBytes(32), macA = ChannelAuth.randomBytes(32), macB = ChannelAuth.randomBytes(32)
+        let idA = UUID().uuidString, idB = UUID().uuidString
+        let client = try AcceptingClient(secrets: InMemorySecretStore(
+            [PairingAccounts.usbHost: usb, PairingAccounts.mac(idA): macA, PairingAccounts.mac(idB): macB]))
+        defer { client.listener.cancel() }
+        let dialer = LoopbackDialer(port: client.listener.port)
+        for (secret, account) in [(macB, PairingAccounts.mac(idB)), (usb, PairingAccounts.usbHost), (macA, PairingAccounts.mac(idA))] {
+            let (link, _, paired) = try await HostLink.open(dialer: dialer, secrets: InMemorySecretStore(["IPAD": secret]),
+                                                            peerID: "IPAD", allowPairing: false)
+            #expect(!paired)
+            let accepted = try #require(await client.accepted.next())
+            #expect(accepted.peer == account && accepted.secret == secret && !accepted.paired)
+            #expect(accepted.link.sessionToken == link.sessionToken && accepted.link.transport == .usb)
+            link.close()
+        }
+
+        // The host's side: no primary account, every stored iPad is a candidate.
+        let a = ChannelAuth.randomBytes(32), b = ChannelAuth.randomBytes(32)
+        let host = try AcceptorHarness(secrets: InMemorySecretStore(["IPAD-1": a, "IPAD-2": b]))
+        defer { host.cancel() }
+        let link = try await LinkDialer(dialer: LoopbackDialer(port: host.port)).open(secret: b)
+        let accepted = try #require(await host.accepted.next())
+        #expect(accepted.peer == "IPAD-2" && accepted.secret == b && accepted.link.sessionToken == link.sessionToken)
+        link.close()
+    }
+
+    @Test func aWrongSecretIsAnsweredThenClosed() async throws {
+        let host = try AcceptorHarness(secrets: InMemorySecretStore(["IPAD": ChannelAuth.randomBytes(32)]))
+        defer { host.cancel() }
+        let realtime = try rawChannel(to: host.port)
+        defer { realtime.close() }
+        realtime.send(.channelHello(ChannelAuth.hello(kind: .realtime, token: ChannelAuth.randomBytes(16),
+                                                      secret: ChannelAuth.randomBytes(32))))
+        let reply = try await realtime.next(timeoutSeconds: 2)
+        #expect(reply.message == .error(ErrorMessage(code: .authenticationFailed, message: "bad HMAC")))
+        #expect(await closeWatch(realtime).next(within: 2) == true)
+        #expect(transportError(await host.rejected.next()) == .authenticationFailed)
+        #expect(await host.accepted.next(within: 0.2) == nil)
+    }
+
+    @Test func unlistableSecretsStillAuthenticateTheUSBHost() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        let store = ScriptedSecrets([PairingAccounts.usbHost: secret], failsListing: true)
+        let client = try AcceptingClient(secrets: store)
+        defer { client.listener.cancel() }
+        let hostSecrets = InMemorySecretStore(["IPAD": secret])
+        let (link, _, paired) = try await HostLink.open(dialer: LoopbackDialer(port: client.listener.port), secrets: hostSecrets,
+                                                        peerID: "IPAD", allowPairing: true)
+        #expect(!paired)
+        #expect(try #require(await client.accepted.next()).peer == PairingAccounts.usbHost)
+        #expect(store.writeCount == 0)   // no Pair ever reached the client
+        #expect(hostSecrets.secret(for: "IPAD") == secret)
+        link.close()
+    }
+
+    @Test func anUnreadablePrimarySecretAnswersInternalAndNeverRepairs() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        let store = ScriptedSecrets([PairingAccounts.usbHost: secret], failsSecretRead: true)
+        let client = try AcceptingClient(secrets: store)
+        defer { client.listener.cancel() }
+
+        // On the wire: Error(internal), not authenticationFailed (which would make the host re-pair).
+        let realtime = try rawChannel(to: client.listener.port)
+        defer { realtime.close() }
+        realtime.send(.channelHello(ChannelAuth.hello(kind: .realtime, token: ChannelAuth.randomBytes(16), secret: secret)))
+        let reply = try await realtime.next(timeoutSeconds: 2)
+        guard case .error(let e) = reply.message else { Issue.record("expected Error, got \(reply.message.type)"); return }
+        #expect(e.code == .internal)
+        #expect(await client.rejected.next() is ScriptedSecrets.Failure)
+
+        // HostLink fails this attempt as it is: the caller retries with the same secret.
+        let hostSecrets = InMemorySecretStore(["IPAD": secret])
+        let error = await #expect(throws: TransportError.self) {
+            _ = try await HostLink.open(dialer: LoopbackDialer(port: client.listener.port), secrets: hostSecrets,
+                                        peerID: "IPAD", allowPairing: true)
+        }
+        guard case .unexpectedMessage? = error else { Issue.record("expected a plain failure, got \(String(describing: error))"); return }
+        #expect(hostSecrets.secret(for: "IPAD") == secret)
+        #expect(store.writeCount == 0)
+        #expect(await client.accepted.next(within: 0.2) == nil)
+    }
+
+    @Test func anAcceptorThatDoesNotPairRefusesPairing() async throws {
+        let store = ScriptedSecrets()
+        let host = try AcceptorHarness(secrets: store)   // like the host's Wi-Fi acceptor: wireless never pairs (D13)
+        defer { host.cancel() }
+        let link = try await LinkDialer(dialer: LoopbackDialer(port: host.port)).open(pairing: Pair(secret: ChannelAuth.randomBytes(32)))
+        defer { link.close() }
+        await #expect(throws: TransportError.authenticationFailed) { _ = try await LinkDialer.reply(on: link, timeoutSeconds: 2) }
+        #expect(transportError(await host.rejected.next()) == .authenticationFailed)
+        #expect(store.writeCount == 0)
+        #expect(await host.accepted.next(within: 0.2) == nil)
+    }
+
+    @Test func theClientDialsAndTheHostAccepts() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        let path = LinkTransport.network(interface: "lo0", peerToPeer: false)
+        let host = try AcceptorHarness(secrets: InMemorySecretStore(["IPAD-SERIAL": secret]), transport: path)
+        defer { host.cancel() }
+        let link = try await LinkDialer(dialer: LoopbackDialer(port: host.port), label: "lain.client",
+                                        transport: { _ in path }).open(secret: secret)
+        defer { link.close() }
+        #expect(link.transport == path)
+        link.realtime.send(.hello(sampleHello))   // the client sends Hello first, whichever side dialed (§7.1)
+
+        let accepted = try #require(await host.accepted.next())
+        #expect(accepted.peer == "IPAD-SERIAL" && accepted.secret == secret && !accepted.paired)
+        #expect(accepted.link.sessionToken == link.sessionToken && accepted.link.transport == path)
+        #expect(try await accepted.link.realtime.next(timeoutSeconds: 2).message == .hello(sampleHello))
+        accepted.link.realtime.send(.helloAck(sampleHelloAck))
+        #expect(try await LinkDialer.reply(on: link, timeoutSeconds: 2).message == .helloAck(sampleHelloAck))
+        for (accepting, dialing) in zip(accepted.link.channels, link.channels) {
+            accepting.send(.ping(Ping(id: 1, sentAtNs: 2)))
+            #expect(try await dialing.next(timeoutSeconds: 2).message == .ping(Ping(id: 1, sentAtNs: 2)))
+            dialing.send(.ping(Ping(id: 3, sentAtNs: 4)))
+            #expect(try await accepting.next(timeoutSeconds: 2).message == .ping(Ping(id: 3, sentAtNs: 4)))
+        }
+    }
+
+    @Test func videoAndAudioMayArriveBeforeRealtime() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        let host = try AcceptorHarness(secrets: InMemorySecretStore(["IPAD": secret]))
+        defer { host.cancel() }
+        let token = ChannelAuth.randomBytes(16)
+        let video = try rawChannel(to: host.port), audio = try rawChannel(to: host.port)
+        defer { video.close(); audio.close() }
+        video.send(.channelHello(ChannelAuth.hello(kind: .video, token: token, secret: secret)))
+        audio.send(.channelHello(ChannelAuth.hello(kind: .audio, token: token, secret: secret)))
+        #expect(await host.accepted.next(within: 0.3) == nil)   // both wait for their realtime
+
+        let realtime = try rawChannel(to: host.port)
+        defer { realtime.close() }
+        realtime.send(.channelHello(ChannelAuth.hello(kind: .realtime, token: token, secret: secret)))
+        let accepted = try #require(await host.accepted.next())
+        #expect(accepted.link.sessionToken == token && accepted.peer == "IPAD")
+        accepted.link.video.send(.ping(Ping(id: 7, sentAtNs: 0)))
+        #expect(try await video.next(timeoutSeconds: 2).message == .ping(Ping(id: 7, sentAtNs: 0)))
+    }
+
+    @Test func aLateJoinForADeliveredSessionIsClosed() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        let host = try AcceptorHarness(secrets: InMemorySecretStore(["IPAD": secret]))
+        defer { host.cancel() }
+        let link = try await LinkDialer(dialer: LoopbackDialer(port: host.port)).open(secret: secret)
+        defer { link.close() }
+        let accepted = try #require(await host.accepted.next())
+
+        // Another video connection for the delivered session: closed at once, and the delivered one stays.
+        let late = try rawChannel(to: host.port)
+        defer { late.close() }
+        let lateClosed = closeWatch(late)
+        late.send(.channelHello(ChannelAuth.hello(kind: .video, token: link.sessionToken, secret: secret)))
+        #expect(await lateClosed.next(within: 1) == true)   // well before the hello timeout
+        #expect(await host.accepted.next(within: 0.2) == nil)
+        accepted.link.video.send(.ping(Ping(id: 3, sentAtNs: 0)))
+        #expect(try await link.video.next(timeoutSeconds: 2).message == .ping(Ping(id: 3, sentAtNs: 0)))
+    }
+
+    @Test func aSessionWhoseVideoAndAudioNeverComeIsDropped() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        let host = try AcceptorHarness(secrets: InMemorySecretStore(["IPAD": secret]))
+        defer { host.cancel() }
+        let token = ChannelAuth.randomBytes(16)
+        let realtime = try rawChannel(to: host.port)
+        defer { realtime.close() }
+        let closed = closeWatch(realtime)
+        realtime.send(.channelHello(ChannelAuth.hello(kind: .realtime, token: token, secret: secret)))
+        #expect(await closed.next(within: 1) == nil)   // accepted; waiting for video and audio
+        #expect(await closed.next(within: LinkAcceptor.helloTimeout + 2) == true)
+
+        // A join after the drop is closed at once.
+        let video = try rawChannel(to: host.port)
+        defer { video.close() }
+        let videoClosed = closeWatch(video)
+        video.send(.channelHello(ChannelAuth.hello(kind: .video, token: token, secret: secret)))
+        #expect(await videoClosed.next(within: 1) == true)
+        #expect(await host.accepted.next(within: 0.1) == nil)
+    }
+
+    @Test func cancelClosesOnlyWhatWasNotDelivered() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        let host = try AcceptorHarness(secrets: InMemorySecretStore(["IPAD": secret]))
+        let link = try await LinkDialer(dialer: LoopbackDialer(port: host.port)).open(secret: secret)
+        defer { link.close() }
+        let accepted = try #require(await host.accepted.next())
+        let pending = try rawChannel(to: host.port)
+        defer { pending.close() }
+        let pendingClosed = closeWatch(pending)
+        pending.send(.channelHello(ChannelAuth.hello(kind: .realtime, token: ChannelAuth.randomBytes(16), secret: secret)))
+        #expect(await pendingClosed.next(within: 0.3) == nil)
+
+        host.cancel()
+        #expect(await pendingClosed.next(within: 1) == true)
+        accepted.link.realtime.send(.ping(Ping(id: 5, sentAtNs: 0)))   // the delivered link is the consumer's
+        #expect(try await link.realtime.next(timeoutSeconds: 2).message == .ping(Ping(id: 5, sentAtNs: 0)))
+    }
+
+    @Test func theClientListenerSetsNoDelayOnEveryAcceptedSocket() async throws {
+        let client = try AcceptingClient(secrets: InMemorySecretStore())
+        defer { client.listener.cancel() }
+        let (link, _, _) = try await HostLink.open(dialer: LoopbackDialer(port: client.listener.port), secrets: InMemorySecretStore(),
+                                                   peerID: "IPAD", allowPairing: true)
+        defer { link.close() }
+        let accepted = try #require(await client.accepted.next())
+        // §7.1: the iPad side of every connection. Darwin reports the option as its flag bit (4), not 1.
+        for channel in accepted.link.channels {
+            #expect(tcpNoDelay(try #require(channel.stream as? SocketStream)) != 0)
+        }
+        #expect(tcpNoDelay(try #require(link.realtime.stream as? SocketStream)) == 0)   // the dialed end: the check reads it
+    }
+
+    @Test func pairingStoresTheSecretForUSBAndForWiFiTogether() async throws {
+        let hostId = UUID().uuidString
+        let client = try AcceptingClient(secrets: InMemorySecretStore())
+        defer { client.listener.cancel() }
+        let hostSecrets = InMemorySecretStore()
+        let (link, _, paired) = try await HostLink.open(dialer: LoopbackDialer(port: client.listener.port), secrets: hostSecrets,
+                                                        peerID: "IPAD", allowPairing: true, hostId: hostId)
+        #expect(paired)
+        let secret = try #require(hostSecrets.secret(for: "IPAD"))
+        #expect(client.secrets.allSecrets() == [PairingAccounts.usbHost: secret, PairingAccounts.mac(hostId): secret])
+        let accepted = try #require(await client.accepted.next())
+        #expect(accepted.paired && accepted.peer == PairingAccounts.usbHost && accepted.secret == secret)
+        link.close()
+
+        // A malformed host id never becomes an account: USB only.
+        let other = try AcceptingClient(secrets: InMemorySecretStore())
+        defer { other.listener.cancel() }
+        let (link2, _, _) = try await HostLink.open(dialer: LoopbackDialer(port: other.listener.port), secrets: InMemorySecretStore(),
+                                                    peerID: "IPAD", allowPairing: true, hostId: hostId.lowercased())
+        #expect(Array(other.secrets.allSecrets().keys) == [PairingAccounts.usbHost])
+        link2.close()
+    }
+
+    @Test func aPeerOnAnotherVersionIsToldWhyInItsOwnFraming() async throws {
+        let client = try AcceptingClient(secrets: InMemorySecretStore())
+        defer { client.listener.cancel() }
+        // A v1 host's first frame: a pairing ChannelHello in a v1 header.
+        let v1 = try TCP.connectLoopback(port: client.listener.port)
+        defer { v1.close() }
+        let reply = LockedBytes(), closed = Inbox<Bool>()
+        v1.start(queue: DispatchQueue(label: "v1"), onBytes: { _ = reply.append($0) }, onClose: { _ in closed.put(true) })
+        let hello = ChannelHello(protocolVersion: 1, connectionKind: .realtime, sessionToken: ChannelAuth.randomBytes(16),
+                                 hmac: ChannelAuth.pairingMAC)
+        v1.write(MessageCodec.encode(.channelHello(hello), sequence: 0, timestampNs: 0, version: 1))
+        #expect(await closed.next() == true)
+        let answer = reply.bytes
+        try #require(answer.count > FrameHeader.size)
+        #expect(answer[2] == 1)   // framed in v1…
+        var inOurs = answer
+        inOurs[2] = LainProtocol.majorVersion
+        guard case .error(let e) = try MessageCodec.decode(inOurs).message else { Issue.record("not an Error"); return }
+        #expect(e.code == .versionMismatch)   // …with the Error layout v1 already had
+        #expect(transportError(await client.rejected.next()) == .versionMismatch(remote: 1))
+        #expect(client.secrets.allSecrets().isEmpty && client.accepted.count == 0)
+
+        // A dialer that gets such an answer (here from a peer on v1) says so, instead of just "closed".
+        let peer = try TCPListener(port: 0, queue: DispatchQueue(label: "v1.peer")) { socket in
+            let answered = Mutex(false)
+            socket.start(queue: DispatchQueue(label: "v1.conn"), onBytes: { _ in
+                guard answered.withLock({ a in defer { a = true }; return !a }) else { return }
+                socket.write(answer)
+                socket.close()
+            }, onClose: { _ in })
+        }
+        defer { peer.cancel() }
+        await #expect(throws: TransportError.versionMismatch(remote: 1)) {
+            _ = try await HostLink.open(dialer: LoopbackDialer(port: peer.port), secrets: InMemorySecretStore(), peerID: "IPAD",
+                                        allowPairing: true)
+        }
+    }
+
+    @Test func anErrorVersionMismatchReplyIsAVersionMismatch() async throws {
+        // A peer that frames its answer in our version (it read our header, not our ChannelHello).
+        let sockets = Inbox<SocketStream>()
+        let peer = try TCPListener(port: 0, queue: DispatchQueue(label: "peer")) { socket in
+            sockets.put(socket)
+            socket.start(queue: DispatchQueue(label: "peer.conn"), onBytes: { _ in }, onClose: { _ in })
+            socket.write(MessageCodec.encode(.error(ErrorMessage(code: .versionMismatch, message: "v3 here")), sequence: 0,
+                                             timestampNs: 0))
+        }
+        defer { peer.cancel() }
+        let link = try await LinkDialer(dialer: LoopbackDialer(port: peer.port)).open(secret: ChannelAuth.randomBytes(32))
+        await #expect(throws: TransportError.versionMismatch(remote: 0)) { _ = try await LinkDialer.reply(on: link, timeoutSeconds: 2) }
+        link.close()
+        while let socket = await sockets.next(within: 0) { socket.close() }
+    }
+}
+
+/// `MessageChannel`'s version-mismatch surfacing (§7.5).
+@Suite struct ChannelVersionMismatch {
+    @Test func aFrameInAnotherVersionIsTheCloseError() async throws {
+        let (a, b) = MemoryStream.pair()
+        let channel = MessageChannel(stream: b, label: "b")
+        channel.start()
+        a.start(queue: DispatchQueue(label: "a"), onBytes: { _ in }, onClose: { _ in })
+        a.write(MessageCodec.encode(.ping(Ping(id: 1, sentAtNs: 0)), sequence: 0, timestampNs: 0, version: 3))
+        await #expect(throws: TransportError.versionMismatch(remote: 3)) { _ = try await channel.next(timeoutSeconds: 2) }
+        let reported = Inbox<TransportError?>()
+        channel.setCloseHandler { reported.put($0 as? TransportError) }
+        #expect(await reported.next() == .versionMismatch(remote: 3))
+    }
+
+    @Test func onlyAnAcceptorAnswersAndOnlyAMismatchedFirstFrame() async throws {
+        func answer(acceptor: Bool, first: [Message]) async -> [UInt8] {
+            let (a, b) = MemoryStream.pair()
+            let channel = MessageChannel(stream: b, label: "b", answeringVersionMismatch: acceptor)
+            channel.start()
+            let got = LockedBytes(), closed = Inbox<Bool>()
+            a.start(queue: DispatchQueue(label: "a"), onBytes: { _ = got.append($0) }, onClose: { _ in closed.put(true) })
+            for m in first { a.write(MessageCodec.encode(m, sequence: 0, timestampNs: 0)) }
+            a.write(MessageCodec.encode(.ping(Ping(id: 1, sentAtNs: 0)), sequence: 0, timestampNs: 0, version: 1))
+            #expect(await closed.next() == true)
+            withExtendedLifetime((a, channel)) {}
+            return got.bytes
+        }
+        let answered = await answer(acceptor: true, first: [])
+        #expect(answered.count > FrameHeader.size && answered[2] == 1 && answered[3] == MessageType.error.rawValue)
+        #expect(await answer(acceptor: false, first: []).isEmpty)
+        #expect(await answer(acceptor: true, first: [.start(Start())]).isEmpty)
+    }
+}
+
+@Suite struct SecretAccounts {
+    @Test func accountNames() {
+        let id = UUID().uuidString
+        #expect(PairingAccounts.usbHost == "host")
+        #expect(PairingAccounts.mac(id) == "mac:" + id)
+        #expect(PairingAccounts.hostId(fromAccount: PairingAccounts.mac(id)) == id)
+        #expect(PairingAccounts.hostId(fromAccount: PairingAccounts.usbHost) == nil)
+        #expect(PairingAccounts.hostId(fromAccount: PairingAccounts.mac(id.lowercased())) == nil)
+        #expect(PairingAccounts.isCanonicalHostId(id))
+        for bad in [id.lowercased(), "", "{\(id)}", id + " ", "mac:" + id] { #expect(!PairingAccounts.isCanonicalHostId(bad)) }
+    }
+
+    @Test func inMemoryStoreListsEverything() {
+        let s = InMemorySecretStore(["host": [1], "mac:X": [2]])
+        #expect(s.allSecrets() == ["host": [1], "mac:X": [2]])
+        s.removeSecret(for: "host")
+        #expect(s.allSecrets() == ["mac:X": [2]])
+    }
+
+    /// The Keychain itself is exercised by the hosted tests (Apps/*Tests); this is the result parsing.
+    @Test func keychainItemsParseSkippingMalformedOnes() {
+        let account = kSecAttrAccount as String, data = kSecValueData as String
+        let items: [Any] = [
+            [account: "host", data: Data([1, 2])] as [String: Any],
+            [account: "mac:X", data: Data([3])] as [String: Any],
+            [data: Data([4])] as [String: Any],                   // no account
+            [account: "no-data"] as [String: Any],                // no data
+            [account: 7, data: Data([5])] as [String: Any],       // not a string account
+            "not an item",
+        ]
+        #expect(KeychainSecretStore.secrets(fromItems: items) == ["host": [1, 2], "mac:X": [3]])
+        #expect(KeychainSecretStore.secrets(fromItems: nil).isEmpty)
+    }
+}
+
+/// `getsockopt(TCP_NODELAY)`: nonzero when set.
+func tcpNoDelay(_ socket: SocketStream) -> Int32 {
+    var value: Int32 = 0
+    var length = socklen_t(MemoryLayout<Int32>.size)
+    getsockopt(socket.fd, IPPROTO_TCP, TCP_NODELAY, &value, &length)
+    return value
+}
+
 #if os(macOS)
 import LainTestSupport
 import LainUSBMux
@@ -198,6 +569,20 @@ import LainUSBMux
                      + "backpressure: %d of %d frames sent at %.1f ms/frame (ack delay %d ms, N=2)",
                      handshakeMs, rtts.p50 ?? 0, rtts.p95 ?? 0, sent, offered, msPerFrame, ackDelayMs))
         link.close()
+    }
+
+    @Test func theHostsUSBVideoStreamKeepsItsSmallSendBuffer() async throws {
+        let client = try ClientHarness()
+        defer { client.listener.cancel() }
+        let mux = try FakeUSBMuxd(devices: [.init(deviceID: 5, serialNumber: "IPAD-SERIAL")], targetPort: client.listener.port)
+        defer { mux.stop() }
+        let (link, _, _) = try await HostLink.open(dialer: USBMuxDialer(client: USBMuxClient(socketPath: mux.socketPath), deviceID: 5),
+                                                   secrets: InMemorySecretStore(), peerID: "IPAD-SERIAL", allowPairing: true)
+        defer { link.close() }
+        let video = try #require(link.video.stream as? SocketStream)
+        let realtime = try #require(link.realtime.stream as? SocketStream)
+        #expect(video.sendBufferSize >= HostLink.videoSendBuffer)   // §7.3
+        #expect(realtime.sendBufferSize < video.sendBufferSize)     // video only (a usbmuxd socket starts at 8 KB)
     }
 }
 #endif
