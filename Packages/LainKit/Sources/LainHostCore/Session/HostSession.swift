@@ -102,7 +102,8 @@ public final class HostSession: Sendable {
         /// further one in a row waits this long, doubling (capped at 32×), so a recurring capture failure
         /// can't churn the virtual display and window placement in a tight loop. Session-wide: it holds
         /// whichever transport the next session comes over (§7.7 D29). Plugging in the iPad whose sessions
-        /// failed is the owner's reset: it is dialed at once, and its count starts over.
+        /// failed is the owner's reset: its count starts over, and it is dialed at once, ahead of a device
+        /// that is only waiting the backoff out (one dialing or in a session keeps its turn).
         public var captureRetryInterval: Duration = .seconds(1)
         /// lain on the iPad closing realtime right after our `ChannelHello` this many times in a row is
         /// taken for an app that speaks another protocol (a v1 app closes without answering).
@@ -172,7 +173,8 @@ public final class HostSession: Sendable {
         /// The iPad (its USB serial, the account its secret is stored under) whose session ended the
         /// latest capture failure: plugging it in resets the backoff.
         var captureFailedPeer: String?
-        /// The USB connect loop (its generation) waiting out the capture backoff: the status says so.
+        /// The USB connect loop (its generation) waiting out the capture backoff, asleep with no link: the
+        /// status says so, and the owner's reset goes ahead of it (`attached`).
         var backingOff: UInt64?
         /// usbmuxd's event stream failed; cleared by the next attach it reports.
         var usbmuxDown = false
@@ -410,22 +412,29 @@ public final class HostSession: Sendable {
 
     private func attached(_ device: USBMuxDevice) {
         let now = ContinuousClock.now
-        let (replaced, change) = state.withLock {
-            s -> ((task: Task<Void, Never>, connection: HostConnection?)??, (status: HostStatus, sequence: UInt64)?) in
-            guard !s.stopped else { return (.none, nil) }
+        let (replaced, ahead, change) = state.withLock {
+            s -> ((task: Task<Void, Never>, connection: HostConnection?)??, Int?, (status: HostStatus, sequence: UInt64)?) in
+            guard !s.stopped else { return (.none, nil, nil) }
             s.usbmuxDown = false
             s.attached.removeAll { $0.deviceID == device.deviceID }
             s.attached.append(device)
             s.usbSince[device.deviceID] = now
             s.undialed.insert(device.deviceID)
+            // Plugging in the iPad whose sessions kept failing capture is the owner's reset, even when it waits
+            // its turn. Automatic redials, the next device in line and Wi-Fi links still wait the backoff out.
+            let ownersReset = device.serialNumber == s.captureFailedPeer
+            if ownersReset { s.resetCaptureBackoff() }
             // One iPad at a time: another device waits its turn; the same one re-attaching replaces itself.
-            if let current = s.device, current.id != device.deviceID { return (.none, s.refreshStatus()) }
-            // Plugging in the iPad whose sessions kept failing capture is the owner's reset. Automatic
-            // redials, the next device in line and Wi-Fi links still wait the backoff out.
-            if device.serialNumber == s.captureFailedPeer { s.resetCaptureBackoff() }
+            // The owner's reset goes ahead of a device whose loop is only waiting the backoff out (asleep: no
+            // link, no handshake), which would sleep until the old deadline; that device keeps its place in line.
+            var ahead: Int?
+            if let current = s.device, current.id != device.deviceID {
+                guard ownersReset, s.backingOff == current.generation else { return (.none, nil, s.refreshStatus()) }
+                ahead = current.id
+            }
             let previous = s.device.map { d in (d.task, s.takeLive(ownedBy: .usb(generation: d.generation))) }
             dial(device, in: &s)
-            return (.some(previous), s.refreshStatus())
+            return (.some(previous), ahead, s.refreshStatus())
         }
         guard let replaced else {
             publish(change)
@@ -437,7 +446,11 @@ public final class HostSession: Sendable {
             replaced.connection?.finish()   // before the new loop can connect: the sink and power are shared
         }
         publish(change)
-        log.notice("iPad attached: device \(device.deviceID)")
+        if let ahead {
+            log.notice("iPad attached: device \(device.deviceID), dialed ahead of device \(ahead) (waiting out the capture backoff)")
+        } else {
+            log.notice("iPad attached: device \(device.deviceID)")
+        }
     }
 
     private func detached(_ id: Int) {

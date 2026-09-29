@@ -860,6 +860,73 @@ import Testing
         #expect(ContinuousClock.now - replugged < .seconds(2))
     }
 
+    /// The same with an iPhone charging on another port (no lain on it): unplugging the iPad hands the
+    /// dialing to the iPhone, which waits the backoff out. The replugged iPad goes ahead of it: it is
+    /// dialed at once, and its count starts over.
+    @Test func repluggingTheIPadGoesAheadOfADeviceWaitingOutTheBackoff() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        var tuning = HostSession.Tuning()
+        tuning.captureRetryInterval = .seconds(5)
+        let rig = try Rig(stored: [Self.serial: secret], usb: [PairingAccounts.usbHost: secret],
+                          devices: [.init(deviceID: 7, serialNumber: Self.serial),
+                                    .init(deviceID: 3, serialNumber: "IPHONE-3", acceptsConnect: false)],
+                          tuning: tuning, video: { FailingVideo.pipeline() })
+        defer { rig.tearDown() }
+        #expect(await rig.usb.links.next(within: 5) != nil)
+        #expect(await rig.usb.links.next(within: 5) != nil)
+        #expect(await rig.reaches(HostStatus.captureBackingOff))
+
+        // Unplugged: the iPhone is dialed next, and it waits the backoff out.
+        rig.mux.detach(deviceID: 7)
+        #expect(await eventually { rig.session.usbDeviceDialed == 3 && rig.session.status == HostStatus.captureBackingOff })
+        #expect(await rig.reaches(HostStatus.captureBackingOff))   // the statuses so far
+
+        // Replugged: the iPad is dialed ahead of it at once, the menu stops saying it backs off, and the next
+        // failure redials at once again.
+        rig.mux.attach(.init(deviceID: 8, serialNumber: Self.serial))
+        let replugged = ContinuousClock.now
+        #expect(await eventually(within: 1) { rig.session.usbDeviceDialed == 8 })
+        #expect(await rig.statuses.next(within: 1).map { $0 != HostStatus.captureBackingOff } == true)
+        #expect(await rig.usb.links.next(within: 5) != nil)
+        #expect(await rig.usb.links.next(within: 5) != nil)
+        #expect(ContinuousClock.now - replugged < .seconds(2))
+
+        // The iPhone kept its place in line.
+        rig.mux.detach(deviceID: 8)
+        #expect(await eventually { rig.session.usbDeviceDialed == 3 })
+    }
+
+    /// A replug behind a device that is dialing (its backoff over) waits its turn, but it is the owner's
+    /// reset all the same: once the iPad is dialed, a capture failure redials at once.
+    @Test func aReplugWaitingItsTurnStillStartsTheCountOver() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        var tuning = HostSession.Tuning()
+        tuning.captureRetryInterval = .milliseconds(1500)
+        let rig = try Rig(stored: [Self.serial: secret], usb: [PairingAccounts.usbHost: secret],
+                          devices: [.init(deviceID: 7, serialNumber: Self.serial),
+                                    .init(deviceID: 3, serialNumber: "IPHONE-3", acceptsConnect: false)],
+                          tuning: tuning, video: { FailingVideo.pipeline() })
+        defer { rig.tearDown() }
+        #expect(await rig.usb.links.next(within: 5) != nil)
+        #expect(await rig.usb.links.next(within: 5) != nil)
+        #expect(await rig.reaches(HostStatus.captureBackingOff))
+
+        // Unplugged: the iPhone is dialed next and, once it has waited the backoff out, dials in vain.
+        rig.mux.detach(deviceID: 7)
+        #expect(await eventually { rig.session.usbDeviceDialed == 3 && rig.session.status == HostStatus.captureBackingOff })
+        #expect(await eventually(within: 3) { rig.session.status == .connecting })
+
+        // Replugged: it waits until the iPhone's fast retries run out (about 2 s). Then its first failure
+        // redials at once, not after twice the interval (a third failure in a row).
+        rig.mux.attach(.init(deviceID: 8, serialNumber: Self.serial))
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(rig.session.usbDeviceDialed == 3)   // a device that is dialing keeps its turn
+        #expect(await rig.usb.links.next(within: 5) != nil)
+        let first = ContinuousClock.now
+        #expect(await rig.usb.links.next(within: 5) != nil)
+        #expect(ContinuousClock.now - first < .milliseconds(1500))
+    }
+
     // MARK: One lain display at a time
 
     /// The Mac's lain displays: each session's pipeline makes its own, and a destroyed one leaves the
