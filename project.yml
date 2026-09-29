@@ -114,6 +114,7 @@ schemes:
         - package: LainKit/LainTransportTests
         - package: LainKit/LainMediaTests
         - package: LainKit/LainLoopbackTests      # USB path + real HEVC pipeline (macOS)
+        - package: LainKit/LainHostCoreTests
         - LainHostTests
   LainClient:
     build:

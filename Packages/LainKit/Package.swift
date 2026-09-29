@@ -47,6 +47,7 @@ let package = Package(
         .testTarget(name: "LainTelemetryTests", dependencies: ["LainTelemetry"]),
         .testTarget(name: "LainInputTests", dependencies: ["LainInput"]),
         .testTarget(name: "LainMediaTests", dependencies: ["LainMedia", "LainTestSupport"]),
+        .testTarget(name: "LainHostCoreTests", dependencies: ["LainHostCore"]),
         .testTarget(name: "LainUSBMuxTests", dependencies: ["LainUSBMux", "LainTestSupport"]),
         .testTarget(name: "LainTransportTests", dependencies: ["LainTransport", "LainTestSupport", "LainTelemetry"]),
         // Host ↔ client end to end on macOS (the client core is platform-neutral where it matters).
