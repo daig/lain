@@ -57,8 +57,9 @@ public enum HostLink {
     /// Opens realtime, video and audio, sends `ChannelHello` on each, and waits for the client's
     /// `Hello`. With no stored secret, or when the client rejects ours and `allowPairing` is set (USB),
     /// it pairs: a zero-HMAC hello plus `Pair` on realtime. The new secret is stored once `Hello` arrives.
+    /// `paired` says whether this session paired (true) or authenticated with the stored secret.
     public static func open(dialer: some StreamDialer, secrets: some SecretStore, peerID: String,
-                            allowPairing: Bool) async throws -> (Link, Hello) {
+                            allowPairing: Bool) async throws -> (link: Link, hello: Hello, paired: Bool) {
         let stored = try secrets.secret(for: peerID)
         if stored == nil && !allowPairing { throw TransportError.noSecret }
         do {
@@ -70,7 +71,7 @@ public enum HostLink {
     }
 
     private static func attempt(dialer: some StreamDialer, secrets: some SecretStore, peerID: String,
-                                secret stored: [UInt8]?) async throws -> (Link, Hello) {
+                                secret stored: [UInt8]?) async throws -> (link: Link, hello: Hello, paired: Bool) {
         let token = ChannelAuth.randomBytes(ChannelHello.tokenSize)
         let secret = stored ?? ChannelAuth.randomBytes(Pair.secretSize)
         var opened: [MessageChannel] = []
@@ -96,7 +97,7 @@ public enum HostLink {
             switch first.message {
             case .hello(let hello):
                 if stored == nil { try secrets.setSecret(secret, for: peerID) }
-                return (Link(sessionToken: token, realtime: realtime, video: video, audio: audio), hello)
+                return (Link(sessionToken: token, realtime: realtime, video: video, audio: audio), hello, stored == nil)
             case .error(let e) where e.code == .authenticationFailed:
                 throw TransportError.authenticationFailed
             case .error(let e) where e.code == .versionMismatch:

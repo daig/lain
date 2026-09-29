@@ -10,6 +10,8 @@ import LainUSBMux
 public enum USBMuxBench {
     public struct Report: Sendable, CustomStringConvertible {
         public var device: USBMuxDevice
+        /// true: this run paired over USB; false: authenticated with the stored secret.
+        public var paired: Bool
         public var handshakeMs: Double
         public var rttUs: (p50: Double, p95: Double, max: Double)
         public var keyframeBytes: Int
@@ -21,12 +23,12 @@ public enum USBMuxBench {
             let speed = device.connectionSpeed.map { "\($0 / 1_000_000) Mbps" } ?? "?"
             return String(format: """
                 usbmux bench — device %d (%@), usbmuxd link speed %@
-                  handshake (3 connections + ChannelHello + Hello): %.1f ms
+                  handshake (3 connections + ChannelHello + Hello, %@): %.1f ms
                   ping RTT: p50 %.0f µs  p95 %.0f µs  max %.0f µs
                   keyframe-size transfer (%d KB, send → FrameAck, one in flight): p50 %.1f ms  p95 %.1f ms  max %.1f ms
                   sustained (%d KB frames, 3 in flight): %.1f MB/s (%.0f Mbps)
                 """, device.deviceID, device.serialNumber.isEmpty ? "no serial" : "serial …" + device.serialNumber.suffix(4),
-                speed, handshakeMs, rttUs.p50, rttUs.p95, rttUs.max, keyframeBytes / 1024, keyframeMs.p50, keyframeMs.p95,
+                speed, paired ? "paired over USB" : "authenticated with stored secret", handshakeMs, rttUs.p50, rttUs.p95, rttUs.max, keyframeBytes / 1024, keyframeMs.p50, keyframeMs.p95,
                 keyframeMs.max, sustainedFrameBytes / 1024, sustainedMBps, sustainedMBps * 8)
         }
     }
@@ -51,7 +53,7 @@ public enum USBMuxBench {
         log("device \(device.deviceID) attached; connecting")
 
         let t0 = MonotonicClock.now()
-        let (link, hello) = try await HostLink.open(dialer: USBMuxDialer(client: usbmux, deviceID: device.deviceID),
+        let (link, hello, paired) = try await HostLink.open(dialer: USBMuxDialer(client: usbmux, deviceID: device.deviceID),
                                                    secrets: secrets, peerID: device.serialNumber, allowPairing: true)
         let handshakeMs = Double(MonotonicClock.now() - t0) / 1e6
         defer { link.close() }
@@ -109,7 +111,7 @@ public enum USBMuxBench {
         }
         let seconds = Double(MonotonicClock.now() - start) / 1e9
 
-        return Report(device: device, handshakeMs: handshakeMs, rttUs: (rtt.p50 ?? 0, rtt.p95 ?? 0, maxRtt),
+        return Report(device: device, paired: paired, handshakeMs: handshakeMs, rttUs: (rtt.p50 ?? 0, rtt.p95 ?? 0, maxRtt),
                       keyframeBytes: options.keyframeBytes, keyframeMs: (kf.p50 ?? 0, kf.p95 ?? 0, maxKf),
                       sustainedMBps: Double(bytes) / seconds / 1e6, sustainedFrameBytes: options.sustainedFrameBytes)
     }

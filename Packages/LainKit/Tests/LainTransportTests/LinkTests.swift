@@ -29,8 +29,9 @@ struct ClientHarness {
         let hostSecrets = InMemorySecretStore()
         let dialer = LoopbackDialer(port: client.listener.port)
 
-        let (link, hello) = try await HostLink.open(dialer: dialer, secrets: hostSecrets, peerID: "IPAD", allowPairing: true)
+        let (link, hello, paired) = try await HostLink.open(dialer: dialer, secrets: hostSecrets, peerID: "IPAD", allowPairing: true)
         #expect(hello == sampleHello)
+        #expect(paired)
         let clientLink = try #require(await client.links.next())
         #expect(clientLink.sessionToken == link.sessionToken)
         let secret = try #require(hostSecrets.secret(for: "IPAD"))
@@ -38,7 +39,8 @@ struct ClientHarness {
         link.close()
 
         // Second session: authenticated with the stored secret, no pairing.
-        let (link2, _) = try await HostLink.open(dialer: dialer, secrets: hostSecrets, peerID: "IPAD", allowPairing: false)
+        let (link2, _, paired2) = try await HostLink.open(dialer: dialer, secrets: hostSecrets, peerID: "IPAD", allowPairing: false)
+        #expect(!paired2)
         #expect(try #require(await client.links.next()).sessionToken == link2.sessionToken)
         #expect(hostSecrets.secret(for: "IPAD") == secret)
         link2.close()
@@ -55,7 +57,8 @@ struct ClientHarness {
                                         allowPairing: false)
         }
         let hostSecrets = InMemorySecretStore(["IPAD": stale])
-        let (link, _) = try await HostLink.open(dialer: dialer, secrets: hostSecrets, peerID: "IPAD", allowPairing: true)
+        let (link, _, repaired) = try await HostLink.open(dialer: dialer, secrets: hostSecrets, peerID: "IPAD", allowPairing: true)
+        #expect(repaired)
         #expect(hostSecrets.secret(for: "IPAD") != stale)
         #expect(hostSecrets.secret(for: "IPAD") == client.secrets.secret(for: "host"))
         link.close()
@@ -126,7 +129,7 @@ import LainUSBMux
         var events = usbmux.events().makeAsyncIterator()
         guard case .attached(let device) = try await events.next() else { Issue.record("no device"); return }
         let t0 = MonotonicClock.now()
-        let (link, hello) = try await HostLink.open(dialer: USBMuxDialer(client: usbmux, deviceID: device.deviceID),
+        let (link, hello, _) = try await HostLink.open(dialer: USBMuxDialer(client: usbmux, deviceID: device.deviceID),
                                                    secrets: InMemorySecretStore(), peerID: device.serialNumber,
                                                    allowPairing: true)
         let handshakeMs = Double(MonotonicClock.now() - t0) / 1e6
