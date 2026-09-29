@@ -366,6 +366,30 @@ func closedLoopbackPort() throws -> UInt16 {
     return UInt16(bigEndian: addr.sin_port)
 }
 
+/// Sends each Wi-Fi attempt to the port a Mac listens on now, whatever endpoint was discovered (Bonjour
+/// resolves a service when it is dialed, so a Mac that restarts its listener keeps its service), and
+/// records when each attempt started. Loopback only.
+final class ServiceResolver: Sendable {
+    private let port: Mutex<UInt16>
+    private let starts = Mutex<[UInt64]>([])
+
+    init(port: UInt16) { self.port = Mutex(port) }
+
+    /// Later attempts go to `port`.
+    func move(to port: UInt16) { self.port.withLock { $0 = port } }
+
+    /// When each attempt started (`MonotonicClock`), in order.
+    var attempts: [UInt64] { starts.withLock { $0 } }
+
+    func interpose(_ inner: any StreamDialer) -> any StreamDialer {
+        starts.withLock { $0.append(MonotonicClock.now()) }
+        guard let wifi = inner as? WiFiLinkDialer else { return inner }
+        let port = port.withLock { $0 }
+        return WiFiLinkDialer(endpoint: .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!),
+                              psk: wifi.psk, options: wifi.options, timeout: wifi.timeout)
+    }
+}
+
 /// Short times for tests; loopback only.
 func testWiFi(_ discoveries: Discoveries, lastHost: LastConnectedHost = .memory(), probe: DialProbe? = nil) -> ClientWiFiConfig {
     var config = ClientWiFiConfig(discovery: { discoveries.make() }, options: .loopback, lastHost: lastHost)
@@ -871,6 +895,50 @@ func eventually(within seconds: Double = 5, _ body: () -> Bool) async -> Bool {
         defer { session.stop() }
         #expect(await statuses.first { $0 == .pairingRefused(hostName: "Mac mini") } != nil)
         #expect(await mac.links.next(within: 0.1) == nil)
+    }
+
+    /// The USB session "doesn't recognize this iPad" asks for is what fixes the Mac: at the USB link-up
+    /// it reloads its keys into a new listener, under the same service. After the unplug that service
+    /// is neither reported as refusing nor held back by its refusals' backoff: it is dialed after the
+    /// grace.
+    @Test func aUSBSessionClearsTheRefusalsAndTheUnplugDialsAfterTheGrace() async throws {
+        let refusing = try await WiFiMac(secret: secret, psks: [WiFiPSK(secret: ChannelAuth.randomBytes(32))])
+        let reloaded = try await WiFiMac(secret: secret, hostId: refusing.hostId)
+        defer {
+            refusing.cancel()
+            reloaded.cancel()
+        }
+        let resolver = ServiceResolver(port: refusing.port)
+        var config = testWiFi(Discoveries([refusing.discovered()]))
+        config.maxBackoff = 4   // the wait after the second refusal: far past the grace
+        config.interpose = { resolver.interpose($0) }
+        let store = RecordingSecrets([PairingAccounts.usbHost: secret, PairingAccounts.mac(refusing.hostId): secret])
+        let statuses = Inbox<ClientSession.Status>()
+        let session = try ClientSession(port: 0, secrets: store, hello: hello, wifi: config) { statuses.put($0) }
+        defer { session.stop() }
+        #expect(await statuses.first { $0 == .pairingRefused(hostName: "Mac mini") } != nil)
+
+        // The owner plugs in as asked (the Mac reloads its keys), and unplugs soon after.
+        resolver.move(to: reloaded.port)
+        let (usb, _, _) = try await HostLink.open(dialer: LoopbackDialer(port: session.port),
+                                                  secrets: InMemorySecretStore(["IPAD": secret]), peerID: "IPAD",
+                                                  allowPairing: false)
+        usb.realtime.send(.helloAck(helloAck(hostId: refusing.hostId)))
+        #expect(await statuses.first { isConfigured($0, via: .usb) } != nil)
+        let attemptsBefore = resolver.attempts.count
+        usb.close()
+        let unplugged = MonotonicClock.now()
+
+        // "Connecting", never "doesn't recognize this iPad", and a dial after the grace (not 4 s after the
+        // last refusal), which the reloaded listener takes.
+        var seen: [ClientSession.Status] = []
+        while let status = await statuses.next(within: 10), !isNetwork(status) { seen.append(status) }
+        #expect(!seen.contains(.pairingRefused(hostName: "Mac mini")), "\(seen)")
+        #expect(seen.contains(.connecting(hostName: "Mac mini", interfaces: ["lo0"])), "\(seen)")
+        let dial = try #require(resolver.attempts.dropFirst(attemptsBefore).first)
+        #expect(elapsed(unplugged, dial) >= WiFiTimes.grace)
+        #expect(elapsed(unplugged, dial) < WiFiTimes.grace + 1.5)
+        #expect(await reloaded.hellos.next() != nil)
     }
 
     /// Two services claim the Mac's id and nothing listens at the first: the loop goes on to the second.
