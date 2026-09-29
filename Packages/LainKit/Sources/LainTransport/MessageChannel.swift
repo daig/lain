@@ -5,10 +5,15 @@ import Synchronization
 /// Framed messages over a `ByteStream` (§7.4). Incoming messages go to the current handler on the
 /// channel's serial queue; while no handler is set they are buffered, so a handshake can read one
 /// message at a time without losing what follows.
+///
+/// Bytes that don't parse close the channel. A frame in another major version is reported as the close
+/// error, `TransportError.versionMismatch(remote:)`, so a one-sided update says why instead of just
+/// dropping the link (§7.5).
 public final class MessageChannel: Sendable {
     public let stream: any ByteStream
     public let queue: DispatchQueue
     private let sequence = Atomic<UInt32>(0)
+    private let answersVersionMismatch: Bool
 
     private enum Handler {
         case none
@@ -23,11 +28,18 @@ public final class MessageChannel: Sendable {
         var onClose: (@Sendable ((any Error)?) -> Void)?
         var closedWith: ((any Error)?)?
         var started = false
+        var parsedAny = false
+        /// The parse error that is closing the channel (the stream can't be resynchronized).
+        var failure: ProtocolError?
     }
     private let state = Mutex(State())
 
-    public init(stream: any ByteStream, label: String) {
+    /// - Parameter answeringVersionMismatch: an acceptor's channel (§7.7 D29): a first frame in another
+    ///   major version is answered with `Error(versionMismatch)` framed in that version, which the peer
+    ///   can parse, before the channel closes.
+    public init(stream: any ByteStream, label: String, answeringVersionMismatch: Bool = false) {
         self.stream = stream
+        answersVersionMismatch = answeringVersionMismatch
         queue = DispatchQueue(label: label, qos: .userInteractive)
     }
 
@@ -65,13 +77,17 @@ public final class MessageChannel: Sendable {
 
     public func close() { stream.close() }
 
-    /// Waits for the next message (handshakes only: replaces the close handler).
+    /// Waits for the next message (handshakes only: replaces the close handler). A close caused by a
+    /// frame in another major version throws `versionMismatch`; any other close throws `closed`.
     public func next(timeoutSeconds: Double) async throws(TransportError) -> Envelope {
         let result: Result<Envelope, TransportError> = await withCheckedContinuation { cont in
             let once = OneShot(cont)
             receiveOnce { once.resume(.success($0)) }
             queue.asyncAfter(deadline: .now() + timeoutSeconds) { once.resume(.failure(.timeout)) }
-            setCloseHandler { _ in once.resume(.failure(.closed)) }
+            setCloseHandler { error in
+                if let e = error as? TransportError, case .versionMismatch = e { return once.resume(.failure(e)) }
+                once.resume(.failure(.closed))
+            }
         }
         setCloseHandler { _ in }
         if case .failure = result { state.withLock { $0.handler = .none } }
@@ -84,17 +100,28 @@ public final class MessageChannel: Sendable {
     }
 
     private func receive(_ bytes: [UInt8]) {
-        let failed: ProtocolError? = state.withLock { s in
+        let failed = state.withLock { s -> (error: ProtocolError, first: Bool)? in
+            guard s.failure == nil else { return nil }   // already closing: the rest can't be parsed
             s.parser.append(bytes)
             do throws(ProtocolError) {
-                while let env = try s.parser.next() { s.pending.append(env) }
+                while let env = try s.parser.next() {
+                    s.pending.append(env)
+                    s.parsedAny = true
+                }
                 return nil
             } catch {
-                return error
+                s.failure = error
+                return (error, !s.parsedAny)
             }
         }
         drain()
-        if failed != nil { stream.close() }
+        guard let failed else { return }
+        if answersVersionMismatch, failed.first, case .versionMismatch(let remote) = failed.error {
+            let why = ErrorMessage(code: .versionMismatch, message: "lain here speaks protocol v\(LainProtocol.majorVersion)")
+            stream.write(MessageCodec.encode(.error(why), sequence: sequence.add(1, ordering: .relaxed).oldValue,
+                                             timestampNs: MonotonicClock.now(), version: remote))
+        }
+        stream.close()   // after the answer: close sends what is queued first
     }
 
     /// Runs on `queue`: hands buffered messages to the handler.
@@ -118,11 +145,13 @@ public final class MessageChannel: Sendable {
 
     private func closed(_ error: (any Error)?) {
         drain()
-        let handler = state.withLock { s in
-            s.closedWith = .some(error)
-            return s.onClose
+        let (handler, reported) = state.withLock { s -> ((@Sendable ((any Error)?) -> Void)?, (any Error)?) in
+            var reported = error
+            if case .versionMismatch(let remote)? = s.failure { reported = TransportError.versionMismatch(remote: remote) }
+            s.closedWith = .some(reported)
+            return (s.onClose, reported)
         }
-        handler?(error)
+        handler?(reported)
     }
 }
 
