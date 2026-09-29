@@ -171,6 +171,9 @@ public enum NetworkStreamError: Error, Equatable, Sendable {
     case wrongKey
     /// Any other TLS failure.
     case tls(OSStatus)
+    /// TLS completed on something other than `WiFiTLS.required`, e.g. a plain-PSK suite without forward
+    /// secrecy (nil: no TLS metadata): refused like a failed handshake (D29).
+    case unexpectedTLS(NegotiatedTLS?)
     /// Local Network access is off for this app (TN3179): Privacy & Security › Local Network.
     case localNetworkDenied
     /// Nothing listens there (ECONNREFUSED).
@@ -349,7 +352,10 @@ extension NetworkStream {
                 if let early { return completion(.failure(early)) }
                 connection.stateUpdateHandler = { [self] in stateChanged($0) }
                 connection.start(queue: queue)
-                queue.asyncAfter(deadline: .now() + timeout) { [self] in failConnecting(NetworkStreamError.timeout) }
+                // Weak: a force-cancelled connection keeps its socket until the `NWConnection` goes away
+                // (measured 2026-09-29), so a strong deadline would hold every aborted or evicted
+                // handshake's descriptor until the deadline.
+                queue.asyncAfter(deadline: .now() + timeout) { [weak self] in self?.failConnecting(NetworkStreamError.timeout) }
             }
         }
 
@@ -415,9 +421,14 @@ extension NetworkStream {
             }
         }
 
+        /// TLS is done. Only `WiFiTLS.required` opens, in both roles: Network.framework also enables the
+        /// plain-PSK suites, so a peer can pick one (see `WiFiTLS`). Anything else, or no TLS metadata,
+        /// fails the dial or the accept.
         private func becameReady() {
             let now = MonotonicClock.now()
-            let (path, tls, identity) = (NetworkPath(connection.currentPath), NegotiatedTLS(connection), pskIdentity(connection))
+            let tls = NegotiatedTLS(connection)
+            guard tls == WiFiTLS.required else { return failConnecting(NetworkStreamError.unexpectedTLS(tls)) }
+            let (path, identity) = (NetworkPath(connection.currentPath), pskIdentity(connection))
             let ready = state.withLock { s -> (opening: (@Sendable (Result<Opened, any Error>) -> Void)?, since: UInt64)? in
                 guard s.phase == .connecting else { return nil }
                 s.phase = .open
@@ -654,8 +665,19 @@ public final class WiFiLinkDialer: StreamDialer {
 /// known); one that isn't ready within `handshakeTimeout` is force-cancelled, so the acceptor's own
 /// `ChannelHello` deadline measures the same thing as on USB. Cancelling the listener leaves
 /// handed-over streams alone.
+///
+/// Anyone on the LAN or in AWDL range can connect, so unauthenticated handshakes are capped: at most
+/// `maxPendingHandshakes` at once, `maxPendingHandshakesPerHost` per remote address. Past a cap the
+/// oldest handshake goes, the same address's first (`PendingHandshakes`), silently. A real client is
+/// done in milliseconds, so a flood of idle connections only evicts its own, and the descriptors it can
+/// take stay a few dozen: the process's USB connections need them too.
 public final class NetworkStreamListener: Sendable {
-    public static let handshakeTimeout = 5.0
+    /// Seconds from accept to TLS done. A real client needs milliseconds (1–8 ms over loopback; AWDL or
+    /// the LAN add a few round trips).
+    public static let handshakeTimeout = 3.0
+    /// Handshakes in progress at once, in total and per remote address.
+    public static let maxPendingHandshakes = 32
+    public static let maxPendingHandshakesPerHost = 8
 
     public enum State: Equatable, Sendable {
         case setup
@@ -674,7 +696,8 @@ public final class NetworkStreamListener: Sendable {
         /// a conflict.
         case registered(name: String)
         case unregistered(name: String)
-        /// A connection failed its handshake (TLS, or not ready in time) and was dropped.
+        /// A connection failed its handshake (TLS, or not ready in time) and was dropped. Rate-limited
+        /// (`DropReports`); evicted handshakes aren't reported.
         case rejected(NetworkStreamError)
     }
 
@@ -732,6 +755,9 @@ public final class NetworkStreamListener: Sendable {
         box.cancelPending()
     }
 
+    /// Accepted connections still in their handshake (tests).
+    var pendingHandshakes: Int { box.pendingCount }
+
     /// The listener's handler state: what its handlers capture instead of the listener.
     private final class Box: Sendable {
         let queue = DispatchQueue(label: "lain.wifi.listener", qos: .userInitiated)
@@ -739,8 +765,15 @@ public final class NetworkStreamListener: Sendable {
         private let offered: OfferedPSKIdentities
         private let onEvent: @Sendable (Event) -> Void
         private let onAccept: @Sendable (NetworkStream) -> Void
-        /// Connections still in their handshake; nil once cancelled.
-        private let pending = Mutex<[ObjectIdentifier: NetworkStream.Core]?>([:])
+
+        private struct Intake {
+            /// Connections still in their handshake, oldest first.
+            var pending = PendingHandshakes<NetworkStream.Core>(limit: NetworkStreamListener.maxPendingHandshakes,
+                                                                 perHost: NetworkStreamListener.maxPendingHandshakesPerHost)
+            var cancelled = false
+            var drops = DropReports()
+        }
+        private let intake = Mutex(Intake())
 
         init(handshakeTimeout: Double, offered: OfferedPSKIdentities, onEvent: @escaping @Sendable (Event) -> Void,
              onAccept: @escaping @Sendable (NetworkStream) -> Void) {
@@ -750,26 +783,33 @@ public final class NetworkStreamListener: Sendable {
             self.onAccept = onAccept
         }
 
-        /// On `queue`. Network.framework hands connections over in `.setup`, before TLS.
+        var pendingCount: Int { intake.withLock { $0.pending.count } }
+
+        /// On `queue`. Network.framework hands connections over in `.setup`, before TLS. Admitting one
+        /// past a cap evicts an older one; an evicted handshake ends as not pending, so unreported.
         func accept(_ connection: NWConnection) {
             let core = NetworkStream.Core(connection: connection, label: "lain.wifi.accepted") { [offered] in
                 offered.take(for: $0)
             }
-            let id = ObjectIdentifier(core)
-            let admitted = pending.withLock { p -> Bool in
-                guard p != nil else { return false }
-                p?[id] = core
-                return true
+            let host = NetworkStreamListener.remoteHost(of: connection.endpoint)
+            let admitted = intake.withLock { s -> (key: UInt64, evicted: [NetworkStream.Core], summarize: Bool)? in
+                guard !s.cancelled else { return nil }
+                let (key, evicted) = s.pending.admit(core, from: host)
+                return (key, evicted, s.drops.evicted(evicted.count))
             }
-            guard admitted else { return connection.cancel() }
+            guard let (key, evicted, summarize) = admitted else { return connection.cancel() }
+            // Nothing may keep an evicted core, not even the new core's completion (it takes only the
+            // key): a force-cancelled connection's socket closes only when the connection goes.
+            evicted.forEach { $0.abort(CancellationError()) }
+            if summarize { summarizeLater() }
             core.open(timeout: handshakeTimeout) { [self] result in
-                queue.async { [self] in handshakeEnded(id, core, result) }
+                queue.async { [self] in handshakeEnded(key, core, result) }
             }
         }
 
-        private func handshakeEnded(_ id: ObjectIdentifier, _ core: NetworkStream.Core,
+        private func handshakeEnded(_ key: UInt64, _ core: NetworkStream.Core,
                                     _ result: Result<NetworkStream.Opened, any Error>) {
-            let wasPending = pending.withLock { $0?.removeValue(forKey: id) != nil }
+            let wasPending = intake.withLock { $0.pending.remove(key) != nil }
             switch result {
             case .success(let opened):
                 let stream = NetworkStream(core: core, opened: opened)
@@ -779,16 +819,29 @@ public final class NetworkStreamListener: Sendable {
                 }
                 onAccept(stream)
             case .failure(let error):
+                // Evicted, or dropped by `cancel()`: not pending any more, and not a rejection.
                 guard wasPending, let error = error as? NetworkStreamError else { return }
+                let now = MonotonicClock.now()
+                let (report, summarize) = intake.withLock { $0.drops.rejected(at: now) }
+                if summarize { summarizeLater() }
+                guard report else { return }
                 log.notice("dropped a connection before handover: \(String(describing: error), privacy: .public)")
                 onEvent(.rejected(error))
             }
         }
 
+        /// One notice for what went unreported, a window after the first of it.
+        private func summarizeLater() {
+            queue.asyncAfter(deadline: .now() + DropReports.window) { [self] in
+                let (unreported, evicted) = intake.withLock { $0.drops.takeSummary() }
+                log.notice("handshake flood: \(evicted) pending handshakes evicted, \(unreported) failed handshakes not reported")
+            }
+        }
+
         func cancelPending() {
-            let cores = pending.withLock { p -> [NetworkStream.Core] in
-                defer { p = nil }
-                return p.map { Array($0.values) } ?? []
+            let cores = intake.withLock { s -> [NetworkStream.Core] in
+                s.cancelled = true
+                return s.pending.removeAll()
             }
             cores.forEach { $0.abort(CancellationError()) }
         }
@@ -818,5 +871,104 @@ public final class NetworkStreamListener: Sendable {
                 break
             }
         }
+    }
+
+    /// What the per-host cap counts: the remote address without its port ("" for anything else).
+    static func remoteHost(of endpoint: NWEndpoint) -> String {
+        guard case .hostPort(let host, _) = endpoint else { return "" }
+        return "\(host)"
+    }
+}
+
+/// A listener's handshakes in progress, oldest first, within `limit` in total and `perHost` per remote
+/// address. Admitting one past a cap evicts the oldest from the same address, else the oldest overall:
+/// a flood of idle connections evicts its own, and a real client, done in milliseconds, goes only if a
+/// flood outpaces its handshake. (Refusing the newest instead would let a few idle connections a second
+/// keep everyone out.) Keys are admission numbers, never reused.
+struct PendingHandshakes<Item> {
+    let limit: Int
+    let perHost: Int
+    private var entries: [(key: UInt64, host: String, item: Item)] = []
+    private var lastKey: UInt64 = 0
+
+    init(limit: Int, perHost: Int) {
+        precondition(limit > 0 && perHost > 0, "caps must admit something")
+        self.limit = limit
+        self.perHost = perHost
+    }
+
+    var count: Int { entries.count }
+
+    func count(from host: String) -> Int { entries.reduce(0) { $0 + ($1.host == host ? 1 : 0) } }
+
+    /// Admits `item` from `host`: its key, and what it evicted, oldest first.
+    mutating func admit(_ item: Item, from host: String) -> (key: UInt64, evicted: [Item]) {
+        var evicted: [Item] = []
+        while count(from: host) >= perHost || entries.count >= limit {
+            evicted.append(entries.remove(at: entries.firstIndex { $0.host == host } ?? 0).item)
+        }
+        lastKey += 1
+        entries.append((lastKey, host, item))
+        return (lastKey, evicted)
+    }
+
+    /// The item admitted under `key`; nil once evicted or removed.
+    mutating func remove(_ key: UInt64) -> Item? {
+        guard let i = entries.firstIndex(where: { $0.key == key }) else { return nil }
+        return entries.remove(at: i).item
+    }
+
+    mutating func removeAll() -> [Item] {
+        defer { entries.removeAll() }
+        return entries.map { $0.item }
+    }
+}
+
+/// What a listener says about the connections it drops before handover, so that a flood can't flood the
+/// log or the event consumer: at most `limit` failed handshakes a `window` are reported one by one (a
+/// notice and `.rejected`); the rest, like every eviction, are only counted, and one summary notice
+/// follows a window after the first of them.
+struct DropReports {
+    static let limit = 5
+    /// Seconds.
+    static let window = 1.0
+
+    private var windowStart: UInt64?
+    private var reported = 0
+    private var unreportedCount = 0
+    private var evictedCount = 0
+    private var summaryScheduled = false
+
+    /// A handshake failed at `now` (ns): whether to report it, and whether to schedule the summary.
+    mutating func rejected(at now: UInt64) -> (report: Bool, summarize: Bool) {
+        if windowStart.map({ now &- $0 >= UInt64(Self.window * 1e9) }) ?? true {
+            windowStart = now
+            reported = 0
+        }
+        if reported < Self.limit {
+            reported += 1
+            return (true, false)
+        }
+        unreportedCount += 1
+        return (false, summaryDue())
+    }
+
+    /// `count` pending handshakes were evicted: whether to schedule the summary.
+    mutating func evicted(_ count: Int) -> Bool {
+        guard count > 0 else { return false }
+        evictedCount += count
+        return summaryDue()
+    }
+
+    /// The counts since the last summary, reset.
+    mutating func takeSummary() -> (unreported: Int, evicted: Int) {
+        defer { (unreportedCount, evictedCount, summaryScheduled) = (0, 0, false) }
+        return (unreportedCount, evictedCount)
+    }
+
+    /// True for the first count since the last summary.
+    private mutating func summaryDue() -> Bool {
+        defer { summaryScheduled = true }
+        return !summaryScheduled
     }
 }

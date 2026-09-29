@@ -584,6 +584,12 @@ import LainUSBMux
         #expect(video.sendBufferSize >= HostLink.videoSendBuffer)   // §7.3
         #expect(realtime.sendBufferSize < video.sendBufferSize)     // video only (a usbmuxd socket starts at 8 KB)
     }
+
+    @Test func theUSBDialerDefaultsToTheClientsPort() {
+        // Read in the initializer, not compiled into callers as a default argument value.
+        #expect(USBMuxDialer(deviceID: 5).port == LainProtocol.usbPort)
+        #expect(USBMuxDialer(deviceID: 5, port: 1234).port == 1234)
+    }
 }
 #endif
 

@@ -55,10 +55,11 @@ public struct ChannelHello: WireMessage {
     /// All zeros requests pairing (§7.6); only the USB listener accepts that.
     public var hmac: [UInt8]
 
-    public init(protocolVersion: UInt8 = LainProtocol.majorVersion, connectionKind: ConnectionKind,
+    /// `protocolVersion` nil: `LainProtocol.majorVersion`.
+    public init(protocolVersion: UInt8? = nil, connectionKind: ConnectionKind,
                 sessionToken: [UInt8], hmac: [UInt8]) {
         precondition(sessionToken.count == Self.tokenSize && hmac.count == Self.macSize)
-        self.protocolVersion = protocolVersion
+        self.protocolVersion = protocolVersion ?? LainProtocol.majorVersion
         self.connectionKind = connectionKind
         self.sessionToken = sessionToken
         self.hmac = hmac
@@ -90,10 +91,11 @@ public struct Hello: WireMessage {
     public var decodeCapabilities: DecodeCapabilities
     public var keyboardType: KeyboardType
 
-    public init(protocolVersion: UInt8 = LainProtocol.majorVersion, deviceModel: String, pixelWidth: UInt32,
+    /// `protocolVersion` nil: `LainProtocol.majorVersion`.
+    public init(protocolVersion: UInt8? = nil, deviceModel: String, pixelWidth: UInt32,
                 pixelHeight: UInt32, scale: UInt8, maxRefreshRate: UInt16, decodeCapabilities: DecodeCapabilities,
                 keyboardType: KeyboardType) {
-        self.protocolVersion = protocolVersion
+        self.protocolVersion = protocolVersion ?? LainProtocol.majorVersion
         self.deviceModel = deviceModel
         self.pixelWidth = pixelWidth
         self.pixelHeight = pixelHeight

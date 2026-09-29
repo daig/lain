@@ -14,14 +14,14 @@ public enum LainTXT {
     /// `bench=1` marks `--bench wifi` (for logs).
     public static let benchKey = "bench"
 
-    public static func dictionary(hostId: String, version: UInt8 = LainProtocol.majorVersion,
-                                  bench: Bool = false) -> [String: String] {
-        var txt = [versionKey: String(version), hostIdKey: hostId]
+    /// `version` nil: `LainProtocol.majorVersion`.
+    public static func dictionary(hostId: String, version: UInt8? = nil, bench: Bool = false) -> [String: String] {
+        var txt = [versionKey: String(version ?? LainProtocol.majorVersion), hostIdKey: hostId]
         if bench { txt[benchKey] = "1" }
         return txt
     }
 
-    public static func record(hostId: String, version: UInt8 = LainProtocol.majorVersion, bench: Bool = false) -> NWTXTRecord {
+    public static func record(hostId: String, version: UInt8? = nil, bench: Bool = false) -> NWTXTRecord {
         NWTXTRecord(dictionary(hostId: hostId, version: version, bench: bench))
     }
 }

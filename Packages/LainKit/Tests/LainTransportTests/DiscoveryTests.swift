@@ -11,6 +11,7 @@ import Testing
 
     @Test func txtCarriesTheVersionAndHostId() {
         #expect(LainTXT.dictionary(hostId: hostId) == ["v": String(LainProtocol.majorVersion), "id": hostId])
+        #expect(LainTXT.record(hostId: hostId).dictionary == ["v": String(LainProtocol.majorVersion), "id": hostId])
         #expect(LainTXT.dictionary(hostId: hostId, version: 2, bench: true) == ["v": "2", "id": hostId, "bench": "1"])
         // Through the DNS-SD wire format and back.
         let wire = LainTXT.record(hostId: hostId, version: 2).data
