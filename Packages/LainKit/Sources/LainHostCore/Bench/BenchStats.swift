@@ -1,5 +1,6 @@
 /// Statistics for the benches' reports (§13), pure functions of their samples: nearest-rank
-/// percentiles, the S9 latency histogram, stalls between frame sends and acks, per-second throughput.
+/// percentiles, the S9 latency histogram, stalls between frame sends and acks (by the kind of frame
+/// that ends each), per-second throughput.
 public enum BenchStats {
     /// The nearest-rank percentile of ascending `sorted` (p in 0...1), as `RollingPercentiles` takes
     /// it; nil when empty.
@@ -52,35 +53,56 @@ public enum BenchStats {
         }
     }
 
+    /// A stretch with a frame in flight and no ack, and the kind of frame whose ack ends it.
+    public struct StallGap: Sendable, Equatable {
+        public var ns: UInt64
+        /// A keyframe's ack ends it: the wait holds that keyframe's own transfer (1.3 MB is tens of ms
+        /// at AWDL rates), not only what the link held back.
+        public var isKeyframe: Bool
+
+        public init(ns: UInt64, isKeyframe: Bool) {
+            self.ns = ns
+            self.isKeyframe = isKeyframe
+        }
+    }
+
     /// The intervals during which at least one frame was in flight and no ack came (§7.3): each ends
     /// at an ack, or at `endNs` for frames still unacknowledged then, and starts at the previous ack
-    /// or at the send that found the window empty. Acks retire frames in order, as on one TCP stream.
-    public static func stallGaps(_ frames: [(sentNs: UInt64, ackNs: UInt64?)], endNs: UInt64) -> [UInt64] {
-        var events: [(atNs: UInt64, isAck: Bool)] = []
+    /// or at the send that found the window empty. Acks retire frames in order, as on one TCP stream,
+    /// so each gap belongs to the frame its ack retires, the oldest in flight (the unacknowledged tail,
+    /// to the oldest unacknowledged): a P-frame queued behind a keyframe waits only from the
+    /// keyframe's ack, and a stall on a P-frame stays a P-frame stall with a keyframe queued behind it.
+    public static func stallGaps(_ frames: [(sentNs: UInt64, ackNs: UInt64?, isKeyframe: Bool)],
+                                 endNs: UInt64) -> [StallGap] {
+        var events: [(atNs: UInt64, isAck: Bool, isKeyframe: Bool)] = []
         events.reserveCapacity(frames.count * 2)
         for frame in frames {
             if let ack = frame.ackNs, ack <= frame.sentNs { continue }   // never in flight
-            events.append((frame.sentNs, false))
-            if let ack = frame.ackNs { events.append((ack, true)) }
+            events.append((frame.sentNs, false, frame.isKeyframe))
+            if let ack = frame.ackNs { events.append((ack, true, frame.isKeyframe)) }
         }
         // At one instant an ack goes first: it frees the window a send then fills.
         events.sort { $0.atNs != $1.atNs ? $0.atNs < $1.atNs : $0.isAck && !$1.isAck }
-        var gaps: [UInt64] = []
-        var inFlight = 0
+        var gaps: [StallGap] = []
+        // The kinds of the frames sent, in order; those from `oldest` on are in flight.
+        var inFlight: [Bool] = []
+        var oldest = 0
         var since: UInt64 = 0
         for event in events {
             if event.isAck {
-                if inFlight > 0 {
-                    gaps.append(event.atNs - since)
-                    inFlight -= 1
+                if oldest < inFlight.count {
+                    gaps.append(StallGap(ns: event.atNs - since, isKeyframe: inFlight[oldest]))
+                    oldest += 1
                 }
                 since = event.atNs
             } else {
-                if inFlight == 0 { since = event.atNs }
-                inFlight += 1
+                if oldest == inFlight.count { since = event.atNs }
+                inFlight.append(event.isKeyframe)
             }
         }
-        if inFlight > 0, endNs > since { gaps.append(endNs - since) }
+        if oldest < inFlight.count, endNs > since {
+            gaps.append(StallGap(ns: endNs - since, isKeyframe: inFlight[oldest]))
+        }
         return gaps
     }
 

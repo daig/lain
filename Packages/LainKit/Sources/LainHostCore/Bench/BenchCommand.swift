@@ -22,6 +22,9 @@ public enum BenchCommand {
 
     public static func run(_ name: String) -> Never {
         setvbuf(stdout, nil, _IOLBF, 0)   // line-buffered even when piped, so progress shows live
+        // A closed stdout (a `| tee` killed by the owner's Ctrl-C) makes writes fail instead of killing the
+        // bench before it has written its files and results.
+        signal(SIGPIPE, SIG_IGN)
         Task {
             do {
                 switch name {
