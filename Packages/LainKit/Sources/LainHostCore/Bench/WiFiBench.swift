@@ -1,27 +1,33 @@
 #if os(macOS)
+import CoreGraphics
 import Foundation
 import LainProtocol
 import LainTelemetry
 import LainTransport
 import Network
+import Synchronization
 
 /// `LainHost --bench wifi [any|awdl|lan] [seconds]` (M6a, S9; §7.7, §13): the Wi-Fi link measured from
 /// the Mac while the iPad's normal LainClient is connected (cable out, lain in the foreground). The
 /// bench advertises like the app (the same host id, plus TXT `bench=1`) and accepts with every stored
-/// iPad secret; it never pairs. The client sends `Hello`, answers pings and acks every `VideoFrame`;
-/// the bench sends no `HelloAck` and ignores `KeyframeRequest`s.
+/// iPad secret; it never pairs. The client sends `Hello`, answers pings and acks every `VideoFrame`.
+/// The bench answers `Hello` with a `HelloAck` naming the advertised host, so the iPad takes each link
+/// for a session that ran: after a drop it waits only its grace before redialing, not the growing
+/// backoff of a link that ended before `HelloAck` (§7.7 D29). It ignores `KeyframeRequest`s and input.
 ///
 /// - Phase A: a ping every 8.33 ms whether or not pongs come back (a stall shows as the burst of input
 ///   that would have waited behind it), then 10 s at 10 Hz, the idle cadence.
 /// - Phase B: the same pings while emulating the pipeline: every 8.33 ms a 50 KB `VideoFrame` if the
 ///   ack window has room (`FrameAckWindow(maxInFlight: 2)`, §7.3), else a drop; a 1.3 MB keyframe
 ///   every 2 s (and first on every link). Input under load (invariant 3), frame and keyframe
-///   send → ack, fps, drops and stalls.
+///   send → ack, fps, drops and stalls (apart for the P-frames, the transport-stall signal, and the
+///   keyframes, whose waits hold their own transfer).
 /// - Phase C: capacity, 3 × 1 MB in flight.
 ///
 /// Phases count connected time: a dropped link is logged and its phase goes on over the iPad's next
 /// link. Sending stops `drainNs` before the overall deadline, so the results (partial if need be) are
-/// ready by then. Raw samples go to a CSV (`csvHeader`).
+/// ready by then. Raw samples go to a CSV (`csvHeader`), and the live log and the report to a text
+/// file next to it, so the results never depend on stdout.
 public enum WiFiBench {
     /// Which path to measure (§7.7). `awdl`: only links whose realtime connection is peer-to-peer
     /// (awdl*/llw*); the iPad must be off the home network with Wi-Fi on. `lan`: the listener stays off
@@ -67,14 +73,20 @@ public enum WiFiBench {
         public var idlePingSeconds = 10.0
         public var loadSeconds = 60.0
         public var capacitySeconds = 20.0
+        /// How long the iPad waits before it redials after a session that ran (LainClient's
+        /// `ClientWiFiConfig.grace`, §7.7 D29): every reconnect time includes it, so the report also
+        /// gives them without it.
+        public var clientGraceSeconds = 1.5
         /// `listenerOptions(for:)` for the real bench; `.loopback` in tests.
         public var listener: NetworkStreamOptions
         /// Bonjour, as the app advertises (plus TXT `bench=1`). Never in tests.
         public var advertise: Bool
         /// Every stored iPad secret becomes a PSK and an acceptor candidate.
         public var secrets: any SecretStore
+        /// Advertised, and named in every `HelloAck`.
         public var identity: HostIdentity
-        /// Where `lain-s9-<mode>-<time>.csv` goes.
+        /// Where the run's files go: `lain-s9-<mode>-<time>.csv` (the raw samples) and `.txt` (the live
+        /// log and the report).
         public var csvDirectory: URL
         /// The listener is ready on this port (tests dial it).
         public var onListening: @Sendable (UInt16) -> Void = { _ in }
@@ -90,7 +102,7 @@ public enum WiFiBench {
             self.csvDirectory = csvDirectory
         }
 
-        /// The owner's run: the Keychain's iPad secrets, this Mac's host id, advertised, the CSV in the
+        /// The owner's run: the Keychain's iPad secrets, this Mac's host id, advertised, the files in the
         /// home folder.
         public static func live(mode: Mode, seconds: Double) throws -> Options {
             Options(mode: mode, seconds: seconds, listener: WiFiBench.listenerOptions(for: mode), advertise: true,
@@ -155,8 +167,8 @@ public enum WiFiBench {
 
     /// `LainHost --bench wifi …`, run as the app's binary from Terminal (Terminal-run tools may use the
     /// local network; the Keychain works through the app's entitlement). Refuses while another LainHost
-    /// runs. Ctrl-C ends the run early with what was measured (the report and the CSV); a second Ctrl-C
-    /// quits at once.
+    /// runs. Ctrl-C ends the run early with what was measured (the report and the files); a second
+    /// Ctrl-C quits at once.
     public static func main(arguments words: [String]) async -> Int32 {
         let parsed: (mode: Mode, seconds: Double)
         do {
@@ -170,17 +182,29 @@ public enum WiFiBench {
             print(anotherInstanceMessage(pids: others))
             return 3
         }
-        let bench = Task { try await run(options: .live(mode: parsed.mode, seconds: parsed.seconds)) }
-        signal(SIGINT, SIG_IGN)
+        return await main(options: { try .live(mode: parsed.mode, seconds: parsed.seconds) })
+    }
+
+    /// `main` past its checks, for any setup: the run, Ctrl-C, the report on stdout and the way back.
+    /// SIGINT stays ignored for the whole run (restoring the default in the handler could let the very
+    /// SIGINT that fired it kill the bench) and a dispatch source counts them: the first stops the
+    /// bench, which still writes its files and returns the report; a second quits at once (130, as a
+    /// shell reports SIGINT). SIGPIPE is ignored by `BenchCommand.run`: a `| tee` killed by the same
+    /// Ctrl-C costs only stdout.
+    static func main(options: @escaping @Sendable () throws -> Options) async -> Int32 {
+        let previous = signal(SIGINT, SIG_IGN)
+        let bench = Task { try await run(options: options()) }
+        let interrupts = Interrupts()
         let interrupt = DispatchSource.makeSignalSource(signal: SIGINT, queue: .global())
         interrupt.setEventHandler {
-            signal(SIGINT, SIG_DFL)
+            // `data`: the SIGINTs since the handler last ran (two quick Ctrl-Cs can arrive as one event).
+            if interrupts.add(interrupt.data) > 1 { exit(130) }
             bench.cancel()
         }
         interrupt.resume()
         defer {
             interrupt.cancel()
-            signal(SIGINT, SIG_DFL)
+            signal(SIGINT, previous)
         }
         do {
             let report = try await bench.value
@@ -192,6 +216,29 @@ public enum WiFiBench {
             print(restartHint)
             return 1
         }
+    }
+
+    /// The Ctrl-Cs `main` has seen.
+    private final class Interrupts: Sendable {
+        private let total = Atomic<UInt>(0)
+
+        /// Adds `count`; returns the total so far.
+        func add(_ count: UInt) -> UInt { total.add(count, ordering: .relaxed).newValue }
+    }
+
+    // MARK: HelloAck
+
+    /// The bench's answer to `Hello` (§7.1): the advertised host id and name, so the iPad takes the link
+    /// for a session that ran (§7.7 D29; over Wi-Fi the id must be the one it dialed), and the iPad's own
+    /// screen in points as the display. The bench streams nothing decodable and injects no input, so the
+    /// rest are placeholders; the input source is named for the bench, which the iPad's HUD then shows.
+    static func helloAck(for hello: Hello, identity: HostIdentity) -> HelloAck {
+        let scale = Double(max(hello.scale, 1))
+        let screen = CGSize(width: Double(hello.pixelWidth) / scale, height: Double(hello.pixelHeight) / scale)
+        return .host(display: HostDisplay(displayID: 0, origin: .zero, pointSize: screen),
+                     settings: HostInputSettings(doubleClickIntervalMs: 500, keyRepeatDelayMs: 500, keyRepeatIntervalMs: 50,
+                                                 inputSourceID: "lain.bench"),
+                     hostId: identity.id, hostName: identity.name)
     }
 
     // MARK: Paths
@@ -278,6 +325,8 @@ public enum WiFiBench {
         }
     }
 
+    /// Both times include the iPad's grace before it redials (`Options.clientGraceSeconds`), unless it
+    /// redialed before the bench noticed the drop (then only the outage does).
     public struct Reconnect: Sendable, Equatable {
         /// From noticing the drop (or the iPad redialing) to the new link's `Hello`.
         public var afterDropSeconds: Double
@@ -331,7 +380,12 @@ public enum WiFiBench {
         /// Send → ack of the 50 KB frames and of the keyframes, ms.
         public var frameAck: BenchStats.Distribution
         public var keyframeAck: BenchStats.Distribution
-        public var stalls: BenchStats.Stalls
+        /// Stalls (a frame in flight, no ack) by the frame whose ack ends them (`BenchStats.stallGaps`):
+        /// a 50 KB frame's are the transport-stall signal (§7.7 item 4: TCP head-of-line or
+        /// retransmission stalls, and AWDL's off-channel time, which QUIC wouldn't fix either); a
+        /// keyframe's also hold its own 1.3 MB transfer, a stall at AWDL rates by itself.
+        public var frameStalls: BenchStats.Stalls
+        public var keyframeStalls: BenchStats.Stalls
 
         func lines() -> [String] {
             pings.lines("B under load") + [
@@ -340,9 +394,15 @@ public enum WiFiBench {
                 "  \(frameBytes / 1000) KB frame send→ack ms p50 \(ms(frameAck.p50))  p99 \(ms(frameAck.p99))  max \(ms(frameAck.max))",
                 "  \(Double(keyframeBytes) / 1e6) MB keyframe send→ack ms p50 \(ms(keyframeAck.p50))  p99 \(ms(keyframeAck.p99))  "
                     + "max \(ms(keyframeAck.max))",
-                "  stalls (a frame in flight, no ack) " + zip(BenchStats.Stalls.thresholdsMs, stalls.counts)
-                    .map { ">\(Int($0)) ms: \($1)" }.joined(separator: ", ") + "; longest \(ms(stalls.longestMs)) ms",
+                "  stalls (a frame in flight, no ack), by the frame whose ack ends the wait:",
+                "    \(frameBytes / 1000) KB frames (the transport-stall signal) " + stallCounts(frameStalls),
+                "    \(Double(keyframeBytes) / 1e6) MB keyframes (with their own transfer) " + stallCounts(keyframeStalls),
             ]
+        }
+
+        private func stallCounts(_ stalls: BenchStats.Stalls) -> String {
+            zip(BenchStats.Stalls.thresholdsMs, stalls.counts).map { ">\(Int($0)) ms: \($1)" }.joined(separator: ", ")
+                + "; longest \(ms(stalls.longestMs)) ms"
         }
     }
 
@@ -377,6 +437,8 @@ public enum WiFiBench {
         public var listenerTrouble: String?
         public var links: [LinkInfo]
         public var reconnects: [Reconnect]
+        /// `Options.clientGraceSeconds`: the iPad's wait in the reconnect times.
+        public var clientGraceSeconds: Double
         public var pings: PingResult?
         public var idlePings: PingResult?
         public var load: LoadResult?
@@ -384,6 +446,8 @@ public enum WiFiBench {
         /// Why it ended before every phase had run in full (the deadline, a stop, the listener).
         public var endedBy: String?
         public var csvPath: String?
+        /// The live log and this report as text, next to the CSV.
+        public var reportPath: String?
 
         public var complete: Bool { endedBy == nil }
         /// The link the numbers describe first.
@@ -398,14 +462,18 @@ public enum WiFiBench {
                     + (listenerTrouble.map { "; listener: \($0)" } ?? ""),
             ]
             lines += links.isEmpty ? ["  no iPad connected"] : links.map { "  " + $0.line }
-            lines.append("  reconnects: " + (reconnects.isEmpty ? "none" : reconnects.map {
-                String(format: "%.2f s after the drop (outage %.2f s)", $0.afterDropSeconds, $0.outageSeconds)
-            }.joined(separator: "; ")))
+            let grace = clientGraceSeconds
+            lines.append("  reconnects" + (reconnects.isEmpty ? ": none" : " (the iPad waits its \(secondsText(grace)) s grace "
+                + "before it redials; the time beyond it in brackets): " + reconnects.map {
+                    String(format: "%.2f s [%.2f s] after the drop, outage %.2f s [%.2f s]", $0.afterDropSeconds,
+                           beyond($0.afterDropSeconds, grace), $0.outageSeconds, beyond($0.outageSeconds, grace))
+                }.joined(separator: "; ")))
             lines += (pings?.lines("A @120 Hz") ?? ["A @120 Hz: not run"]).map { "  " + $0 }
             lines += (idlePings?.lines("A @10 Hz") ?? ["A @10 Hz: not run"]).map { "  " + $0 }
             lines += (load?.lines() ?? ["B under load: not run"]).map { "  " + $0 }
             lines += (capacity?.lines() ?? ["C capacity: not run"]).map { "  " + $0 }
             lines.append("  raw samples: \(csvPath ?? "not written")")
+            lines.append("  log and report: \(reportPath ?? "not written")")
             lines.append("  §13: \(summary)")
             return lines.joined(separator: "\n")
         }
@@ -424,8 +492,11 @@ public enum WiFiBench {
                              + "50 KB frame p50/p99/max \(ms(l.frameAck.p50))/\(ms(l.frameAck.p99))/\(ms(l.frameAck.max)) ms, "
                              + "1.3 MB keyframe \(ms(l.keyframeAck.p50))/\(ms(l.keyframeAck.p99))/\(ms(l.keyframeAck.max)) ms, "
                              + String(format: "%.1f fps, ", l.fps) + "\(l.drops) drops, "
-                             + "stalls >50/100/250 ms \(l.stalls.counts.map(String.init).joined(separator: "/")) "
-                             + "(longest \(ms(l.stalls.longestMs)) ms)")
+                             + "stalls >50/100/250 ms (by the frame whose ack ends them): transport (50 KB P-frames) "
+                             + "\(l.frameStalls.counts.map(String.init).joined(separator: "/")) "
+                             + "(longest \(ms(l.frameStalls.longestMs)) ms), keyframes incl. their transfer "
+                             + "\(l.keyframeStalls.counts.map(String.init).joined(separator: "/")) "
+                             + "(longest \(ms(l.keyframeStalls.longestMs)) ms)")
             }
             if let c = capacity {
                 parts.append("capacity median \(mbps(c.median)) MB/s (min \(mbps(c.min)), max \(mbps(c.max)))")
@@ -440,13 +511,28 @@ public enum WiFiBench {
 
     /// Runs the bench: setup failures (no paired iPad, an unreadable Keychain, no listener) throw;
     /// after that it always returns a report, partial if the deadline, a stop or the listener ended it.
-    /// `log` gets the live output.
+    /// `log` gets the live output, and so does the run's text file, line by line, then the report: the
+    /// results never depend on stdout (a `| tee` killed by the owner's Ctrl-C). The raw samples go to the
+    /// CSV at the end. Both paths are logged first and are in the report.
     public static func run(options: Options, log: @escaping @Sendable (String) -> Void = { print($0) }) async throws -> Report {
         // No App Nap and no timer coalescing while the 120 Hz cadence runs.
         let activity = ProcessInfo.processInfo.beginActivity(options: [.userInitiated, .latencyCritical],
                                                              reason: "lain Wi-Fi bench")
         defer { ProcessInfo.processInfo.endActivity(activity) }
-        let engine = try Engine(options: options, log: log)
+        let files = outputFiles(mode: options.mode, in: options.csvDirectory, at: Date())
+        let transcript = Transcript(url: files.report)
+        let say: @Sendable (String) -> Void = { transcript.log($0, to: log) }
+        let created = transcript.failure == nil
+        // First, before the listener can report anything.
+        say(transcript.failure.map { "could not create \(files.report.path) (\($0)): the log and the report go to stdout only" }
+            ?? "the log and the report also go to \(files.report.path), the raw samples (at the end) to \(files.csv.path)")
+        let engine: Engine
+        do {
+            engine = try Engine(options: options, log: say)
+        } catch {
+            transcript.discard()   // nothing was measured
+            throw error
+        }
         let outcome = await withTaskCancellationHandler {
             await withCheckedContinuation { continuation in engine.start { continuation.resume(returning: $0) } }
         } onCancel: {
@@ -454,22 +540,94 @@ public enum WiFiBench {
         }
         var report = outcome.report
         do {
-            report.csvPath = try writeCSV(outcome.rows.sorted { $0.ns < $1.ns }.map { $0.text }, mode: options.mode,
-                                          to: options.csvDirectory).path
+            try writeCSV(outcome.rows.sorted { $0.ns < $1.ns }.map { $0.text }, to: files.csv)
+            report.csvPath = files.csv.path
         } catch {
-            log("could not write the raw samples: \(error)")
+            say("could not write the raw samples: \(error)")
+        }
+        report.reportPath = created ? files.report.path : nil
+        transcript.write("\n" + report.description)
+        transcript.close()
+        if created, let problem = transcript.failure {
+            report.reportPath = nil
+            log("could not write all of \(files.report.path): \(problem)")
         }
         return report
     }
 
-    static func writeCSV(_ rows: [String], mode: Mode, to directory: URL) throws -> URL {
+    /// A run's files in `directory`, `lain-s9-<mode>-<yyyyMMdd-HHmmss>`: the raw samples (.csv), and the
+    /// live log and the report (.txt).
+    static func outputFiles(mode: Mode, in directory: URL, at date: Date) -> (csv: URL, report: URL) {
         let stamp = DateFormatter()
         stamp.locale = Locale(identifier: "en_US_POSIX")
         stamp.dateFormat = "yyyyMMdd-HHmmss"
-        let url = directory.appendingPathComponent("lain-s9-\(mode.rawValue)-\(stamp.string(from: Date())).csv")
-        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let base = directory.appendingPathComponent("lain-s9-\(mode.rawValue)-\(stamp.string(from: date))")
+        return (base.appendingPathExtension("csv"), base.appendingPathExtension("txt"))
+    }
+
+    static func writeCSV(_ rows: [String], to url: URL) throws {
+        try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
         try (([csvHeader] + rows).joined(separator: "\n") + "\n").write(to: url, atomically: true, encoding: .utf8)
-        return url
+    }
+
+    /// The run's text file: each line written as it is logged, so a second Ctrl-C (which quits at once)
+    /// still leaves the log so far. A failure to create or write it is kept, and writing stops.
+    private final class Transcript: Sendable {
+        let url: URL
+        private let state: Mutex<(file: FileHandle?, failure: String?)>
+
+        init(url: URL) {
+            self.url = url
+            do {
+                try FileManager.default.createDirectory(at: url.deletingLastPathComponent(), withIntermediateDirectories: true)
+                guard FileManager.default.createFile(atPath: url.path, contents: nil) else {
+                    throw CocoaError(.fileWriteUnknown)
+                }
+                state = Mutex((try FileHandle(forWritingTo: url), nil))
+            } catch {
+                state = Mutex((nil, "\(error)"))
+            }
+        }
+
+        var failure: String? { state.withLock { $0.failure } }
+
+        /// A live line: to the file and to `log`, under one lock, so both keep the order lines come in
+        /// (from the engine's queue and from `run`).
+        func log(_ line: String, to log: (String) -> Void) {
+            state.withLock { s in
+                Self.append(line, to: &s)
+                log(line)
+            }
+        }
+
+        /// To the file only.
+        func write(_ text: String) {
+            state.withLock { s in Self.append(text, to: &s) }
+        }
+
+        private static func append(_ text: String, to s: inout (file: FileHandle?, failure: String?)) {
+            guard let file = s.file else { return }
+            do {
+                try file.write(contentsOf: Data((text + "\n").utf8))
+            } catch {
+                s.failure = "\(error)"
+                try? file.close()
+                s.file = nil
+            }
+        }
+
+        func close() {
+            state.withLock { s in
+                try? s.file?.close()
+                s.file = nil
+            }
+        }
+
+        /// Setup failed, nothing was measured: no file.
+        func discard() {
+            close()
+            try? FileManager.default.removeItem(at: url)
+        }
     }
 
     private struct Outcome: Sendable {
@@ -856,6 +1014,8 @@ public enum WiFiBench {
             }
         }
 
+        /// Answers with `HelloAck` before measuring: the iPad then treats the link as a session that ran,
+        /// so a drop resets its retry backoff and it redials after its grace alone (§7.7 D29).
         private func hello(_ hello: Hello, link number: Int) {
             guard !finished, let c = current, c.number == number, !c.ready else { return }
             let now = MonotonicClock.now()
@@ -863,14 +1023,20 @@ public enum WiFiBench {
             current?.lastHeardNs = now
             links[number - 1].deviceModel = hello.deviceModel
             links[number - 1].measured = true
-            say("  \(hello.deviceModel) \(hello.pixelWidth)×\(hello.pixelHeight) sent Hello: link \(number) is measured")
+            c.link.realtime.send(.helloAck(WiFiBench.helloAck(for: hello, identity: options.identity)))
+            say("  \(hello.deviceModel) \(hello.pixelWidth)×\(hello.pixelHeight) sent Hello (answered with HelloAck): "
+                + "link \(number) is measured")
             if let drop {
                 let reconnect = Reconnect(afterDropSeconds: Double(since(drop.atNs, now)) / 1e9,
                                           outageSeconds: Double(since(drop.lastHeardNs, now)) / 1e9)
                 reconnects.append(reconnect)
                 self.drop = nil
-                say(String(format: "  reconnected %.2f s after the drop (the iPad was unheard for %.2f s)",
-                           reconnect.afterDropSeconds, reconnect.outageSeconds))
+                let grace = options.clientGraceSeconds
+                say(String(format: "  reconnected %.2f s after the drop (the iPad was unheard for %.2f s); ", reconnect.afterDropSeconds,
+                           reconnect.outageSeconds)
+                    + "beyond the iPad's \(secondsText(grace)) s grace before it redials: "
+                    + String(format: "%.2f s (%.2f s)", beyond(reconnect.afterDropSeconds, grace),
+                             beyond(reconnect.outageSeconds, grace)))
             }
             maybeStartSegment()
         }
@@ -1085,8 +1251,9 @@ public enum WiFiBench {
             let report = Report(mode: options.mode, hostName: options.identity.name, hostId: options.identity.id,
                                 deadlineSeconds: options.seconds, elapsedSeconds: seconds(at: now), port: port,
                                 advertisedName: advertisedName, listenerTrouble: listenerTrouble, links: links,
-                                reconnects: reconnects, pings: pingResult, idlePings: idlePingResult, load: loadResult,
-                                capacity: capacityResult, endedBy: why, csvPath: nil)
+                                reconnects: reconnects, clientGraceSeconds: options.clientGraceSeconds, pings: pingResult,
+                                idlePings: idlePingResult, load: loadResult, capacity: capacityResult, endedBy: why,
+                                csvPath: nil, reportPath: nil)
             let outcome = Outcome(report: report, rows: rows + linkRows())
             if let completion {
                 self.completion = nil
@@ -1198,10 +1365,15 @@ public enum WiFiBench {
                     f.ackNs.map { Double(since(f.sentNs, $0)) / 1e6 }
                 }
             }
-            var gaps: [Double] = []
+            // Apart by the frame whose ack ends each gap: a keyframe's own transfer isn't a transport stall.
+            var frameGaps: [Double] = [], keyframeGaps: [Double] = []
             for (index, segment) in run.segments.enumerated() {
-                let frames = run.frames.filter { $0.segment == index }.map { (sentNs: $0.sentNs, ackNs: $0.ackNs) }
-                gaps += BenchStats.stallGaps(frames, endNs: segment.openUntilNs).map { Double($0) / 1e6 }
+                let frames = run.frames.filter { $0.segment == index }
+                    .map { (sentNs: $0.sentNs, ackNs: $0.ackNs, isKeyframe: $0.isKeyframe) }
+                for gap in BenchStats.stallGaps(frames, endNs: segment.openUntilNs) {
+                    let gapMs = Double(gap.ns) / 1e6
+                    if gap.isKeyframe { keyframeGaps.append(gapMs) } else { frameGaps.append(gapMs) }
+                }
             }
             let seconds = Double(run.connectedNs) / 1e9
             return LoadResult(seconds: seconds, targetSeconds: Double(run.phase.targetNs) / 1e9, complete: complete,
@@ -1211,7 +1383,8 @@ public enum WiFiBench {
                               fps: seconds > 0 ? Double(run.frames.count) / seconds : 0,
                               frameAck: BenchStats.Distribution(sendToAck(keyframes: false)),
                               keyframeAck: BenchStats.Distribution(sendToAck(keyframes: true)),
-                              stalls: BenchStats.Stalls(gapsMs: gaps))
+                              frameStalls: BenchStats.Stalls(gapsMs: frameGaps),
+                              keyframeStalls: BenchStats.Stalls(gapsMs: keyframeGaps))
         }
 
         private func capacity(_ run: PhaseRun, complete: Bool) -> CapacityResult {
@@ -1296,6 +1469,9 @@ private func secondsText(_ value: Double) -> String { String(format: "%g", value
 private func duration(_ seconds: Double, _ target: Double, _ complete: Bool) -> String {
     complete ? String(format: "%.1f s", seconds) : String(format: "%.1f of %g s (partial)", seconds, target)
 }
+
+/// A reconnect time past the iPad's grace, never below 0 (the iPad may notice a drop before the bench).
+private func beyond(_ seconds: Double, _ grace: Double) -> Double { max(seconds - grace, 0) }
 
 /// An account (the iPad's USB serial) as the logs show it: its last four characters.
 private func short(_ account: String) -> String { account.count > 4 ? "…" + account.suffix(4) : account }
