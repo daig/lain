@@ -440,3 +440,25 @@ let ms: UInt64 = 1_000_000
         #expect(!p.hasLayout && p.pointer.displays.count == 1 && p.pointer.x == 688 && p.pointer.y == 516)
     }
 }
+
+@Suite struct LocalShortcuts {
+    @Test func hudShortcutIsHandledLocallyAndNeverReachesTheMac() {
+        var sent: [Message] = []
+        let pipeline = ClientInputPipeline(send: { sent.append($0) })
+        var fired: [ClientInputPipeline.LocalShortcut] = []
+        pipeline.onLocalShortcut = { fired.append($0) }
+        let keyU = PhysicalKey.key(0x18)
+        pipeline.learnCharacter(keyU, "l")                       // Colemak: the key labelled U types "l"
+        for m in [PhysicalKey.leftControl, .leftOption, .leftCommand] { pipeline.keyChanged(m, isDown: true, at: 1) }
+        pipeline.keyChanged(keyU, isDown: true, at: 2)
+        pipeline.keyChanged(keyU, isDown: false, at: 3)
+        #expect(fired == [.toggleHUD])
+        let usages = sent.compactMap { m -> UInt16? in if case .keyEvent(let e) = m { e.usage } else { nil } }
+        #expect(!usages.contains(0x18))                          // the L key never went to the Mac
+        #expect(usages == [0xE0, 0xE2, 0xE3])                    // the modifiers did (harmless alone)
+        // The same physical key without the shortcut modifiers types normally.
+        for m in [PhysicalKey.leftControl, .leftOption, .leftCommand] { pipeline.keyChanged(m, isDown: false, at: 4) }
+        pipeline.keyChanged(keyU, isDown: true, at: 5)
+        #expect(sent.contains { if case .keyEvent(let e) = $0 { e.usage == 0x18 && e.isDown } else { false } })
+    }
+}

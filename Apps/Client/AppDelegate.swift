@@ -37,10 +37,16 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     }
 
     // Invariant 4: anything that takes focus away releases everything on the Mac.
-    func sceneWillResignActive(_ scene: UIScene) { input.releaseAll(.focusLost) }
+    func sceneWillResignActive(_ scene: UIScene) {
+        input.releaseAll(.focusLost)
+        (window?.rootViewController as? StreamViewController)?.diag("scene will resign")
+    }
     func sceneDidEnterBackground(_ scene: UIScene) { input.releaseAll(.focusLost) }
     /// §6.1: back in front, the picture may be stale; ask for a keyframe (sent only while connected).
-    func sceneDidBecomeActive(_ scene: UIScene) { video.requestKeyframe(.resumed) }
+    func sceneDidBecomeActive(_ scene: UIScene) {
+        video.requestKeyframe(.resumed)
+        (window?.rootViewController as? StreamViewController)?.sceneBecameActive()
+    }
 
     /// The loopback listener the Mac dials through usbmuxd (§7.2). It only accepts while the app is in
     /// the foreground; iPadOS suspends it otherwise.

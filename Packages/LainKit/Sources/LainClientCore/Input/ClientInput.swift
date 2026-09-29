@@ -136,6 +136,11 @@ public final class ClientInput: @unchecked Sendable {
     /// GCMouseDidDisconnect: lift the buttons held (no button-ups will come).
     public func mouseDisconnected() { perform { self.pipeline.mouseDisconnected() } }
 
+    /// Where lain's own shortcuts go (called on `queue`; hop to the main actor for UI).
+    public func setLocalShortcutHandler(_ handler: @escaping @Sendable (ClientInputPipeline.LocalShortcut) -> Void) {
+        perform { self.pipeline.onLocalShortcut = handler }
+    }
+
     public func learnCharacter(_ key: PhysicalKey, _ characters: String) {
         perform { self.pipeline.learnCharacter(key, characters) }
     }

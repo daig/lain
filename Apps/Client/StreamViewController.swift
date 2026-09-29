@@ -69,6 +69,12 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
 
         input.setPointerEnabled(false)   // D19: nothing from the trackpad until the pointer is locked
         observe()
+        // lain's own shortcuts are caught in the input pipeline (before anything reaches the Mac).
+        input.setLocalShortcutHandler { shortcut in
+            Task { @MainActor [weak self] in
+                if shortcut == .toggleHUD { self?.toggleHUD() }
+            }
+        }
         GCMouse.mice().forEach(attach(mouse:))
         if let keyboard = GCKeyboard.coalesced { attach(keyboard: keyboard) }
 
@@ -102,6 +108,38 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         pointerLockChanged()
     }
 
+    /// Back in front (Cmd-Tab, Home and back, Stage Manager). viewDidAppear doesn't run again, so reclaim
+    /// key/first-responder status and re-request the pointer lock, which iPadOS grants only to the
+    /// focused window in windowed modes. Diagnostics go to stdout (the `ipad.sh` console).
+    func sceneBecameActive() {
+        diag("scene active")
+        view.window?.makeKey()
+        becomeFirstResponder()
+        setNeedsUpdateOfPrefersPointerLocked()
+        pointerLockChanged()
+        for delay in [0.25, 1.0] {
+            DispatchQueue.main.asyncAfter(deadline: .now() + delay) { [weak self] in
+                guard let self else { return }
+                self.diag("recheck +\(delay)s")
+                if !self.pointerLocked { self.setNeedsUpdateOfPrefersPointerLocked() }
+                self.pointerLockChanged()
+            }
+        }
+    }
+
+    func diag(_ event: String) {
+        let scene = view.window?.windowScene
+        let state: String = switch scene?.activationState {
+        case .foregroundActive: "active"
+        case .foregroundInactive: "inactive"
+        case .background: "background"
+        default: "?"
+        }
+        let line = "\(event): scene=\(state) keyWindow=\(view.window?.isKeyWindow ?? false) "
+            + "firstResponder=\(isFirstResponder) locked=\(scene?.pointerLockState?.isLocked ?? false)"
+        Self.log.notice("\(line, privacy: .public)")
+    }
+
     // MARK: Layout
 
     private func setUpLabels() {
@@ -114,10 +152,11 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         detailLabel.numberOfLines = 0
         detailLabel.textAlignment = .center
 
-        overlay.text = "Click to capture the pointer"
-        overlay.font = .systemFont(ofSize: 20, weight: .medium)
+        overlay.text = "Click to capture the pointer\nIf it keeps releasing after app switches: Settings › Multitasking & Gestures › Full Screen Apps"
+        overlay.font = .systemFont(ofSize: 17, weight: .medium)
         overlay.textColor = .white
         overlay.textAlignment = .center
+        overlay.numberOfLines = 0
         overlay.backgroundColor = UIColor.systemBlue.withAlphaComponent(0.35)
         overlay.layer.cornerRadius = 12
         overlay.layer.masksToBounds = true
@@ -135,8 +174,8 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             stack.centerXAnchor.constraint(equalTo: view.centerXAnchor),
             stack.centerYAnchor.constraint(equalTo: view.centerYAnchor),
             stack.leadingAnchor.constraint(greaterThanOrEqualTo: view.leadingAnchor, constant: 24),
-            overlay.heightAnchor.constraint(equalToConstant: 52),
-            overlay.widthAnchor.constraint(equalToConstant: 360),
+            overlay.heightAnchor.constraint(equalToConstant: 84),
+            overlay.widthAnchor.constraint(equalToConstant: 620),
         ])
     }
 
@@ -219,7 +258,12 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
                 }
             })
         }
-        on(UIPointerLockState.didChangeNotification) { $0.pointerLockChanged() }
+        on(UIPointerLockState.didChangeNotification) { vc in
+            vc.diag("lock state changed")
+            vc.pointerLockChanged()
+        }
+        on(UIWindow.didBecomeKeyNotification) { $0.diag("window became key") }
+        on(UIWindow.didResignKeyNotification) { $0.diag("window resigned key") }
         on(.GCMouseDidConnect) { vc in GCMouse.mice().forEach(vc.attach(mouse:)) }
         on(.GCMouseDidBecomeCurrent) { vc in GCMouse.mice().forEach(vc.attach(mouse:)) }
         on(.GCKeyboardDidConnect) { vc in GCKeyboard.coalesced.map(vc.attach(keyboard:)) }
@@ -289,12 +333,6 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     override func pressesCancelled(_ presses: Set<UIPress>, with event: UIPressesEvent?) { handle(presses, isDown: false) }
     override func pressesChanged(_ presses: Set<UIPress>, with event: UIPressesEvent?) {}
 
-    /// Ctrl-Opt-Cmd-L, by the character the iPad layout produces (D18; Colemak "l" is QWERTY "U").
-    private static func isHUDShortcut(_ key: UIKey) -> Bool {
-        let mods = key.modifierFlags.intersection([.control, .alternate, .command, .shift])
-        return mods == [.control, .alternate, .command] && key.charactersIgnoringModifiers.lowercased() == "l"
-    }
-
     private func handle(_ presses: Set<UIPress>, isDown: Bool) {
         for press in presses {
             guard let key = press.key else { continue }
@@ -303,7 +341,6 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
                 input.keyChanged(.globe, isDown: isDown)   // GCKeyboard never reports Globe
             } else if isDown, let u = UInt16(exactly: usage) {
                 input.learnCharacter(PhysicalKey(usage: u), key.charactersIgnoringModifiers)
-                if Self.isHUDShortcut(key) { toggleHUD() }
             }
         }
     }

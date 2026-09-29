@@ -106,8 +106,34 @@ public final class ClientInputPipeline {
 
     // MARK: Keyboard
 
+    /// lain's own shortcuts, handled on the iPad and never sent to the Mac (the Mac would beep).
+    public enum LocalShortcut: Sendable, Equatable {
+        /// Ctrl-Opt-Cmd-L: show/hide the HUD.
+        case toggleHUD
+    }
+
+    /// Called on the input queue when a local shortcut fires.
+    public var onLocalShortcut: (LocalShortcut) -> Void = { _ in }
+    /// Keys whose down was taken by a local shortcut; their up is swallowed too.
+    private var consumedKeys: Set<PhysicalKey> = []
+
+    /// The shortcut a key-down triggers, matched by the layout's character (D18: Colemak "l" is on the
+    /// key labelled U). The modifiers themselves still reach the Mac, which ignores them alone.
+    private func localShortcut(for key: PhysicalKey) -> LocalShortcut? {
+        guard !key.isModifier,
+              keyboard.physicalModifiers.intersection([.shift, .control, .option, .command]) == [.control, .option, .command]
+        else { return nil }
+        return keyboard.layout.character(for: key) == "l" ? .toggleHUD : nil
+    }
+
     /// A physical key changed (GCKeyboard usage, or Globe from UIKit).
     public func keyChanged(_ key: PhysicalKey, isDown: Bool, at timeNs: UInt64) {
+        if isDown, let shortcut = localShortcut(for: key) {
+            consumedKeys.insert(key)
+            onLocalShortcut(shortcut)
+            return
+        }
+        if !isDown, consumedKeys.remove(key) != nil { return }
         for event in keyboard.process(key, isDown: isDown) {
             send(.keyEvent(event))
             keyRepeat.observe(event, at: timeNs)
