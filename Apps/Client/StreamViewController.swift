@@ -1,5 +1,6 @@
 import GameController
 import LainClientCore
+import os
 import UIKit
 
 /// The client's one screen (§6.4, §6.6): captures the Magic Keyboard and trackpad under pointer lock
@@ -50,6 +51,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
+        overrideUserInterfaceStyle = .dark   // secondaryLabel etc. must read on the black stream background
         setUpLabels()
         setUpGestures()
         cursorDot.backgroundColor = .white
@@ -75,6 +77,13 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         becomeFirstResponder()
+        // A resizable iPadOS 26+ app isn't rotated by supportedInterfaceOrientations alone; ask for landscape.
+        // iPadOS 27 refuses this in windowed modes (verified in the simulator); on the Magic Keyboard the
+        // iPad is landscape anyway.
+        view.window?.windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: .landscape)) { error in
+            // Expected in windowed modes: "does not allow for programmatic changes to interface orientation".
+            Self.log.notice("landscape request refused: \(error.localizedDescription, privacy: .public)")
+        }
         setNeedsUpdateOfPrefersPointerLocked()
         pointerLockChanged()
     }
@@ -147,8 +156,12 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         on(.GCMouseDidDisconnect) { $0.input.mouseDisconnected() }
     }
 
+    private static let log = Logger(subsystem: "lain", category: "client")
+
     private func pointerLockChanged() {
-        let locked = view.window?.windowScene?.pointerLockState?.isLocked ?? false
+        let state = view.window?.windowScene?.pointerLockState
+        let locked = state?.isLocked ?? false
+        Self.log.notice("pointer lock: \(state == nil ? "no state" : (locked ? "locked" : "unlocked"), privacy: .public)")
         guard locked != pointerLocked else { return }
         pointerLocked = locked
         if locked {
