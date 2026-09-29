@@ -5,6 +5,7 @@ import SwiftUI
 @main
 enum LainHostEntry {
     static func main() {
+        raiseOpenFileLimit()
         if let bench = BenchCommand.requested() { BenchCommand.run(bench) }
         if CommandLine.arguments.contains("--agent-status") {   // diagnostics: SMAppService state (+ --register)
             print("login agent: \(LoginAgent.state), installed: \(LoginAgent.isInstalled), bundle: \(Bundle.main.bundlePath)")
@@ -26,6 +27,21 @@ enum LainHostEntry {
 
     static let isTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
         || ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil
+
+    /// launchd starts the agent with a soft limit of 256 descriptors. Every USB dial opens a socket to
+    /// usbmuxd and every Wi-Fi connection one of its own, so raise it to `wanted` (or the hard limit, if
+    /// lower): defence in depth against a flood of unauthenticated Wi-Fi handshakes starving the USB
+    /// path (§7.7).
+    static func raiseOpenFileLimit(to wanted: rlim_t = 4096) {
+        var limit = rlimit()
+        guard getrlimit(RLIMIT_NOFILE, &limit) == 0 else { return }
+        let target = min(wanted, limit.rlim_max)
+        guard limit.rlim_cur < target else { return }
+        limit.rlim_cur = target
+        if setrlimit(RLIMIT_NOFILE, &limit) != 0 {
+            NSLog("lain: couldn't raise the open-file limit to \(target) (errno \(errno))")
+        }
+    }
 }
 
 /// Menu-bar agent (LSUIElement). Runs the `HostSession`: the iPad is an extra display of this Mac

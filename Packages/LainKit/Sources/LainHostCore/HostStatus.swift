@@ -17,6 +17,10 @@ public enum HostStatus: Sendable, Equatable {
     /// right after `ChannelHello`, a newer one answers `Error(versionMismatch)`.
     public static let iPadNeedsUpdate = HostStatus.error("lain on the iPad speaks another protocol: update it")
 
+    /// Video capture stopped on its own in several sessions in a row: the attached iPad is dialed again
+    /// once the backoff is over (`HostSession.Tuning.captureRetryInterval`), or at once if it is replugged.
+    public static let captureBackingOff = HostStatus.error("backing off after capture failures")
+
     public var title: String {
         switch self {
         case .waitingForIPad: "Waiting for iPad"

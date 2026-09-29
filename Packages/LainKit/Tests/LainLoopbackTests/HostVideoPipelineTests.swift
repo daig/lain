@@ -185,6 +185,41 @@ func noRefinement() -> HostVideoPipeline.Options {
     return o
 }
 
+/// Awaits `body`, but fails the test instead of hanging if it hasn't finished within `seconds`: a
+/// `stop()` whose interrupted start never signals waits for ever, and neither `.timeLimit` nor a task
+/// group can end a wait that ignores cancellation. A stuck body is left behind; the run goes on.
+@discardableResult
+private func finishes(within seconds: Double = 5, sourceLocation: SourceLocation = #_sourceLocation,
+                      _ body: @escaping @Sendable () async -> Void) async -> Bool {
+    let done = await withCheckedContinuation { (c: CheckedContinuation<Bool, Never>) in
+        let once = Once()
+        let timer = Task {
+            try? await Task.sleep(for: .seconds(seconds))
+            if !Task.isCancelled, once.claim() { c.resume(returning: false) }
+        }
+        Task {
+            await body()
+            if once.claim() { c.resume(returning: true) }
+            timer.cancel()
+        }
+    }
+    if !done { Issue.record("did not finish within \(seconds) s", sourceLocation: sourceLocation) }
+    return done
+}
+
+/// True for the first caller only.
+private final class Once: Sendable {
+    private let taken = Atomic<Bool>(false)
+    func claim() -> Bool { !taken.exchange(true, ordering: .acquiringAndReleasing) }
+}
+
+/// A value handed over from another task.
+private final class Box<T: Sendable>: Sendable {
+    private let value = Mutex<T?>(nil)
+    func set(_ v: T) { value.withLock { $0 = v } }
+    var get: T? { value.withLock { $0 } }
+}
+
 @Suite(.serialized) struct HostVideoPipelineTests {
     @Test func fourFourFourStreamWithConfigFirstKeyframeFirstAndAcks() async throws {
         let display = FakeStreamedDisplay(), source = FakeFrameSource(), client = VideoClient()
@@ -251,7 +286,7 @@ func noRefinement() -> HostVideoPipeline.Options {
         }
 
         pipeline.stop()
-        await pipeline.waitUntilStopped()
+        await finishes { await pipeline.waitUntilStopped() }
         print(String(format: "host video, fast client: %d captured, %d encoded, %d dropped before encode, peak in flight %d; "
                      + "encode p50 %.2f ms, ack RTT p50 %.2f ms, %.1f Mbps", s.captured, s.encoded, s.droppedBeforeEncode,
                      s.peakInFlight, s.encodeMsP50 ?? 0, s.ackRttMsP50 ?? 0, midStats.bytesPerSecond * 8 / 1e6))
@@ -273,7 +308,7 @@ func noRefinement() -> HostVideoPipeline.Options {
         #expect(s.inFlight == 0)
         #expect(s.ackRttMsP50 ?? 0 >= 40)
         pipeline.stop()
-        await pipeline.waitUntilStopped()
+        await finishes { await pipeline.waitUntilStopped() }
         print("host video, slow client (ack +40 ms): \(s.encoded)/\(s.offered) encoded, \(s.droppedBeforeEncode) dropped before encode, peak in flight \(s.peakInFlight)")
     }
 
@@ -304,7 +339,7 @@ func noRefinement() -> HostVideoPipeline.Options {
         #expect(frames.last.map { $0.atNs >= lastFeed } == true)
         #expect(pipeline.stats.refinements == refinements.count)
         pipeline.stop()
-        await pipeline.waitUntilStopped()
+        await finishes { await pipeline.waitUntilStopped() }
     }
 
     @Test func keyframeRequestYieldsKeyframeEvenWhenIdle() async throws {
@@ -330,7 +365,7 @@ func noRefinement() -> HostVideoPipeline.Options {
         #expect(client.frames.filter(\.frame.isKeyframe).count == 3)
         #expect(client.decodeStatuses.withLock { $0 }.allSatisfy { $0 == noErr })
         pipeline.stop()
-        await pipeline.waitUntilStopped()
+        await finishes { await pipeline.waitUntilStopped() }
     }
 
     @Test func fourTwoZeroWhenClientLacksHardware444() async throws {
@@ -347,7 +382,7 @@ func noRefinement() -> HostVideoPipeline.Options {
         #expect(client.frames.count >= 5)
         #expect(client.decodeStatuses.withLock { $0 }.allSatisfy { $0 == noErr })
         pipeline.stop()
-        await pipeline.waitUntilStopped()
+        await finishes { await pipeline.waitUntilStopped() }
     }
 
     @Test func stopIsIdempotentAndSilencesEverything() async throws {
@@ -362,7 +397,7 @@ func noRefinement() -> HostVideoPipeline.Options {
 
         pipeline.stop()
         pipeline.stop()
-        await pipeline.waitUntilStopped()
+        await finishes { await pipeline.waitUntilStopped() }
         #expect(!pipeline.isRunning)
         #expect(source.stops == 1)
         #expect(display.created == 1 && display.destroyed == 1 && !display.alive)
@@ -381,7 +416,7 @@ func noRefinement() -> HostVideoPipeline.Options {
             try await pipeline.start(hello: hello([.hevcMain]), videoChannel: client.host, sendRealtime: { _ in })
         }
         pipeline.stop()
-        await pipeline.waitUntilStopped()
+        await finishes { await pipeline.waitUntilStopped() }
         #expect(display.destroyed == 1 && source.stops == 1)
     }
 
@@ -393,8 +428,10 @@ func noRefinement() -> HostVideoPipeline.Options {
         }
         try await Task.sleep(for: .milliseconds(40))
         pipeline.stop()
-        await #expect(throws: HostVideoError.stopped) { try await start.value }
-        await pipeline.waitUntilStopped()
+        let outcome = Box<Result<Void, any Error>>()
+        await finishes { outcome.set(await start.result) }
+        #expect(throws: HostVideoError.stopped) { try outcome.get?.get() }
+        await finishes { await pipeline.waitUntilStopped() }
         #expect(display.created == 1 && !display.alive)
         #expect(source.config == nil)
         #expect(client.all.isEmpty)
@@ -419,15 +456,17 @@ func noRefinement() -> HostVideoPipeline.Options {
                     c.resume()
                 }
             }
+            let outcome = Box<Result<Void, any Error>>()
+            guard await finishes({ outcome.set(await start.result) }) else { return }
             var createdExpected = 1
             do {
-                try await start.value
+                try outcome.get?.get()
             } catch HostVideoError.stopped {
                 // stopped before it ran
             } catch HostVideoError.alreadyStarted {
                 createdExpected = 0   // stopped before it even began
             }
-            await pipeline.waitUntilStopped()
+            guard await finishes({ await pipeline.waitUntilStopped() }) else { return }
             #expect(!pipeline.isRunning && !display.alive && display.created == createdExpected, "stop \(i)")
         }
     }
@@ -483,7 +522,10 @@ func noRefinement() -> HostVideoPipeline.Options {
 
         func waitUntilRemoved() async {
             guard state.withLock({ $0.removing }) else { return }
-            try? await Task.sleep(for: .milliseconds(150))
+            // As the real wait: its course is run even on a cancelled task.
+            await withCheckedContinuation { (c: CheckedContinuation<Void, Never>) in
+                DispatchQueue.global().asyncAfter(deadline: .now() + .milliseconds(150)) { c.resume() }
+            }
             state.withLock { s in
                 if s.removing { s.counts.removed += 1 }
                 s.removing = false
@@ -514,10 +556,93 @@ func noRefinement() -> HostVideoPipeline.Options {
         #expect(stopped.withLock { $0 } == nil)   // the display the start is creating still exists
 
         display.finishCreating()
-        await #expect(throws: HostVideoError.stopped) { try await start.value }
-        await waiter.value
+        let outcome = Box<Result<Void, any Error>>()
+        await finishes { outcome.set(await start.result) }
+        #expect(throws: HostVideoError.stopped) { try outcome.get?.get() }
+        await finishes { await waiter.value }
         #expect(stopped.withLock { $0 } == SuspendingDisplay.Counts(created: 1, destroyed: 1, removed: 1, alive: false))
         #expect(source.config == nil && client.all.isEmpty)
+    }
+
+    /// A display whose `create()` waits, cancellably, for the window server to bring it up (as the real
+    /// one polls for its mode), and which leaves the active list `removalMs` after `destroy()`. Its
+    /// removal wait is the real one, `VirtualDisplay.waitUntilGone`, with this display standing in for
+    /// the window server: it counts the polls, and notes whether the task waiting was cancelled.
+    final class CancellableDisplay: StreamedDisplayProvider {
+        let display = StreamedDisplay(displayID: 4444, pixelWidth: testWidth, pixelHeight: testHeight,
+                                      bounds: CGRect(x: 0, y: 0, width: 688, height: 516), refreshRate: 120)
+        struct Removal { var polls = 0, onCancelledTask = false }
+        private struct State {
+            var creating = false
+            var alive = false
+            var listedUntil: ContinuousClock.Instant?
+            var removal = Removal()
+        }
+        let removalMs: Int
+        private let state = Mutex(State())
+        init(removalMs: Int) { self.removalMs = removalMs }
+        var isCreating: Bool { state.withLock { $0.creating } }
+        var removal: Removal { state.withLock { $0.removal } }
+        var isListed: Bool { state.withLock { s in s.alive || s.listedUntil.map { ContinuousClock.now < $0 } ?? false } }
+
+        func create() async throws -> StreamedDisplay {
+            state.withLock { $0.creating = true; $0.alive = true }
+            do {
+                try await Task.sleep(for: .seconds(30))   // cancelled long before
+            } catch {
+                destroy()
+                throw error
+            }
+            return display
+        }
+
+        func currentBounds() -> CGRect? { state.withLock { $0.alive } ? display.bounds : nil }
+
+        func destroy() {
+            state.withLock { s in
+                guard s.alive else { return }
+                s.alive = false
+                s.listedUntil = .now + .milliseconds(removalMs)
+            }
+        }
+
+        func waitUntilRemoved() async {
+            await VirtualDisplay.waitUntilGone(display.displayID) { _ in
+                let cancelled = Task.isCancelled
+                return state.withLock { s in
+                    s.removal.polls += 1
+                    if cancelled { s.removal.onCancelledTask = true }
+                    return s.listedUntil.map { ContinuousClock.now < $0 } ?? false
+                }
+            }
+        }
+    }
+
+    /// The session's task is cancelled while `create()` waits (the cable pulled during video start): the
+    /// start gives up and removes its display, and waits for it on that cancelled task at the usual 20 ms
+    /// pace, neither spinning on the window server nor returning before the display is gone (the next
+    /// session's display shares its identity).
+    @Test func aCancelledStartWaitsOutItsDisplayAtItsPace() async throws {
+        let display = CancellableDisplay(removalMs: 200), source = FakeFrameSource(), client = VideoClient()
+        let pipeline = HostVideoPipeline(display: display, frameSource: source, cursorSource: nil)
+        let start = Task {
+            try await pipeline.start(hello: hello([.hevcMain]), videoChannel: client.host, sendRealtime: { _ in })
+        }
+        let deadline = ContinuousClock.now + .seconds(5)
+        while !display.isCreating, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(5)) }
+        #expect(display.isCreating)
+
+        let cancelled = ContinuousClock.now
+        start.cancel()
+        let outcome = Box<Result<Void, any Error>>()
+        await finishes { outcome.set(await start.result) }
+        #expect(throws: CancellationError.self) { try outcome.get?.get() }
+        #expect(ContinuousClock.now - cancelled >= .milliseconds(200))
+        #expect(!display.isListed)
+        let removal = display.removal
+        #expect(removal.onCancelledTask)
+        #expect(removal.polls >= 2 && removal.polls <= 40, "\(removal.polls) polls in 200 ms")
+        #expect(!pipeline.isRunning && source.config == nil && client.all.isEmpty)
     }
 }
 #endif

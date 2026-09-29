@@ -120,7 +120,8 @@ import Testing
                                                    .releaseAll])
         // (The session redials the still-attached fake iPad right away, so check the release count.)
         #expect(await eventually { rig.power.ends >= 1 })
-        #expect(rig.power.activityCount >= 1)
+        // Declared off the realtime queue (a utility queue), so it may land after everything above.
+        #expect(await eventually { rig.power.activityCount >= 1 })
         // The iPad is still attached, so the session goes back to dialing it.
         #expect(await rig.statuses.first { $0 == .connecting } != nil)
     }

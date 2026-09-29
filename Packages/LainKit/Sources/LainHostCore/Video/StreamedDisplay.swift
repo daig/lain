@@ -33,6 +33,8 @@ public protocol StreamedDisplayProvider: Sendable {
     func destroy()
     /// Waits (bounded) until the display `destroy()` removed has left the active display list: the
     /// window server removes it asynchronously, and the next session's display shares its identity.
+    /// It runs its course even on a cancelled task: a failed start waits here on the session's own task,
+    /// which a detach cancels.
     func waitUntilRemoved() async
 }
 

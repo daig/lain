@@ -129,8 +129,9 @@ public struct DisplayLayoutProvider: DisplayProvider {
 /// can record them.
 public protocol PowerAssertions: Sendable {
     /// Held while a client is connected. Counted: each session begins once and ends once, and the
-    /// assertion is held while begins outnumber ends, so a hand-over between two sessions (USB taking
-    /// over from Wi-Fi, §7.7) can't drop it.
+    /// assertion is held while begins outnumber ends. A session taking over (USB from Wi-Fi, or the same
+    /// iPad's new Wi-Fi link, §7.7) begins before the one it displaces ends, so a hand-over never drops
+    /// it.
     func beginPreventingDisplaySleep()
     /// Balances one `beginPreventingDisplaySleep`; an end without a begin is ignored.
     func endPreventingDisplaySleep()
