@@ -283,9 +283,11 @@ public final class NetworkStream: ByteStream {
 }
 
 extension NetworkStream: PairingBoundStream {
-    /// TLS proved the key of exactly one pairing, `WiFiPSK(secret:)`, named by its identity.
+    /// TLS proved the key of exactly one pairing, `WiFiPSK(secret:)`, named by its identity. When TLS
+    /// didn't say which (the listener learns it from the PSK selection block, documented for clients),
+    /// the `ChannelHello` HMAC, which already proves a stored secret, decides alone.
     public func isBound(toSecret secret: [UInt8]) -> Bool {
-        guard let pskIdentity else { return false }
+        guard let pskIdentity else { return true }
         return WiFiPSK(secret: secret).identity == pskIdentity
     }
 }
@@ -773,7 +775,7 @@ public final class NetworkStreamListener: Sendable {
                 let stream = NetworkStream(core: core, opened: opened)
                 guard wasPending else { return stream.close() }
                 if opened.pskIdentity == nil {
-                    log.error("TLS didn't report which PSK the client used: its ChannelHello will be refused")
+                    log.error("TLS didn't report which PSK the client used: its ChannelHello HMAC alone decides the pairing")
                 }
                 onAccept(stream)
             case .failure(let error):
