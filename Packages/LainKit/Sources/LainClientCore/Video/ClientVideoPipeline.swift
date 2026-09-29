@@ -100,6 +100,10 @@ public struct VideoStats: Sendable, Equatable {
 /// Threads: `handleVideo` runs on the video connection's queue, decoder output on VideoToolbox's
 /// thread, `presented`/`latest` on the render thread. They share one briefly held lock; the renderer
 /// only touches the slot's.
+///
+/// Links: `connect` names the session's link generation (§7.7 D29), and envelopes tagged with another
+/// one are dropped under the lock: a replaced link's late frames are neither decoded nor acked on the
+/// new link, and don't disturb its sequence tracking (frame ids restart at 1 per host session).
 public final class ClientVideoPipeline: Sendable {
     public typealias DecoderFactory = @Sendable (_ config: VideoConfig, _ requireHardware: Bool,
                                                  _ onOutput: @escaping @Sendable (VideoDecoder.Output) -> Void) throws -> any FrameDecoding
@@ -154,9 +158,17 @@ public final class ClientVideoPipeline: Sendable {
         var bytes = 0
         var lastPresentedId: UInt32?
         var rate = (ns: UInt64(0), presented: 0, received: 0, bytes: 0)
+        /// The connected link's generation: tagged envelopes from any other are dropped (nil: none).
+        var link: UInt64?
 
         /// Generations only grow, so a replaced decoder's late output is always recognized as stale.
-        init(generation: UInt64 = 0) { decoderGeneration = generation }
+        init(generation: UInt64 = 0, link: UInt64? = nil) {
+            decoderGeneration = generation
+            self.link = link
+        }
+
+        /// An untagged envelope, or one from the connected link.
+        func accepts(_ generation: UInt64?) -> Bool { generation == nil || generation == link }
     }
     private let state: Mutex<State>
     private let session = Atomic<UInt64>(0)
@@ -173,11 +185,13 @@ public final class ClientVideoPipeline: Sendable {
 
     // MARK: Session
 
-    /// A new link: `control` carries `KeyframeRequest`s (realtime), `video` carries `FrameAck`s.
-    public func connect(control: @escaping @Sendable (Message) -> Void, video: @escaping @Sendable (Message) -> Void) {
+    /// A new link: `control` carries `KeyframeRequest`s (realtime), `video` carries `FrameAck`s. From now
+    /// on envelopes (and cursor messages) tagged with another `generation` than this link's are dropped.
+    public func connect(generation: UInt64? = nil, control: @escaping @Sendable (Message) -> Void,
+                        video: @escaping @Sendable (Message) -> Void) {
         let old = state.withLock { s -> (any FrameDecoding)? in
             let old = s.decoder
-            s = State(generation: s.decoderGeneration &+ 1)
+            s = State(generation: s.decoderGeneration &+ 1, link: generation)
             s.sendControl = control
             s.sendVideo = video
             return old
@@ -185,14 +199,15 @@ public final class ClientVideoPipeline: Sendable {
         old?.finish()
         latest.clear()
         session.add(1, ordering: .releasing)
-        cursor.reset()
+        cursor.reset(generation: generation)
     }
 
-    /// The link is gone: forget the stream (the screen goes back to the connect status).
+    /// The link is gone: forget the stream (the screen goes back to the connect status). Tagged
+    /// envelopes are dropped until the next `connect`.
     public func disconnect() {
         let old = state.withLock { s -> (any FrameDecoding)? in
             let old = s.decoder
-            s = State(generation: s.decoderGeneration &+ 1)
+            s = State(generation: s.decoderGeneration &+ 1, link: nil)
             return old
         }
         old?.finish()
@@ -209,13 +224,15 @@ public final class ClientVideoPipeline: Sendable {
     // MARK: Video connection (its serial queue)
 
     /// Handles `VideoConfig` and `VideoFrame`; returns false for anything else (the caller routes it).
-    /// Every envelope on the video connection should pass through here so sequence gaps are seen.
+    /// Every envelope on the video connection should pass through here so sequence gaps are seen. With
+    /// a `generation` other than the connected link's, the envelope is stale: dropped, and true.
     @discardableResult
-    public func handleVideo(_ env: Envelope) -> Bool {
+    public func handleVideo(_ env: Envelope, generation: UInt64? = nil) -> Bool {
         let now = clock()
         switch env.message {
         case .videoConfig(let config):
             let (old, request) = state.withLock { s -> ((any FrameDecoding)?, (@Sendable () -> Void)?) in
+                guard s.accepts(generation) else { return (nil, nil) }
                 _ = checkSequence(&s, env.header.sequence)
                 return applyConfig(&s, config)
             }
@@ -226,6 +243,7 @@ public final class ClientVideoPipeline: Sendable {
             var toDecode: (any FrameDecoding)?
             var replaced: (any FrameDecoding)?
             let (ack, request) = state.withLock { s -> ((@Sendable (Message) -> Void)?, (@Sendable () -> Void)?) in
+                guard s.accepts(generation) else { return (nil, nil) }   // a replaced link's: never acked here
                 s.stats.framesReceived += 1
                 s.bytes += frame.data.count
                 var request: (@Sendable () -> Void)?
@@ -263,8 +281,11 @@ public final class ClientVideoPipeline: Sendable {
             toDecode?.decode(frame)
             return true
         default:
-            _ = state.withLock { s in checkSequence(&s, env.header.sequence) }
-            return false
+            return state.withLock { s in
+                guard s.accepts(generation) else { return true }
+                _ = checkSequence(&s, env.header.sequence)
+                return false
+            }
         }
     }
 

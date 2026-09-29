@@ -79,6 +79,12 @@ targets:
           - UIInterfaceOrientationPortraitUpsideDown
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
+        # Wi-Fi (§7.7): browsing for the Mac and dialing it need Local Network access, asked for on the
+        # first browse (the loop browses whenever no USB session is up, so possibly right at launch);
+        # iPadOS lets the app browse only the listed service.
+        NSLocalNetworkUsageDescription: lain finds your Mac and connects to it over Wi-Fi when the USB-C cable isn't connected.
+        NSBonjourServices:
+          - _lain._tcp
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: sub.dev.lain.client

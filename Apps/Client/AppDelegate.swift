@@ -1,8 +1,14 @@
+import Foundation
 import LainClientCore
 import UIKit
 
 @main
 final class AppDelegate: UIResponder, UIApplicationDelegate {
+    /// As a test host (LainClientTests) the app starts no session: no listener, and above all no Wi-Fi
+    /// loop browsing the real network during a test run (§7.7 D29).
+    static let isTestHost = ProcessInfo.processInfo.environment["XCTestConfigurationFilePath"] != nil
+        || ProcessInfo.processInfo.environment["XCTestSessionIdentifier"] != nil
+
     func application(_ application: UIApplication, configurationForConnecting session: UISceneSession,
                      options: UIScene.ConnectionOptions) -> UISceneConfiguration {
         let config = UISceneConfiguration(name: "Default", sessionRole: session.role)
@@ -33,6 +39,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.rootViewController = stream
         window.makeKeyAndVisible()
         self.window = window
+        guard !AppDelegate.isTestHost else { return }
         startSession(screen: windowScene.screen, view: stream)
     }
 
@@ -41,15 +48,22 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         input.releaseAll(.focusLost)
         (window?.rootViewController as? StreamViewController)?.diag("scene will resign")
     }
-    func sceneDidEnterBackground(_ scene: UIScene) { input.releaseAll(.focusLost) }
+    /// iPadOS suspends the app soon: Wi-Fi discovery pauses (§7.7).
+    func sceneDidEnterBackground(_ scene: UIScene) {
+        input.releaseAll(.focusLost)
+        session?.sceneDidEnterBackground()
+    }
     /// §6.1: back in front, the picture may be stale; ask for a keyframe (sent only while connected).
+    /// Wi-Fi discovery, which may have died while suspended, is recreated.
     func sceneDidBecomeActive(_ scene: UIScene) {
         video.requestKeyframe(.resumed)
+        session?.sceneDidBecomeActive()
         (window?.rootViewController as? StreamViewController)?.sceneBecameActive()
     }
 
-    /// The loopback listener the Mac dials through usbmuxd (§7.2). It only accepts while the app is in
-    /// the foreground; iPadOS suspends it otherwise.
+    /// The loopback listener the Mac dials through usbmuxd (§7.2), and the Wi-Fi loop that finds paired
+    /// Macs over Bonjour and dials them when no cable is connected (§7.7). Both work only while the app
+    /// is in the foreground; iPadOS suspends them otherwise.
     private func startSession(screen: UIScreen, view: StreamViewController) {
         let native = screen.nativeBounds.size
         let hello = Hello(deviceModel: Self.modelIdentifier(), pixelWidth: UInt32(max(native.width, native.height)),
@@ -58,9 +72,13 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                           // S3c: HEVC Main 4:4:4 10 only if the embedded vector decodes in hardware here.
                           decodeCapabilities: ClientVideoPipeline.probeDecodeCapabilities(),
                           keyboardType: .unknown)
+        let wifi = ClientWiFiConfig(discovery: { BonjourHostDiscovery(serviceType: LainProtocol.bonjourServiceType) },
+                                    lastHost: .userDefaults())
         do {
-            session = try ClientSession(secrets: KeychainSecretStore(), hello: hello, input: input, video: video) { [weak view] status in
-                Task { @MainActor in view?.status = ClientStatus(status) }
+            session = try ClientSession(secrets: KeychainSecretStore(), hello: hello, input: input, video: video,
+                                        wifi: wifi) { [weak view] status in
+                // Main-queue hops keep statuses in order (the session publishes them in order).
+                DispatchQueue.main.async { MainActor.assumeIsolated { view?.status = ClientStatus(status) } }
             }
         } catch {
             view.status = .failed("\(error)")
