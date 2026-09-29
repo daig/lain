@@ -3,7 +3,8 @@ import Foundation
 
 /// Detects cursor moves the client didn't command (§5.4 warp): the Mac's own mouse, or an app
 /// warping the cursor. The session reports every injected input with `noteInput`, and samples the
-/// real cursor location (display-relative points) at about 60 Hz with `sample`. A warp is reported
+/// real cursor location (global desktop points, on any display: nothing is clamped, since the client's
+/// cursor roams the whole desktop) at about 60 Hz with `sample`. A warp is reported
 /// when the real location differs from the last commanded one by more than `tolerance` and no input
 /// has been injected for `quietNs` (so in-flight injected moves aren't mistaken for warps).
 ///

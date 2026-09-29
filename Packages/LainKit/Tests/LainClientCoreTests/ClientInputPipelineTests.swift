@@ -338,6 +338,29 @@ let ms: UInt64 = 1_000_000
         #expect(box.messages.count == 3)
     }
 
+    @Test func snapshotTracksTheStreamedDisplay() {
+        let input = ClientInput()
+        input.configure(ack)
+        input.sync { _ in }
+        // No layout yet: the HelloAck display at (0, 0) is streamed (M2 fallback).
+        #expect(input.cursor == CursorSnapshot(x: 688, y: 516, displayPointWidth: 1376, displayPointHeight: 1032,
+                                               globalX: 688, globalY: 516, onStream: true))
+        input.applyLayout(DesktopLayoutTests.layout)
+        input.warp(x: -100, y: 500)
+        input.sync { _ in }
+        #expect(input.cursor == CursorSnapshot(x: -100, y: 500 - 1050, displayPointWidth: 1376, displayPointHeight: 1032,
+                                               globalX: -100, globalY: 500, onStream: false))
+        input.warp(x: 10, y: 1060)
+        input.sync { _ in }
+        #expect(input.cursor.onStream && input.cursor.x == 10 && input.cursor.y == 10)
+        // A layout with nothing streamed: never on stream.
+        input.applyLayout(DisplayLayout(displays: DesktopLayoutTests.layout.displays.map {
+            var d = $0; d.isStreamed = false; return d
+        }))
+        input.sync { _ in }
+        #expect(!input.cursor.onStream && input.cursor.displayPointWidth == 0 && input.cursor.globalY == 1060)
+    }
+
     @Test func callsFromTheInputQueueRunInline() {
         let input = ClientInput()
         let box = SentBox()
@@ -347,5 +370,73 @@ let ms: UInt64 = 1_000_000
             // Ran inline: already sent before this block returns.
             #expect(box.messages.count == 1)
         }
+    }
+}
+
+/// `DisplayLayout` on the pipeline: the cursor roams the Mac's desktop in global points.
+@Suite struct DesktopLayoutTests {
+    /// Main at (0, 0), the streamed iPad display below it, a side monitor to the left.
+    static let layout = DisplayLayout(displays: [
+        .init(displayID: 1, x: 0, y: 0, width: 1680, height: 1050, isStreamed: false),
+        .init(displayID: 9, x: 0, y: 1050, width: 1376, height: 1032, isStreamed: true),
+        .init(displayID: 4, x: -1920, y: 0, width: 1920, height: 1080, isStreamed: false),
+    ])
+
+    func pipeline() -> Recorder {
+        let r = Recorder()
+        r.pipeline.curve = AccelerationCurve(sensitivity: 1, acceleration: 0)
+        return r
+    }
+
+    @Test func withoutALayoutTheHelloAckDisplayIsTheDesktop() {
+        let p = pipeline().pipeline
+        #expect(!p.hasLayout)
+        #expect(p.pointer.displays == [DesktopDisplay(x: 0, y: 0, width: 1376, height: 1032)])
+        #expect(p.streamedDisplay == DesktopDisplay(x: 0, y: 0, width: 1376, height: 1032))
+        #expect(p.cursorOnStream)
+    }
+
+    @Test func firstLayoutRecentresOnTheStreamedDisplayAndMovesAreGlobal() {
+        let r = pipeline()
+        let p = r.pipeline
+        p.applyLayout(Self.layout)
+        #expect(p.hasLayout && p.pointer.displays.count == 3)
+        #expect(p.streamedDisplay == DesktopDisplay(x: 0, y: 1050, width: 1376, height: 1032))
+        #expect(p.pointer.x == 688 && p.pointer.y == 1050 + 516 && p.cursorOnStream)
+        // Up 600 pt crosses onto main; the move carries global coordinates.
+        p.mouseMoved(dx: 0, dy: 600, at: 0)
+        #expect(r.moves.last == PointerMove(x: 688, y: 1566 - 600, dx: 0, dy: -600, buttons: 0))
+        #expect(!p.cursorOnStream && p.pointer.displayIndex == 0)
+        // Left 1000 pt onto the side monitor; clicks there are global too.
+        p.mouseMoved(dx: -1000, dy: 0, at: 8 * ms)
+        p.mouseButton(.left, isDown: true, at: 10 * ms)
+        #expect(r.buttons.last.map { $0.x == -312 && $0.y == 966 } == true)
+        #expect(p.pointer.displayIndex == 2)
+    }
+
+    @Test func laterLayoutsKeepOrSnapThePosition() {
+        let p = pipeline().pipeline
+        p.applyLayout(Self.layout)
+        p.warp(x: -500, y: 200)
+        // The iPad display moves to the right of main (the owner rearranged): the cursor stays put.
+        var moved = Self.layout
+        moved.displays[1].x = 1680
+        moved.displays[1].y = 0
+        p.applyLayout(moved)
+        #expect(p.pointer.x == -500 && p.pointer.y == 200 && !p.cursorOnStream)
+        #expect(p.streamedDisplay == DesktopDisplay(x: 1680, y: 0, width: 1376, height: 1032))
+        // The side monitor goes away: snap onto main's left edge.
+        p.applyLayout(DisplayLayout(displays: Array(moved.displays.prefix(2))))
+        #expect(p.pointer.x == 0 && p.pointer.y == 200)
+        // An empty layout is ignored.
+        p.applyLayout(DisplayLayout(displays: []))
+        #expect(p.pointer.displays.count == 2)
+    }
+
+    @Test func aNewHelloAckForgetsTheLayout() {
+        let p = pipeline().pipeline
+        p.applyLayout(Self.layout)
+        p.configure(ack)
+        #expect(!p.hasLayout && p.pointer.displays.count == 1 && p.pointer.x == 688 && p.pointer.y == 516)
     }
 }

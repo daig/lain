@@ -4,18 +4,40 @@ import LainProtocol
 import LainTelemetry
 import Synchronization
 
-/// Where the client cursor is, in Mac display points, for drawing it locally (§6.3).
+/// Where the client cursor is, for drawing it locally (§6.3). The cursor roams the Mac's whole desktop
+/// (global points); the renderer draws it only while `onStream`, at (`x`, `y`) within the streamed
+/// display of `displayPointWidth`×`displayPointHeight` points.
 public struct CursorSnapshot: Sendable, Equatable {
+    /// Relative to the streamed display's top-left, in points. Outside `0..<size` while off it.
     public var x: Double
     public var y: Double
+    /// The streamed display's size in points (0 if the layout marks none).
     public var displayPointWidth: Double
     public var displayPointHeight: Double
+    /// Global desktop position in points (the main display's top-left is (0, 0)).
+    public var globalX: Double
+    public var globalY: Double
+    /// The cursor is on the streamed display.
+    public var onStream: Bool
 
-    public init(x: Double, y: Double, displayPointWidth: Double, displayPointHeight: Double) {
+    /// Without globals the streamed display is taken to be at (0, 0) (the single-display case), and
+    /// `onStream` is computed from the size.
+    public init(x: Double, y: Double, displayPointWidth: Double, displayPointHeight: Double,
+                globalX: Double? = nil, globalY: Double? = nil, onStream: Bool? = nil) {
         self.x = x
         self.y = y
         self.displayPointWidth = displayPointWidth
         self.displayPointHeight = displayPointHeight
+        self.globalX = globalX ?? x
+        self.globalY = globalY ?? y
+        self.onStream = onStream ?? (x >= 0 && y >= 0 && x < displayPointWidth && y < displayPointHeight)
+    }
+
+    /// From a global position and the streamed display's global bounds (nil: none streamed).
+    public init(globalX: Double, globalY: Double, streamed: DesktopDisplay?) {
+        let s = streamed ?? DesktopDisplay(x: 0, y: 0, width: 0, height: 0)
+        self.init(x: globalX - s.x, y: globalY - s.y, displayPointWidth: s.width, displayPointHeight: s.height,
+                  globalX: globalX, globalY: globalY)
     }
 }
 
@@ -31,6 +53,9 @@ public final class ClientInput: @unchecked Sendable {
     private let onQueueKey = DispatchSpecificKey<UInt8>()
     private let cursorX = Atomic<UInt64>(0)
     private let cursorY = Atomic<UInt64>(0)
+    /// The streamed display's global bounds (width 0: none).
+    private let streamX = Atomic<UInt64>(0)
+    private let streamY = Atomic<UInt64>(0)
     private let displayW = Atomic<UInt64>(0)
     private let displayH = Atomic<UInt64>(0)
 
@@ -59,6 +84,14 @@ public final class ClientInput: @unchecked Sendable {
     public func configure(_ ack: HelloAck) {
         perform {
             self.pipeline.configure(ack)
+            self.publishCursor()
+        }
+    }
+
+    /// `DisplayLayout` from the Mac: the cursor's desktop and the streamed display.
+    public func applyLayout(_ layout: DisplayLayout) {
+        perform {
+            self.pipeline.applyLayout(layout)
             self.publishCursor()
         }
     }
@@ -152,12 +185,18 @@ public final class ClientInput: @unchecked Sendable {
 
     // MARK: Reading
 
-    /// The latest cursor position and display size. Lock-free; safe from any thread.
+    /// The latest cursor position and streamed display. Lock-free and allocation-free; safe from any
+    /// thread (the render loop). Fields are loaded one by one, so a read racing a layout change may mix
+    /// old and new values for one frame.
     public var cursor: CursorSnapshot {
-        CursorSnapshot(x: Double(bitPattern: cursorX.load(ordering: .relaxed)),
-                       y: Double(bitPattern: cursorY.load(ordering: .relaxed)),
-                       displayPointWidth: Double(bitPattern: displayW.load(ordering: .relaxed)),
-                       displayPointHeight: Double(bitPattern: displayH.load(ordering: .relaxed)))
+        let w = Double(bitPattern: displayW.load(ordering: .relaxed))
+        let h = Double(bitPattern: displayH.load(ordering: .relaxed))
+        let streamed = w > 0 && h > 0
+            ? DesktopDisplay(x: Double(bitPattern: streamX.load(ordering: .relaxed)),
+                             y: Double(bitPattern: streamY.load(ordering: .relaxed)), width: w, height: h)
+            : nil
+        return CursorSnapshot(globalX: Double(bitPattern: cursorX.load(ordering: .relaxed)),
+                              globalY: Double(bitPattern: cursorY.load(ordering: .relaxed)), streamed: streamed)
     }
 
     /// Runs `body` on the queue and waits (tests and diagnostics only; never from `queue`).
@@ -180,7 +219,10 @@ public final class ClientInput: @unchecked Sendable {
     private func publishCursor() {
         cursorX.store(pipeline.pointer.x.bitPattern, ordering: .relaxed)
         cursorY.store(pipeline.pointer.y.bitPattern, ordering: .relaxed)
-        displayW.store(pipeline.pointer.width.bitPattern, ordering: .relaxed)
-        displayH.store(pipeline.pointer.height.bitPattern, ordering: .relaxed)
+        let s = pipeline.streamedDisplay ?? DesktopDisplay(x: 0, y: 0, width: 0, height: 0)
+        streamX.store(s.x.bitPattern, ordering: .relaxed)
+        streamY.store(s.y.bitPattern, ordering: .relaxed)
+        displayW.store(s.width.bitPattern, ordering: .relaxed)
+        displayH.store(s.height.bitPattern, ordering: .relaxed)
     }
 }

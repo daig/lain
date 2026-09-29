@@ -6,7 +6,8 @@ import Synchronization
 
 /// The client's session (§6.1), superseding `ClientEndpoint` for the app: the loopback listener the Mac
 /// dials, `Hello` on each new link, `HelloAck` applied to the input pipeline, input out on the
-/// realtime channel, `CursorWarp` in, ping/pong, and frame acks (so `--bench usbmux` keeps working).
+/// realtime channel (global desktop points), `DisplayLayout` and `CursorWarp` in, ping/pong, and frame
+/// acks (so `--bench usbmux` keeps working).
 ///
 /// Invariant 4: when a link closes, or a new link replaces it, the pipeline forgets everything held
 /// locally (the host releases on its side when the link drops).
@@ -14,6 +15,8 @@ public final class ClientSession: Sendable {
     public struct ConnectionInfo: Sendable, Equatable {
         public var displayPointWidth: UInt32 = 0
         public var displayPointHeight: UInt32 = 0
+        /// Displays in the Mac's desktop (`DisplayLayout`); 1 until one arrives.
+        public var displayCount = 1
         public var macInputSource = ""
         public var framesReceived = 0
         /// `HelloAck` arrived and was applied; input flows.
@@ -73,6 +76,18 @@ public final class ClientSession: Sendable {
                         i.isConfigured = true
                     }
                     publish()
+                case .displayLayout(let layout):
+                    // The full desktop: the cursor roams every display; the streamed one sets the size.
+                    guard current.isCurrent(link) else { return }
+                    input.applyLayout(layout)
+                    if let s = layout.displays.first(where: \.isStreamed) {
+                        info.withLock { i in
+                            i.displayPointWidth = UInt32(max(s.width, 0).rounded())
+                            i.displayPointHeight = UInt32(max(s.height, 0).rounded())
+                            i.displayCount = layout.displays.count
+                        }
+                        publish()
+                    }
                 case .cursorWarp(let w):
                     input.warp(x: w.x, y: w.y)
                 case .cursorShape, .cursorSelect:

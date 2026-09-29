@@ -20,31 +20,41 @@ import Testing
 /// same calls are replayed on a standalone pipeline (the oracle): the host's sink must receive exactly
 /// the oracle's input messages, in order.
 @Suite(.serialized) struct InputLoopbackTests {
-    static let display = HostDisplay(displayID: 1, origin: CGPoint(x: 100, y: 50), pointSize: CGSize(width: 1512, height: 982))
+    /// The stand-in Mac's desktop (global points): main 1680×1050 at (0, 0), the streamed iPad display
+    /// 1376×1032 below it at (0, 1050), and a 1920×1080 monitor to the left of main.
+    static let layout = DisplayLayout(displays: [
+        .init(displayID: 1, x: 0, y: 0, width: 1680, height: 1050, isStreamed: false),
+        .init(displayID: 9, x: 0, y: 1050, width: 1376, height: 1032, isStreamed: true),
+        .init(displayID: 4, x: -1920, y: 0, width: 1920, height: 1080, isStreamed: false),
+    ])
+    static let display = HostDisplay(displayID: 9, origin: CGPoint(x: 0, y: 1050), pointSize: CGSize(width: 1376, height: 1032))
     static let settings = HostInputSettings(doubleClickIntervalMs: 500, keyRepeatDelayMs: 225, keyRepeatIntervalMs: 30,
                                             inputSourceID: "com.apple.keylayout.Colemak")
     static let hello = Hello(deviceModel: "iPad16,6", pixelWidth: 2752, pixelHeight: 2064, scale: 2, maxRefreshRate: 120,
                              decodeCapabilities: [.hevcMain], keyboardType: .ansi)
-    /// The Mac's real cursor at connect, global points → (300, 250) display-relative.
-    static let startCursor = CGPoint(x: 400, y: 300)
+    /// The Mac's real cursor at connect, global points: (300, 250) on the streamed display.
+    static let startCursor = CGPoint(x: 300, y: 1300)
     static let keyA = PhysicalKey(page: PhysicalKey.keyboardPage, usage: 0x04)
     static let keyB = PhysicalKey(page: PhysicalKey.keyboardPage, usage: 0x05)
 
     // MARK: Fakes
 
-    /// The Mac: records sink calls and moves its cursor where injected pointer events put it.
+    /// The Mac: records sink calls and moves its cursor where injected pointer events put it (global
+    /// points, as `InputInjector` posts them).
     final class VirtualMac: InputSink, DisplayProvider {
         enum Call: Equatable, Sendable {
             case key(KeyEvent), move(PointerMove), button(PointerButton), scroll(Scroll), releaseAll
-            case displayOrigin(CGPoint), keyboardType(KeyboardType)
+            case keyboardType(KeyboardType)
         }
 
         let display: HostDisplay
-        private struct State { var calls: [Call] = []; var origin = CGPoint.zero; var cursor: CGPoint }
+        let layout: DisplayLayout
+        private struct State { var calls: [Call] = []; var cursor: CGPoint }
         private let state: Mutex<State>
 
-        init(display: HostDisplay, cursor: CGPoint) {
+        init(display: HostDisplay, layout: DisplayLayout, cursor: CGPoint) {
             self.display = display
+            self.layout = layout
             state = Mutex(State(cursor: cursor))
         }
 
@@ -52,7 +62,7 @@ import Testing
         var inputCalls: [Call] {
             calls.filter {
                 switch $0 {
-                case .displayOrigin, .keyboardType: false
+                case .keyboardType: false
                 default: true
                 }
             }
@@ -64,23 +74,21 @@ import Testing
         func move(_ m: PointerMove) {
             state.withLock { s in
                 s.calls.append(.move(m))
-                s.cursor = CGPoint(x: s.origin.x + m.x, y: s.origin.y + m.y)
+                s.cursor = CGPoint(x: m.x, y: m.y)
             }
         }
         func button(_ b: PointerButton) {
             state.withLock { s in
                 s.calls.append(.button(b))
-                s.cursor = CGPoint(x: s.origin.x + b.x, y: s.origin.y + b.y)
+                s.cursor = CGPoint(x: b.x, y: b.y)
             }
         }
         func scroll(_ s: Scroll) { state.withLock { $0.calls.append(.scroll(s)) } }
         func releaseAll() { state.withLock { $0.calls.append(.releaseAll) } }
-        func setDisplayOrigin(_ origin: CGPoint) {
-            state.withLock { $0.calls.append(.displayOrigin(origin)); $0.origin = origin }
-        }
         func setKeyboardType(_ type: KeyboardType) { state.withLock { $0.calls.append(.keyboardType(type)) } }
 
         func targetDisplay() -> HostDisplay { display }
+        func desktopLayout() -> DisplayLayout { layout }
         func cursorLocation() -> CGPoint? { state.withLock { $0.cursor } }
     }
 
@@ -116,7 +124,8 @@ import Testing
     // MARK: Rig
 
     final class Rig {
-        let mac = VirtualMac(display: InputLoopbackTests.display, cursor: InputLoopbackTests.startCursor)
+        let mac = VirtualMac(display: InputLoopbackTests.display, layout: InputLoopbackTests.layout,
+                             cursor: InputLoopbackTests.startCursor)
         let power = FakePower()
         let hostSecrets = CountingSecrets()
         let clientSecrets = CountingSecrets()
@@ -193,23 +202,30 @@ import Testing
         defer { rig.tearDown() }
         rig.host.start()
 
-        // Handshake: pairing, Hello → HelloAck, bounds applied on the client, first warp to the Mac cursor.
+        // Handshake: pairing, Hello → HelloAck, the desktop layout, first warp to the Mac cursor.
         #expect(await eventually { rig.clientConfigured })
+        #expect(await eventually {
+            if case .connected(let i) = rig.clientStatus.last { i.displayCount == 3 } else { false }
+        })
         guard case .connected(let info) = rig.clientStatus.last else { Issue.record("not connected"); return }
-        #expect(info.displayPointWidth == 1512 && info.displayPointHeight == 982)
+        #expect(info.displayPointWidth == 1376 && info.displayPointHeight == 1032)
         #expect(info.macInputSource == "com.apple.keylayout.Colemak")
         #expect(await eventually { rig.hostStatus.last == .connected(deviceModel: "iPad16,6") })
         #expect(rig.power.holding)
-        #expect(rig.mac.calls.prefix(2) == [.keyboardType(.ansi), .displayOrigin(CGPoint(x: 100, y: 50))])
+        #expect(rig.mac.calls.first == .keyboardType(.ansi))
         #expect(rig.hostSecrets.writeCount == 1 && rig.clientSecrets.writeCount == 1)   // paired once
-        #expect(await eventually { rig.client.input.cursor.x == 300 && rig.client.input.cursor.y == 250 })
-        #expect(rig.client.input.cursor.displayPointWidth == 1512 && rig.client.input.cursor.displayPointHeight == 982)
+        #expect(await eventually { rig.client.input.cursor.globalX == 300 && rig.client.input.cursor.globalY == 1300 })
+        let start = rig.client.input.cursor
+        #expect(start.x == 300 && start.y == 250 && start.onStream)
+        #expect(start.displayPointWidth == 1376 && start.displayPointHeight == 1032)
         rig.client.input.sync { p in
-            #expect(p.isConfigured && p.pointer.width == 1512 && p.pointer.height == 982)
+            #expect(p.isConfigured && p.hasLayout && p.pointer.displays.count == 3)
+            #expect(p.streamedDisplay == DesktopDisplay(x: 0, y: 1050, width: 1376, height: 1032))
             #expect(p.keyRepeat.delayNs == 225_000_000 && p.keyRepeat.intervalNs == 30_000_000)
         }
         rig.oracle.configure(.host(display: Self.display, settings: Self.settings))
-        rig.oracle.warp(x: 300, y: 250)
+        rig.oracle.applyLayout(Self.layout)
+        rig.oracle.warp(x: 300, y: 1300)
 
         let t0 = MonotonicClock.now()
         func at(_ ms: Double) -> UInt64 { t0 + UInt64(ms * 1e6) }
@@ -269,7 +285,7 @@ import Testing
         let moves = pointer.compactMap { if case .move(let m) = $0 { m } else { nil } }
         let buttons = pointer.compactMap { if case .button(let b) = $0 { b } else { nil } }
         #expect(moves.count == 4)
-        #expect(moves[0].x > 300 && moves[0].y < 250)             // right and up
+        #expect(moves[0].x > 300 && moves[0].y < 1300)            // right and up, global points
         #expect(moves[1].buttons == 0 && moves[2].buttons == 1 && moves[3].buttons == 1)   // drag
         #expect(moves[3].y > moves[1].y)                            // dragged down
         #expect(buttons.map(\.clickCount) == [1, 1, 1, 1, 2, 2, 1, 1])
@@ -314,11 +330,46 @@ import Testing
         }
         await expectSink(rig, from: mark, zoom(0x2E) + zoom(0x2D))
 
-        // 5. The Mac's own mouse moves the cursor: the client follows (CursorWarp, §5.4).
-        #expect(rig.mac.cursorLocation() == CGPoint(x: 100 + moves[3].x, y: 50 + moves[3].y))
-        rig.mac.setCursor(global: CGPoint(x: 1100, y: 650))
-        #expect(await eventually { rig.client.input.cursor.x == 1000 && rig.client.input.cursor.y == 600 })
-        rig.oracle.warp(x: 1000, y: 600)
+        // 5. The Mac's own mouse moves the cursor, onto the side monitor: the client follows (CursorWarp,
+        //    §5.4, global) and stops drawing its cursor (off the streamed display).
+        #expect(rig.mac.cursorLocation() == CGPoint(x: moves[3].x, y: moves[3].y))   // injected globally
+        rig.mac.setCursor(global: CGPoint(x: -1000, y: 400))
+        #expect(await eventually { rig.client.input.cursor.globalX == -1000 && rig.client.input.cursor.globalY == 400 })
+        #expect(!rig.client.input.cursor.onStream)
+        rig.oracle.warp(x: -1000, y: 400)
+
+        // 5b. Full desktop: from the side monitor right onto main, then down onto the streamed display.
+        //     Injected positions are global; the client's cursor is back on the stream.
+        mark = rig.mac.inputCalls.count
+        rig.drive { p in
+            p.curve = AccelerationCurve(sensitivity: 1, acceleration: 0)
+            p.mouseMoved(dx: 1500, dy: 0, at: at(8500))
+        }
+        await expectSink(rig, from: mark, rig.expectedSinkCalls())
+        #expect(rig.mac.cursorLocation() == CGPoint(x: 500, y: 400))
+        // (`drive` calls the pipeline directly, so read its state rather than the published snapshot.)
+        rig.client.input.sync { #expect($0.pointer.displayIndex == 0 && !$0.cursorOnStream) }   // on main
+        mark = rig.mac.inputCalls.count
+        rig.drive { p in
+            p.mouseMoved(dx: 0, dy: -1000, at: at(8510))
+            p.mouseButton(.left, isDown: true, at: at(8520))
+            p.mouseButton(.left, isDown: false, at: at(8530))
+        }
+        let crossed = rig.expectedSinkCalls()
+        await expectSink(rig, from: mark, crossed)
+        #expect(crossed.first == .move(PointerMove(x: 500, y: 1400, dx: 0, dy: 1000, buttons: 0)))
+        #expect(rig.mac.cursorLocation() == CGPoint(x: 500, y: 1400))
+        rig.client.input.sync { #expect($0.pointer.displayIndex == 1 && $0.cursorOnStream) }
+        // The published snapshot (what the renderer reads) agrees once the input queue publishes it.
+        rig.client.input.warp(x: 500, y: 1400)
+        rig.client.input.sync { _ in }
+        let onPad = rig.client.input.cursor
+        #expect(onPad.onStream && onPad.x == 500 && onPad.y == 350)
+        // A warp on main (an app moved the cursor there) reaches the client too.
+        rig.mac.setCursor(global: CGPoint(x: 1600, y: 20))
+        #expect(await eventually { rig.client.input.cursor.globalX == 1600 && rig.client.input.cursor.globalY == 20 })
+        #expect(!rig.client.input.cursor.onStream)
+        rig.oracle.warp(x: 1600, y: 20)
 
         // 6. Detach with a key, a modifier and a button held (invariant 4).
         mark = rig.mac.inputCalls.count

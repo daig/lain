@@ -117,6 +117,43 @@ let hello = Hello(deviceModel: "iPad16,6", pixelWidth: 2752, pixelHeight: 2064, 
         #expect(frameAck.map { if case .frameAck(let a) = $0 { a.frameId == 7 && a.bytes == 3 } else { false } } == true)
     }
 
+    @Test func displayLayoutGivesTheCursorTheWholeDesktop() async throws {
+        let statuses = Inbox<ClientSession.Status>()
+        let session = try ClientSession(port: 0, secrets: InMemorySecretStore(), hello: hello) { statuses.put($0) }
+        defer { session.stop() }
+        _ = await statuses.next()
+        let (link, _, _) = try await HostLink.open(dialer: LoopbackDialer(port: session.port),
+                                                   secrets: InMemorySecretStore(), peerID: "IPAD", allowPairing: true)
+        defer { link.close() }
+        let received = Inbox<Message>()
+        link.realtime.setHandler { received.put($0.message) }
+        link.realtime.send(.helloAck(ack))
+        let layout = DisplayLayout(displays: [
+            .init(displayID: 1, x: 0, y: 0, width: 1680, height: 1050, isStreamed: false),
+            .init(displayID: 9, x: 0, y: 1050, width: 1376, height: 1032, isStreamed: true),
+        ])
+        link.realtime.send(.displayLayout(layout))
+        let applied = await statuses.first { if case .connected(let i) = $0 { i.displayCount == 2 } else { false } }
+        guard case .connected(let info) = applied else { Issue.record("layout not applied"); return }
+        #expect(info.displayPointWidth == 1376 && info.displayPointHeight == 1032)
+        session.input.sync { _ in }
+        // Recentred on the streamed display, in global points.
+        let c = session.input.cursor
+        #expect(c.globalX == 688 && c.globalY == 1050 + 516 && c.x == 688 && c.y == 516 && c.onStream)
+
+        // A warp onto main: off the stream, and the next move goes out in global points.
+        link.realtime.send(.cursorWarp(CursorWarp(x: 500, y: 300)))
+        link.realtime.send(.ping(Ping(id: 1, sentAtNs: 1)))   // handled after the warp was queued
+        _ = await received.first { if case .pong = $0 { true } else { false } }
+        session.input.sync { _ in }
+        #expect(session.input.cursor.globalX == 500 && session.input.cursor.globalY == 300)
+        #expect(!session.input.cursor.onStream && session.input.cursor.y == 300 - 1050)
+        session.input.mouseMoved(dx: 0, dy: -5)
+        let move = await received.first { if case .pointerMove = $0 { true } else { false } }
+        guard case .pointerMove(let m) = move else { Issue.record("no move"); return }
+        #expect(m.x == 500 && m.y > 300)
+    }
+
     @Test func disconnectReleasesLocallyAndStopsSending() async throws {
         let statuses = Inbox<ClientSession.Status>()
         let session = try ClientSession(port: 0, secrets: InMemorySecretStore(), hello: hello) { statuses.put($0) }

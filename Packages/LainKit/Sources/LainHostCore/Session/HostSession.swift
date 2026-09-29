@@ -23,10 +23,11 @@ import LainTransport
 import LainUSBMux
 import Synchronization
 
-/// The M2 host runtime (§5.7): watches usbmuxd, dials lain on an attached iPad, answers `Hello`,
-/// routes the client's input into the `InputSink`, answers pings, reflects cursor warps (§5.4) and
-/// holds the display awake while connected (§5.5 Power). Reconnects on its own when the client comes
-/// back (app relaunched, cable replugged).
+/// The host runtime (§5.7): watches usbmuxd, dials lain on an attached iPad, answers `Hello`, sends
+/// the desktop's `DisplayLayout` (right after `HelloAck`, and again whenever the arrangement changes),
+/// routes the client's input into the `InputSink` (global points), answers pings, reflects cursor
+/// warps (§5.4, global) and holds the display awake while connected (§5.5 Power). Reconnects on its
+/// own when the client comes back (app relaunched, cable replugged).
 ///
 /// Invariant 3/4: input is handled synchronously on the realtime connection's queue (no awaits, one
 /// uncontended lock per message); every session end (link close, USB detach, `stop()`) calls
@@ -43,7 +44,7 @@ public final class HostSession: Sendable {
         public var now: @Sendable () -> UInt64
 
         public init(usbmux: USBMuxClient = USBMuxClient(), secrets: any SecretStore = KeychainSecretStore(),
-                    sink: any InputSink, display: any DisplayProvider = MainDisplayProvider(),
+                    sink: any InputSink, display: any DisplayProvider = DisplayLayoutProvider.system(),
                     power: any PowerAssertions = IOPMPowerAssertions(),
                     settings: @escaping @Sendable () -> HostInputSettings = { .current },
                     now: @escaping @Sendable () -> UInt64 = { MonotonicClock.now() }) {
@@ -70,9 +71,10 @@ public final class HostSession: Sendable {
         /// `declareUserActivity` at most this often (§5.5 Power).
         public var userActivityIntervalNs: UInt64 = 1_000_000_000
         public var warp = CursorWarpDetector()
-        /// How often a live session re-reads the target display; a change (resolution, arrangement,
-        /// main display) ends the session so it redials with fresh bounds in `HelloAck`.
-        public var displayCheckIntervalNs: UInt64 = 1_000_000_000
+        /// How often a live session re-reads the display arrangement (off the realtime queue); a change
+        /// (resolution, arrangement, displays added or removed, which one is streamed) is sent as a new
+        /// `DisplayLayout`, and the session goes on.
+        public var displayCheckIntervalNs: UInt64 = 500_000_000
         /// Tests only: runs in `run()` right after the connection is registered.
         var afterRegistering: (@Sendable () -> Void)?
         public init() {}
@@ -268,7 +270,6 @@ public final class HostSession: Sendable {
         }
         let display = deps.display.targetDisplay()
         deps.sink.setKeyboardType(hello.keyboardType)
-        deps.sink.setDisplayOrigin(display.origin)
         let connection = HostConnection(link: link, display: display, deps: deps, tuning: tuning)
         let registered = state.withLock { s -> Bool in
             guard !s.stopped, !Task.isCancelled, s.device?.generation == generation else { return false }
@@ -282,6 +283,7 @@ public final class HostSession: Sendable {
         // assertion is only taken by a connection that will also release it.
         if connection.start() {
             link.realtime.send(.helloAck(.host(display: display, settings: deps.settings())))
+            connection.sendLayoutIfChanged()   // the first one always goes
             setStatus(.connected(deviceModel: hello.deviceModel), generation: generation)
             await withTaskCancellationHandler {
                 await connection.run()
@@ -305,7 +307,7 @@ public final class HostSession: Sendable {
     }
 }
 
-/// One live link: the realtime handler, the warp sampler and teardown. Everything that touches the
+/// One live link: the realtime handler, the warp sampler, layout updates and teardown. Everything that touches the
 /// sink happens under `rt`, which only the realtime queue takes (teardown aside), so input handling
 /// is uncontended and no input can slip in after `releaseAll`.
 final class HostConnection: Sendable {
@@ -320,13 +322,16 @@ final class HostConnection: Sendable {
         var router: HostInputRouter
         var warp: CursorWarpDetector
         var lastActivityNs: UInt64?
-        var lastDisplayCheckNs: UInt64?
         /// This connection took the display-sleep assertion (`start()`), so `finish()` must drop it.
         var holdsPower = false
         var finished = false
     }
     private let rt: Mutex<Realtime>
-    private let timer: Mutex<(any DispatchSourceTimer)?> = Mutex(nil)
+    /// The warp sampler (realtime queue) and the layout check (`layoutQueue`).
+    private let timers: Mutex<[any DispatchSourceTimer]> = Mutex([])
+    private let layoutQueue = DispatchQueue(label: "lain.host.layout", qos: .utility)
+    /// The last `DisplayLayout` sent; taken only by the handshake and the layout check.
+    private let lastLayout = Mutex<DisplayLayout?>(nil)
     /// Set once the realtime connection has closed or the session was finished; `waiter` is `run()`.
     private let ended = Mutex<(done: Bool, waiter: CheckedContinuation<Void, Never>?)>((false, nil))
 
@@ -370,7 +375,7 @@ final class HostConnection: Sendable {
                     link.realtime.queue.asyncAfter(deadline: .now() + 0.2) { link.close() }
                 }
             }
-            startWarpSampler()
+            startTimers()
         }
     }
 
@@ -384,9 +389,9 @@ final class HostConnection: Sendable {
 
     /// Idempotent teardown: stop sampling, close the link, release everything, drop the assertion.
     func finish() {
-        timer.withLock { t in
-            t?.cancel()
-            t = nil
+        timers.withLock { t in
+            for timer in t { timer.cancel() }
+            t = []
         }
         link.close()
         let endPower = rt.withLock { s -> Bool in
@@ -436,47 +441,55 @@ final class HostConnection: Sendable {
         if declare { activityQueue.async { [deps] in deps.power.declareUserActivity() } }
     }
 
-    private func startWarpSampler() {
-        let source = DispatchSource.makeTimerSource(queue: link.realtime.queue)
+    private func startTimers() {
+        let sampler = DispatchSource.makeTimerSource(queue: link.realtime.queue)
         let interval = 1.0 / max(tuning.cursorSampleHz, 1)
-        source.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(2))
-        source.setEventHandler { [self] in sampleCursor() }
-        let started = timer.withLock { t -> Bool in
+        sampler.schedule(deadline: .now() + interval, repeating: interval, leeway: .milliseconds(2))
+        sampler.setEventHandler { [self] in sampleCursor() }
+        // The arrangement is re-read off the realtime queue so input never waits behind CoreGraphics.
+        let layout = DispatchSource.makeTimerSource(queue: layoutQueue)
+        let check = Double(max(tuning.displayCheckIntervalNs, 1_000_000)) / 1e9
+        layout.schedule(deadline: .now() + check, repeating: check, leeway: .milliseconds(20))
+        layout.setEventHandler { [self] in sendLayoutIfChanged() }
+        let started = timers.withLock { t -> Bool in
             guard !ended.withLock({ $0.done }) else { return false }
-            t = source
+            t = [sampler, layout]
             return true
         }
-        if started { source.resume() }
+        if started {
+            sampler.resume()
+            layout.resume()
+        }
     }
 
+    /// The real cursor in global points, anywhere on the desktop: a warp for the client when it moved on
+    /// its own (§5.4).
     private func sampleCursor() {
-        if displayChanged() {
-            log.notice("display changed; ending the session to reconnect with the new bounds")
-            link.close()
-            return
-        }
         guard let global = deps.display.cursorLocation() else { return }
-        let local = CGPoint(x: min(max(global.x - display.origin.x, 0), display.pointSize.width),
-                            y: min(max(global.y - display.origin.y, 0), display.pointSize.height))
         let now = deps.now()
         let warp = rt.withLock { s -> CGPoint? in
             guard !s.finished else { return nil }
-            return s.warp.sample(local, atNs: now)
+            return s.warp.sample(global, atNs: now)
         }
         if let warp { link.realtime.send(.cursorWarp(CursorWarp(x: warp.x, y: warp.y))) }
     }
 
-    /// Re-reads the target display every `displayCheckIntervalNs` (the client's cursor space and the
-    /// injector's origin come from the bounds at connect).
-    private func displayChanged() -> Bool {
-        let now = deps.now()
-        let due = rt.withLock { s -> Bool in
-            guard !s.finished else { return false }
-            if let last = s.lastDisplayCheckNs, now < last &+ tuning.displayCheckIntervalNs { return false }
-            s.lastDisplayCheckNs = now
-            return true
+    // MARK: Layout
+
+    /// Sends the desktop's `DisplayLayout` if it differs from the last one sent (the first always
+    /// goes). A resolution change, a display added or removed, a new arrangement or a new streamed
+    /// display just updates the client, which re-clamps its cursor; the session goes on.
+    func sendLayoutIfChanged() {
+        let layout = deps.display.desktopLayout()
+        guard !layout.displays.isEmpty else { return }
+        lastLayout.withLock { last in
+            guard layout != last, !ended.withLock({ $0.done }) else { return }
+            if last != nil {
+                log.notice("display arrangement changed: \(layout.displays.count) display(s); sending the new layout")
+            }
+            last = layout
+            link.realtime.send(.displayLayout(layout))
         }
-        return due && deps.display.targetDisplay() != display
     }
 }
 #endif
