@@ -12,7 +12,7 @@ import Synchronization
 ///
 /// Positions arrive in the streamed display's point space; `displayOrigin` maps them into the global
 /// display space (the virtual display's origin, §5.1).
-public final class InputInjector: @unchecked Sendable {
+public final class InputInjector: InputSink, @unchecked Sendable {
     public static var hasAccess: Bool { CGPreflightPostEventAccess() }
     /// Shows the Accessibility prompt the first time (§2). Returns the current state.
     @discardableResult public static func requestAccess() -> Bool { CGRequestPostEventAccess() }
@@ -33,6 +33,11 @@ public final class InputInjector: @unchecked Sendable {
     }
 
     public func setDisplayOrigin(_ origin: CGPoint) { state.withLock { $0.displayOrigin = origin } }
+
+    /// Set from the client's `Hello` at session start, before any key is posted.
+    public func setKeyboardType(_ type: KeyboardType) {
+        if let kbd = Self.cgKeyboardType(type) { source?.keyboardType = kbd }
+    }
 
     // MARK: Keys
 

@@ -1,0 +1,114 @@
+import CoreGraphics
+import Dispatch
+import LainProtocol
+import Synchronization
+@testable import LainHostCore
+
+/// Records every sink call in order.
+final class RecordingSink: InputSink {
+    enum Call: Equatable, Sendable {
+        case key(KeyEvent), move(PointerMove), button(PointerButton), scroll(Scroll), releaseAll
+        case displayOrigin(CGPoint), keyboardType(KeyboardType)
+    }
+
+    private let log = Mutex<[Call]>([])
+    var calls: [Call] { log.withLock { $0 } }
+    /// Only the input calls (keys, pointer, scroll, releaseAll).
+    var inputCalls: [Call] {
+        calls.filter {
+            switch $0 {
+            case .displayOrigin, .keyboardType: false
+            default: true
+            }
+        }
+    }
+    func clear() { log.withLock { $0.removeAll() } }
+
+    func key(_ event: KeyEvent) { log.withLock { $0.append(.key(event)) } }
+    func move(_ move: PointerMove) { log.withLock { $0.append(.move(move)) } }
+    func button(_ button: PointerButton) { log.withLock { $0.append(.button(button)) } }
+    func scroll(_ scroll: Scroll) { log.withLock { $0.append(.scroll(scroll)) } }
+    func releaseAll() { log.withLock { $0.append(.releaseAll) } }
+    func setDisplayOrigin(_ origin: CGPoint) { log.withLock { $0.append(.displayOrigin(origin)) } }
+    func setKeyboardType(_ type: KeyboardType) { log.withLock { $0.append(.keyboardType(type)) } }
+}
+
+final class RecordingPower: PowerAssertions {
+    private struct State { var holding = false; var begins = 0; var ends = 0; var activity = 0 }
+    private let state = Mutex(State())
+    var holding: Bool { state.withLock { $0.holding } }
+    var begins: Int { state.withLock { $0.begins } }
+    var ends: Int { state.withLock { $0.ends } }
+    var activityCount: Int { state.withLock { $0.activity } }
+
+    func beginPreventingDisplaySleep() { state.withLock { $0.holding = true; $0.begins += 1 } }
+    func endPreventingDisplaySleep() { state.withLock { $0.holding = false; $0.ends += 1 } }
+    func declareUserActivity() { state.withLock { $0.activity += 1 } }
+}
+
+final class FakeDisplay: DisplayProvider {
+    let display: HostDisplay
+    /// Global cursor location, or nil for "unknown" (no warps).
+    let cursor: Mutex<CGPoint?>
+
+    init(display: HostDisplay, cursor: CGPoint?) {
+        self.display = display
+        self.cursor = Mutex(cursor)
+    }
+
+    func targetDisplay() -> HostDisplay { display }
+    func cursorLocation() -> CGPoint? { cursor.withLock { $0 } }
+}
+
+/// Collects values from callbacks and lets tests await them.
+final class Inbox<T: Sendable>: Sendable {
+    private let state = Mutex<(items: [T], waiters: [CheckedContinuation<T?, Never>])>(([], []))
+
+    func put(_ v: T) {
+        let waiter = state.withLock { s -> CheckedContinuation<T?, Never>? in
+            if s.waiters.isEmpty { s.items.append(v); return nil }
+            return s.waiters.removeFirst()
+        }
+        waiter?.resume(returning: v)
+    }
+
+    /// The next value, or nil after `seconds`.
+    func next(within seconds: Double = 5) async -> T? {
+        await withCheckedContinuation { (c: CheckedContinuation<T?, Never>) in
+            let ready = state.withLock { s -> T? in
+                if !s.items.isEmpty { return s.items.removeFirst() }
+                s.waiters.append(c)
+                return nil
+            }
+            if let ready { c.resume(returning: ready); return }
+            DispatchQueue.global().asyncAfter(deadline: .now() + seconds) { [self] in
+                let timedOut = state.withLock { s -> CheckedContinuation<T?, Never>? in
+                    guard !s.waiters.isEmpty else { return nil }
+                    return s.waiters.removeFirst()
+                }
+                timedOut?.resume(returning: nil)
+            }
+        }
+    }
+
+    /// Skips values until one matches, or nil on timeout.
+    func first(within seconds: Double = 5, where match: (T) -> Bool) async -> T? {
+        let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(seconds * 1e9)
+        while DispatchTime.now().uptimeNanoseconds < deadline {
+            let left = Double(deadline - DispatchTime.now().uptimeNanoseconds) / 1e9
+            guard let v = await next(within: max(left, 0.01)) else { return nil }
+            if match(v) { return v }
+        }
+        return nil
+    }
+}
+
+/// Polls `condition` until it holds or `seconds` pass.
+func eventually(within seconds: Double = 5, _ condition: () -> Bool) async -> Bool {
+    let deadline = DispatchTime.now().uptimeNanoseconds + UInt64(seconds * 1e9)
+    while DispatchTime.now().uptimeNanoseconds < deadline {
+        if condition() { return true }
+        try? await Task.sleep(for: .milliseconds(5))
+    }
+    return condition()
+}
