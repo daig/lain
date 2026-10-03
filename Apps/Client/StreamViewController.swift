@@ -246,13 +246,14 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         if !hud.isHidden { hud.text = hudText() }
     }
 
-    /// The link first ("USB", "Wi-Fi · AWDL awdl0 · Mac mini"), then the video numbers.
+    /// The link first ("USB · Mac mini · protocol v4"), then whether the Mac's lain is older, then the
+    /// video numbers.
     private func hudText() -> String {
-        let link: String
+        var link = "no link"
         if case .session(let info) = status {
             link = ClientStatus.describe(info.transport) + (info.hostName.isEmpty ? "" : " · \(info.hostName)")
-        } else {
-            link = "no link"
+                + " · protocol v\(info.protocolVersion)"
+            if let note = ClientStatus.olderMacNote(info) { link += "\n" + note }
         }
         return link + "\n" + video.stats().hudText
     }

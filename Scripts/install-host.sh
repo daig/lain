@@ -11,8 +11,9 @@
 #                                         # (update-all.sh, after the iPad app); takes --no-wait
 #   Scripts/install-host.sh --uninstall   # unregister the agent, quit, remove the app
 # Grants (Screen Recording, Accessibility) carry over: they follow the signature, not the path.
-# Restarting the agent ends the iPad session; after a protocol change it stays down until the iPad app is
-# updated too, so on a headless Mac use Scripts/update-all.sh, which updates both back to back.
+# Restarting the agent ends the iPad session for a moment. Since protocol v3 the iPad app may be one
+# version behind (ARCHITECTURE §7.5, D31): the session comes back at its version. Further behind (or a
+# v1–v2 app) it stays down until the iPad app is updated too: on a headless Mac use Scripts/update-all.sh.
 set -euo pipefail
 self=${0:A}
 cd "${0:A:h}/.."

@@ -105,17 +105,39 @@ struct AcceptingClient<Store: SecretStore> {
     let rejected: Inbox<any Error>
     let secrets: Store
 
-    init(secrets: Store, acceptsPairing: Bool = true) throws {
+    init(secrets: Store, acceptsPairing: Bool = true, versions: VersionList? = nil) throws {
         let accepted = Inbox<AcceptedLink>(), rejected = Inbox<any Error>()
         self.accepted = accepted
         self.rejected = rejected
         self.secrets = secrets
-        listener = try ClientLinkListener(port: 0, secrets: secrets, acceptsPairing: acceptsPairing,
+        listener = try ClientLinkListener(port: 0, secrets: secrets, acceptsPairing: acceptsPairing, versions: versions,
                                           onReject: { rejected.put($0) }) { link in
             link.link.realtime.send(.hello(sampleHello))
             accepted.put(link)
         }
     }
+}
+
+/// A legacy (v1–v2) peer's first frame: a pairing `ChannelHello` in its own framing (header `version`;
+/// payload: version, kind, token, all-zero HMAC). The v3 codec can't write it.
+func legacyChannelHello(version: UInt8 = 2, kind: ConnectionKind = .realtime) -> [UInt8] {
+    let payload = [version, kind.rawValue] + ChannelAuth.randomBytes(ChannelHello.tokenSize) + ChannelAuth.pairingMAC
+    var w = ByteWriter()
+    FrameHeader(version: version, type: .channelHello, sequence: 0, timestampNs: 0,
+                payloadLength: UInt32(payload.count)).encode(into: &w)
+    return w.bytes + payload
+}
+
+/// `bytes` with its header's version byte replaced (a frame in another version's framing).
+func reframed(_ bytes: [UInt8], version: UInt8) -> [UInt8] {
+    var b = bytes
+    b[2] = version
+    return b
+}
+
+/// Version lists with fixed digests: equal fill bytes mean the same build of a version.
+func versions(_ entries: (version: UInt8, build: UInt8)...) -> VersionList {
+    VersionList(entries.map { VersionEntry(version: $0.version, digest: [UInt8](repeating: $0.build, count: 8)) })
 }
 
 /// A raw connection to a listener, started, for writing handshakes by hand.

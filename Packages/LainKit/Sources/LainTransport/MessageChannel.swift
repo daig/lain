@@ -6,14 +6,20 @@ import Synchronization
 /// channel's serial queue; while no handler is set they are buffered, so a handshake can read one
 /// message at a time without losing what follows.
 ///
-/// Bytes that don't parse close the channel. A frame in another major version is reported as the close
-/// error, `TransportError.versionMismatch(remote:)`, so a one-sided update says why instead of just
-/// dropping the link (§7.5).
+/// Every channel starts in the handshake layer: it sends and accepts only handshake frames (header
+/// version 0xFF) until `setVersion` fixes the version the link negotiated; from then on it writes every
+/// message at that version and accepts only frames in it (PROTOCOL-VERSIONING §3.2). A frame in any
+/// other version closes the channel.
+///
+/// Bytes that don't parse close the channel. A frame in a version this build doesn't implement (a
+/// legacy peer's) is reported as the close error, `TransportError.versionMismatch(remote:)`, so a
+/// one-sided update says why instead of just dropping the link.
 public final class MessageChannel: Sendable {
     public let stream: any ByteStream
     public let queue: DispatchQueue
     private let sequence = Atomic<UInt32>(0)
     private let answersVersionMismatch: Bool
+    private let log = Telemetry.logger("channel")
 
     private enum Handler {
         case none
@@ -31,16 +37,34 @@ public final class MessageChannel: Sendable {
         var parsedAny = false
         /// The parse error that is closing the channel (the stream can't be resynchronized).
         var failure: ProtocolError?
+        /// The negotiated version; nil while the channel is in the handshake layer.
+        var version: UInt8?
+        /// A frame in the wrong version that is closing the channel.
+        var violation: String?
     }
     private let state = Mutex(State())
 
-    /// - Parameter answeringVersionMismatch: an acceptor's channel (§7.7 D29): a first frame in another
-    ///   major version is answered with `Error(versionMismatch)` framed in that version, which the peer
-    ///   can parse, before the channel closes.
-    public init(stream: any ByteStream, label: String, answeringVersionMismatch: Bool = false) {
+    /// - Parameters:
+    ///   - answeringVersionMismatch: an acceptor's channel (§7.7 D29): a first frame in a version this build
+    ///     doesn't implement (a legacy peer's) is answered with `Error(versionMismatch)` framed in that
+    ///     version, which the peer can parse, before the channel closes.
+    ///   - version: the session version, for a channel that skips the handshake (tests); nil starts in the
+    ///     handshake layer.
+    public init(stream: any ByteStream, label: String, answeringVersionMismatch: Bool = false, version: UInt8? = nil) {
         self.stream = stream
         answersVersionMismatch = answeringVersionMismatch
         queue = DispatchQueue(label: label, qos: .userInteractive)
+        if let version { state.withLock { $0.version = version } }
+    }
+
+    /// The negotiated version; nil while in the handshake layer.
+    public var version: UInt8? { state.withLock { $0.version } }
+
+    /// Leaves the handshake layer: from now on messages go out, and must come in, at `version`. Call it
+    /// before reading the first session message.
+    public func setVersion(_ version: UInt8) {
+        state.withLock { $0.version = version }
+        queue.async { [self] in drain() }
     }
 
     /// Starts receiving. Messages are buffered until a handler is set.
@@ -69,10 +93,22 @@ public final class MessageChannel: Sendable {
         if let closed { queue.async { handler(closed) } }
     }
 
-    /// Frames and queues a message. Safe from any thread.
-    public func send(_ message: Message, flags: HeaderFlags? = nil) {
+    /// Frames and queues a message at the channel's version (the handshake's until `setVersion`). Safe
+    /// from any thread. A message that doesn't exist at that version isn't sent (false): callers check the
+    /// feature first (`Link.supports`), so that is a bug, asserted in Debug builds.
+    @discardableResult
+    public func send(_ message: Message, flags: HeaderFlags? = nil) -> Bool {
+        let version = state.withLock { $0.version } ?? LainProtocol.handshakeVersion
         let seq = sequence.add(1, ordering: .relaxed).oldValue
-        stream.write(MessageCodec.encode(message, sequence: seq, timestampNs: MonotonicClock.now(), flags: flags))
+        switch MessageCodec.lower(message, to: version, sequence: seq, timestampNs: MonotonicClock.now(), flags: flags) {
+        case .exact(let bytes), .projected(let bytes, _):
+            stream.write(bytes)
+            return true
+        case .unrepresentable(let why):
+            log.fault("not sent: \(why, privacy: .public)")
+            assertionFailure("not sent: \(why)")
+            return false
+        }
     }
 
     public func close() { stream.close() }
@@ -117,29 +153,49 @@ public final class MessageChannel: Sendable {
         drain()
         guard let failed else { return }
         if answersVersionMismatch, failed.first, case .versionMismatch(let remote) = failed.error {
-            let why = ErrorMessage(code: .versionMismatch, message: "lain here speaks protocol v\(LainProtocol.majorVersion)")
-            stream.write(MessageCodec.encode(.error(why), sequence: sequence.add(1, ordering: .relaxed).oldValue,
-                                             timestampNs: MonotonicClock.now(), version: remote))
+            let why = "lain here speaks protocol \(VersionList.supported)"
+            stream.write(MessageCodec.legacyVersionMismatch(remote: remote, why: why,
+                                                            sequence: sequence.add(1, ordering: .relaxed).oldValue,
+                                                            timestampNs: MonotonicClock.now()))
         }
         stream.close()   // after the answer: close sends what is queued first
     }
 
-    /// Runs on `queue`: hands buffered messages to the handler.
+    /// Runs on `queue`: hands buffered messages to the handler. Each frame's version is checked as it's
+    /// handed over, so a version fixed by `setVersion` after the previous frame applies to the next.
     private func drain() {
+        enum Next { case deliver(Envelope, @Sendable (Envelope) -> Void), violation(String) }
         while true {
-            let next = state.withLock { s -> (Envelope, @Sendable (Envelope) -> Void)? in
-                guard !s.pending.isEmpty else { return nil }
+            let next = state.withLock { s -> Next? in
+                guard s.violation == nil, let env = s.pending.first else { return nil }
+                let handler: @Sendable (Envelope) -> Void
                 switch s.handler {
                 case .none: return nil
-                case .once(let h):
-                    s.handler = .none
-                    return (s.pending.removeFirst(), h)
-                case .always(let h):
-                    return (s.pending.removeFirst(), h)
+                case .once(let h): handler = h
+                case .always(let h): handler = h
                 }
+                let expected = s.version ?? LainProtocol.handshakeVersion
+                guard env.header.version == expected else {
+                    let why = "a \(env.header.type) frame in v\(env.header.version) on a channel at "
+                        + (s.version.map { "v\($0)" } ?? "the handshake")
+                    s.violation = why
+                    s.pending.removeAll()
+                    return .violation(why)
+                }
+                if case .once = s.handler { s.handler = .none }
+                s.pending.removeFirst()
+                return .deliver(env, handler)
             }
-            guard let (env, handler) = next else { return }
-            handler(env)
+            switch next {
+            case nil:
+                return
+            case .deliver(let env, let handler):
+                handler(env)
+            case .violation(let why):
+                log.error("closing: \(why, privacy: .public)")
+                stream.close()
+                return
+            }
         }
     }
 
@@ -148,6 +204,7 @@ public final class MessageChannel: Sendable {
         let (handler, reported) = state.withLock { s -> ((@Sendable ((any Error)?) -> Void)?, (any Error)?) in
             var reported = error
             if case .versionMismatch(let remote)? = s.failure { reported = TransportError.versionMismatch(remote: remote) }
+            if let violation = s.violation { reported = TransportError.unexpectedMessage(violation) }
             s.closedWith = .some(reported)
             return (s.onClose, reported)
         }

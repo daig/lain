@@ -8,9 +8,9 @@ public enum ClientStatus: Sendable, Equatable {
     case searching
     /// A lain Mac this iPad has no Wi-Fi secret for: one USB session records it.
     case needsCable(hostName: String)
-    /// A Mac runs another lain protocol version (nil name: the one on the cable); the older side needs
-    /// an update.
-    case versionMismatch(hostName: String?, remote: UInt8?)
+    /// A Mac shares no lain protocol version with this iPad (nil name: the one on the cable); `gap` says
+    /// which side needs an update.
+    case versionMismatch(hostName: String?, gap: VersionGap)
     case localNetworkDenied
     case hostBusy(hostName: String)
     /// The Mac's Wi-Fi listener doesn't hold this iPad's key: one USB session pairs again.
@@ -33,7 +33,7 @@ public enum ClientStatus: Sendable, Equatable {
         case .listening(_, let wifi): self = .waitingForMac(wifi: wifi)
         case .searching: self = .searching
         case .needsCable(let name): self = .needsCable(hostName: name)
-        case .versionMismatch(let name, let remote): self = .versionMismatch(hostName: name, remote: remote)
+        case .versionMismatch(let name, let gap): self = .versionMismatch(hostName: name, gap: gap)
         case .localNetworkDenied: self = .localNetworkDenied
         case .hostBusy(let name): self = .hostBusy(hostName: name)
         case .pairingRefused(let name): self = .pairingRefused(hostName: name)
@@ -73,10 +73,12 @@ public enum ClientStatus: Sendable, Equatable {
             Self.connectHint
         case .needsCable:
             "Connect the cable once to use it over Wi-Fi"
-        case .versionMismatch(_, let remote):
-            "It speaks protocol " + (remote.map { "v\($0)" } ?? "unknown") + ", this iPad v\(LainProtocol.majorVersion): "
-                + (remote.map { $0 < LainProtocol.majorVersion ? "update lain on the Mac" : "update lain on this iPad" }
-                    ?? "update the older one")
+        case .versionMismatch(_, .peerOlder(let peer)):
+            "It speaks \(peer), this iPad protocol \(VersionList.offered): update lain on the Mac"
+        case .versionMismatch(_, .peerNewer(let peer)):
+            "It speaks \(peer), this iPad protocol \(VersionList.offered): update lain on this iPad"
+        case .versionMismatch(_, .differentBuilds(let version)):
+            "It runs a different development build of protocol v\(version): update both from the same tree"
         case .localNetworkDenied:
             "Allow lain in Settings › Privacy & Security › Local Network, or connect the cable"
         case .hostBusy:
@@ -92,9 +94,32 @@ public enum ClientStatus: Sendable, Equatable {
                 : "Mac display \(info.displayPointWidth)×\(info.displayPointHeight) pt · input source "
                     + (info.macInputSource.split(separator: ".").last.map(String.init) ?? info.macInputSource)
                     + (info.framesReceived > 0 ? " · \(info.framesReceived) frames" : ""))
+                + (info.setup.flatMap(Self.setupHint).map { "\n" + $0 } ?? "")
+                + (Self.olderMacNote(info).map { "\n" + $0 } ?? "")
         case .failed(let why):
             why
         }
+    }
+
+    /// What the Mac still needs before the session fully works (v4 `HostSetup`), and where to do it; nil
+    /// when nothing is missing.
+    public static func setupHint(_ setup: HostSetup) -> String? {
+        let names: [HostSetup.Requirement: String] = [.screenRecording: "Screen Recording", .accessibility: "Accessibility",
+                                                      .localNetwork: "Local Network", .startAtLogin: "Start at Login"]
+        let missing = setup.missing.compactMap { names[$0] }
+        guard !missing.isEmpty || !setup.videoProblem.isEmpty else { return nil }
+        let what = missing.isEmpty ? "No video: \(setup.videoProblem)" : "Finish setup on the Mac: allow " + missing.joined(separator: ", ")
+        let where_ = setup.hasOtherDisplay ? "use the Mac's own display, keyboard and mouse"
+            : "this Mac has no other display: attach one (or use Screen Sharing) to finish"
+        return what + " (" + where_ + ")"
+    }
+
+    /// The Mac's lain is older but compatible: what updating it adds (PROTOCOL-VERSIONING §8).
+    public static func olderMacNote(_ info: ClientSession.ConnectionInfo) -> String? {
+        let missing = info.olderMacMisses
+        guard !missing.isEmpty else { return nil }
+        return "The Mac's lain is older (protocol v\(info.protocolVersion)): update it for "
+            + missing.map(\.summary).joined(separator: ", ")
     }
 
     /// For the connect screen and the HUD: "USB", "Wi-Fi · AWDL awdl0", "Wi-Fi · LAN en1".

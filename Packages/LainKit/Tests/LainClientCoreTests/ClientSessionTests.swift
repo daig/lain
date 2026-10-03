@@ -236,16 +236,17 @@ let hello = Hello(deviceModel: "iPad16,6", pixelWidth: 2752, pixelHeight: 2064, 
         let session = try ClientSession(port: 0, secrets: InMemorySecretStore(), hello: hello) { statuses.put($0) }
         defer { session.stop() }
         #expect(await statuses.next() == .listening(port: session.port))
-        // A v1 host's first frame: its pairing ChannelHello, framed in v1.
-        let v1 = try await LoopbackDialer(port: session.port).dial()
-        defer { v1.close() }
-        v1.start(queue: DispatchQueue(label: "test.v1"), onBytes: { _ in }, onClose: { _ in })
-        let token = ChannelAuth.randomBytes(ChannelHello.tokenSize)
-        v1.write(MessageCodec.encode(.channelHello(ChannelHello(protocolVersion: 1, connectionKind: .realtime, sessionToken: token,
-                                                                hmac: ChannelAuth.pairingMAC)),
-                                     sequence: 0, timestampNs: 0, version: 1))
+        // A v2 host's first frame: its pairing ChannelHello, framed in v2 (the v3 codec can't write it).
+        let v2 = try await LoopbackDialer(port: session.port).dial()
+        defer { v2.close() }
+        v2.start(queue: DispatchQueue(label: "test.v2"), onBytes: { _ in }, onClose: { _ in })
+        let payload = [2, ConnectionKind.realtime.rawValue] + ChannelAuth.randomBytes(ChannelHello.tokenSize) + ChannelAuth.pairingMAC
+        var frame = ByteWriter()
+        FrameHeader(version: 2, type: .channelHello, sequence: 0, timestampNs: 0, payloadLength: UInt32(payload.count))
+            .encode(into: &frame)
+        v2.write(frame.bytes + payload)
         let status = try #require(await statuses.next())
-        #expect(status == .versionMismatch(hostName: nil, remote: 1))
+        #expect(status == .versionMismatch(hostName: nil, gap: .peerOlder(peer: "protocol v2")))
         #expect(ClientStatus(status).title == "The Mac runs another lain")
         #expect(ClientStatus(status).detail.contains("update lain on the Mac"))
 

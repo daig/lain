@@ -148,11 +148,18 @@ final class WiFiHost: Sendable {
         defer { host.cancel() }
         // Wireless never pairs (D13): a zero-HMAC hello plus Pair on a connection TLS accepted.
         let secret = try #require(stored["IPAD-1"])
-        let link = try await host.dialer(psk: WiFiPSK(secret: secret)).open(pairing: Pair(secret: ChannelAuth.randomBytes(32)))
-        defer { link.close() }
-        #expect(try await link.realtime.next(timeoutSeconds: 2).message
+        let realtime = try await host.rawChannel(psk: WiFiPSK(secret: secret), .realtime)
+        defer { realtime.close() }
+        realtime.send(.channelHello(ChannelAuth.hello(kind: .realtime, token: ChannelAuth.randomBytes(16), secret: nil)))
+        realtime.send(.pair(Pair(secret: ChannelAuth.randomBytes(32))))
+        #expect(try await realtime.next(timeoutSeconds: 2).message
                 == .error(ErrorMessage(code: .authenticationFailed, message: "pairing not accepted here")))
-        #expect(await closeWatch(link.realtime).next(within: 3) == true)   // after `next`, which replaces the close handler
+        #expect(await closeWatch(realtime).next(within: 3) == true)   // after `next`, which replaces the close handler
+        // A dialer's open fails the same way.
+        await #expect(throws: TransportError.authenticationFailed) {
+            _ = try await host.dialer(psk: WiFiPSK(secret: secret)).open(pairing: Pair(secret: ChannelAuth.randomBytes(32)))
+        }
+        #expect(transportError(await host.refused.next()) == .authenticationFailed)
         #expect(transportError(await host.refused.next()) == .authenticationFailed)
         #expect(await host.accepted.next(within: 0.3) == nil)
         #expect(host.secrets.writeCount == 0)
@@ -165,16 +172,22 @@ final class WiFiHost: Sendable {
         let one = try #require(stored["IPAD-1"]), two = try #require(stored["IPAD-2"])
 
         // TLS under IPAD-1's key, ChannelHello under IPAD-2's secret (which the host also holds).
-        let crossed = try await host.dialer(psk: WiFiPSK(secret: one)).open(secret: two)
-        defer { crossed.close() }
-        #expect(try await crossed.realtime.next(timeoutSeconds: 2).message
+        func refusal(tls: [UInt8], hmac: [UInt8]) async throws -> Message {
+            let channel = try await host.rawChannel(psk: WiFiPSK(secret: tls), .realtime)
+            defer { channel.close() }
+            channel.send(.channelHello(ChannelAuth.hello(kind: .realtime, token: ChannelAuth.randomBytes(16), secret: hmac)))
+            return try await channel.next(timeoutSeconds: 2).message
+        }
+        #expect(try await refusal(tls: one, hmac: two)
                 == .error(ErrorMessage(code: .authenticationFailed, message: "HMAC under another pairing than the TLS key")))
+        #expect(transportError(await host.refused.next()) == .authenticationFailed)
+        await #expect(throws: TransportError.authenticationFailed) {   // a dialer's open fails in place of its ChannelAccept
+            _ = try await host.dialer(psk: WiFiPSK(secret: one)).open(secret: two)
+        }
         #expect(transportError(await host.refused.next()) == .authenticationFailed)
 
         // Under a secret the host doesn't hold at all.
-        let unknown = try await host.dialer(psk: WiFiPSK(secret: one)).open(secret: ChannelAuth.randomBytes(32))
-        defer { unknown.close() }
-        #expect(try await unknown.realtime.next(timeoutSeconds: 2).message
+        #expect(try await refusal(tls: one, hmac: ChannelAuth.randomBytes(32))
                 == .error(ErrorMessage(code: .authenticationFailed, message: "bad HMAC")))
         #expect(transportError(await host.refused.next()) == .authenticationFailed)
 

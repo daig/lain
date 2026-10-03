@@ -531,9 +531,9 @@ import Testing
 
     // MARK: Another protocol
 
-    /// A v1 app can't speak v2 at all: its first frame, framed in v1, is refused by the Wi-Fi acceptor
-    /// (answered in v1), and the owner is told to update the iPad, as over USB.
-    @Test func aWiFiPeerFramingAnotherProtocolIsAskedToUpdate() async throws {
+    /// A v2 app can't negotiate: its first frame, framed in v2, is refused by the Wi-Fi acceptor (answered
+    /// in v2), and the owner is told to update the iPad, as over USB.
+    @Test func aWiFiPeerFramingALegacyProtocolIsAskedToUpdate() async throws {
         let secret = ChannelAuth.randomBytes(32)
         let rig = try Rig(stored: [Self.serial: secret])
         defer { rig.tearDown() }
@@ -542,44 +542,51 @@ import Testing
         let stream = try await NetworkStreamDialer(endpoint: endpoint, psk: WiFiPSK(secret: secret), options: .loopback)
             .connect(kind: .realtime)
         defer { stream.close() }
-        let hello = ChannelAuth.hello(kind: .realtime, token: ChannelAuth.randomBytes(ChannelHello.tokenSize), secret: secret)
-        stream.write(MessageCodec.encode(.channelHello(hello), sequence: 0, timestampNs: 0, version: 1))
-        #expect(await rig.reaches(HostStatus.iPadNeedsUpdate))
-        #expect(rig.session.status.title == "Error: lain on the iPad speaks another protocol: update it")
+        // v2's ChannelHello: version, kind, token, HMAC, in a v2 header (the v3 codec can't write it).
+        let payload = [2, ConnectionKind.realtime.rawValue] + ChannelAuth.randomBytes(ChannelHello.tokenSize) + ChannelAuth.pairingMAC
+        var frame = ByteWriter()
+        FrameHeader(version: 2, type: .channelHello, sequence: 0, timestampNs: 0, payloadLength: UInt32(payload.count))
+            .encode(into: &frame)
+        stream.write(frame.bytes + payload)
+        let older = HostStatus.versionGap(.peerOlder(peer: "protocol v2"))
+        #expect(await rig.reaches(older))
+        #expect(rig.session.status.title.hasPrefix("Error: lain on the iPad is too old (it speaks protocol v2"))
         #expect(!rig.session.hasWiFiLink && rig.power.begins == 0 && rig.sink.calls.isEmpty)
     }
 
-    /// A link whose `Hello` says another protocol version is answered `Error(versionMismatch)` and closed,
-    /// and the owner told to update the iPad.
-    @Test func aWiFiHelloInAnotherProtocolIsAskedToUpdate() async throws {
+    /// An iPad that only offers newer versions shares none with this Mac: the link fails in the handshake,
+    /// and the owner is told to update the Mac.
+    @Test func aNewerWiFiPeerTellsTheOwnerToUpdateTheMac() async throws {
         let secret = ChannelAuth.randomBytes(32)
         let rig = try Rig(stored: [Self.serial: secret])
         defer { rig.tearDown() }
         let port = try #require(await rig.listening())
-        var hello = Self.wifiHello
-        hello.protocolVersion = LainProtocol.majorVersion + 1
-        await #expect(throws: TransportError.versionMismatch(remote: 0)) {
-            _ = try await WiFiIPad.connect(port: port, secret: secret, hello: hello)
+        let newer = VersionList([VersionEntry(version: LainProtocol.newestVersion + 1, digest: [UInt8](repeating: 9, count: 8))])
+        let endpoint = NWEndpoint.hostPort(host: "127.0.0.1", port: NWEndpoint.Port(rawValue: port)!)
+        let dialer = LinkDialer(dialer: WiFiLinkDialer(endpoint: endpoint, psk: WiFiPSK(secret: secret), options: .loopback),
+                                label: "test.ipad.newer", versions: newer)
+        await #expect(throws: TransportError.noCommonVersion(local: newer, peer: VersionList.offered)) {
+            _ = try await dialer.open(secret: secret)
         }
-        #expect(await rig.reaches(HostStatus.iPadNeedsUpdate))
-        #expect(await eventually { !rig.session.hasWiFiLink })
+        #expect(await rig.reaches(HostStatus.versionGap(.peerNewer(peer: "protocol \(newer)"))))
+        #expect(rig.session.status.title.contains("update lain on this Mac"))
         #expect(rig.power.begins == 0 && rig.sink.calls.isEmpty)
     }
 
-    /// The same for a `Hello` framed in another version, on a link authenticated in ours.
-    @Test func aWiFiHelloFramedInAnotherProtocolIsAskedToUpdate() async throws {
+    /// A `Hello` framed in a version the link didn't agree on closes the link (it's a bug, not a gap).
+    @Test func aWiFiHelloFramedInAnotherVersionThanAgreedClosesTheLink() async throws {
         let secret = ChannelAuth.randomBytes(32)
         let rig = try Rig(stored: [Self.serial: secret])
         defer { rig.tearDown() }
         let port = try #require(await rig.listening())
         let link = try await WiFiIPad.dialer(port: port, secret: secret).open(secret: secret)
         defer { link.close() }
+        #expect(link.version == LainProtocol.newestVersion)
         #expect(await eventually { rig.session.hasWiFiLink })   // delivered: the host waits for its Hello
         link.realtime.stream.write(MessageCodec.encode(.hello(Self.wifiHello), sequence: 1, timestampNs: 0,
-                                                       version: LainProtocol.majorVersion + 1))
-        #expect(await rig.reaches(HostStatus.iPadNeedsUpdate))
+                                                       version: LainProtocol.supportedVersions[0]))
         #expect(await eventually { !rig.session.hasWiFiLink })
-        #expect(rig.power.begins == 0 && rig.sink.calls.isEmpty)
+        #expect(!rig.session.status.isConnected && rig.power.begins == 0 && rig.sink.calls.isEmpty)
     }
 
     // MARK: Lifecycle

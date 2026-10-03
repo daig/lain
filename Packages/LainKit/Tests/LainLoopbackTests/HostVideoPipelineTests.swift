@@ -127,8 +127,8 @@ final class VideoClient: @unchecked Sendable {
 
     init(ackDelayMs: Int = 0) {
         let (a, b) = MemoryStream.pair()
-        host = MessageChannel(stream: a, label: "test.host.video")
-        channel = MessageChannel(stream: b, label: "test.client.video")
+        host = MessageChannel(stream: a, label: "test.host.video", version: LainProtocol.newestVersion)
+        channel = MessageChannel(stream: b, label: "test.client.video", version: LainProtocol.newestVersion)
         self.ackDelayMs = ackDelayMs
         channel.setHandler { [unowned self] env in handle(env) }
         channel.start()

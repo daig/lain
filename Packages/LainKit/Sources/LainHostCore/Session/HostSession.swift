@@ -60,6 +60,11 @@ public final class HostSession: Sendable {
         public var identity: HostIdentity?
         /// Sessions over Wi-Fi too (§7.7 D29). nil: USB only, exactly as before.
         public var wifi: HostWiFiConfig?
+        /// The Mac's setup (permissions, other displays) for `HostSetup` (v4); the session fills in
+        /// `videoProblem`. nil: none is sent.
+        public var setup: (@Sendable () -> HostSetup)?
+        /// The protocol versions offered (PROTOCOL-VERSIONING §3.2). nil: `VersionList.offered`.
+        public var versions: VersionList?
 
         public init(usbmux: USBMuxClient = USBMuxClient(), secrets: any SecretStore = KeychainSecretStore(),
                     sink: any InputSink, display: any DisplayProvider = DisplayLayoutProvider.system(),
@@ -67,8 +72,11 @@ public final class HostSession: Sendable {
                     settings: @escaping @Sendable () -> HostInputSettings = { .current },
                     now: @escaping @Sendable () -> UInt64 = { MonotonicClock.now() },
                     video: (@Sendable () -> HostVideoPipeline)? = nil,
-                    identity: HostIdentity? = nil, wifi: HostWiFiConfig? = nil) {
+                    identity: HostIdentity? = nil, wifi: HostWiFiConfig? = nil,
+                    setup: (@Sendable () -> HostSetup)? = nil, versions: VersionList? = nil) {
             self.video = video
+            self.setup = setup
+            self.versions = versions
             self.usbmux = usbmux
             self.secrets = secrets
             self.sink = sink
@@ -178,16 +186,16 @@ public final class HostSession: Sendable {
         var backingOff: UInt64?
         /// usbmuxd's event stream failed; cleared by the next attach it reports.
         var usbmuxDown = false
-        /// lain on the iPad speaks another protocol (§7.7 D29 decision 4); cleared by the next link that
-        /// comes up, or when the device dialed detaches.
-        var peerOutdated = false
+        /// lain on the iPad shares no protocol version with this one (PROTOCOL-VERSIONING §8); cleared by
+        /// the next link that comes up, or when the device dialed detaches.
+        var peerGap: VersionGap?
 
         /// The status is derived, never pushed (decision 8): connected only while the session whose
         /// `HelloAck` went out is live; otherwise what the USB side is doing.
         var derivedStatus: HostStatus {
             if let live, let model = liveModel { return .connected(deviceModel: model, via: live.transport) }
             if usbmuxDown { return .error("usbmuxd unavailable") }
-            if peerOutdated { return HostStatus.iPadNeedsUpdate }
+            if let peerGap { return HostStatus.versionGap(peerGap) }
             guard let device else { return .waitingForIPad }
             return backingOff == device.generation ? HostStatus.captureBackingOff : .connecting
         }
@@ -296,6 +304,40 @@ public final class HostSession: Sendable {
     /// Why the current session streams no video, if it failed to start.
     public var videoError: String? { state.withLock { $0.videoError } }
 
+    /// The live session runs an older protocol than this Mac's newest: a line for the menu naming what
+    /// updating lain on the iPad adds (PROTOCOL-VERSIONING §8). nil otherwise.
+    public var peerVersionNote: String? {
+        guard let link = state.withLock({ $0.live?.connection.link }) else { return nil }
+        let missing = link.olderPeerMisses
+        guard !missing.isEmpty else { return nil }
+        return "lain on the iPad is older (protocol v\(link.version)): update it for "
+            + missing.map(\.summary).joined(separator: ", ")
+    }
+
+    /// The Mac's setup changed (a permission granted, a display attached): the live session's iPad hears
+    /// about it, if its version has `HostSetup`. Cheap when nothing changed; the app calls it from its
+    /// once-a-second poll.
+    public func setupChanged() {
+        guard let connection = state.withLock({ $0.live?.connection }) else { return }
+        sendSetup(to: connection)
+    }
+
+    /// The app's part of the setup, plus what the session knows: Local Network (from the Wi-Fi
+    /// listener, when Wi-Fi is on) and why there's no video.
+    private func sendSetup(to connection: HostConnection) {
+        guard var setup = deps.setup?(), connection.link.supports(.hostSetup) else { return }
+        setup.videoProblem = state.withLock { s in s.video === connection.video ? s.videoError : nil } ?? ""
+        if deps.wifi != nil, !setup.items.contains(where: { $0.requirement == .localNetwork }) {
+            let state: HostSetup.State = switch wifiStatus {
+            case .denied: .missing
+            case .advertising: .granted
+            default: .unknown
+            }
+            setup.items.append(HostSetup.Item(.localNetwork, state))
+        }
+        connection.sendSetupIfChanged(setup)
+    }
+
     /// The Wi-Fi listener, for the menu (§7.7 D29 decision 9).
     public var wifiStatus: HostWiFiStatus {
         guard deps.wifi != nil else { return .off("not enabled") }
@@ -326,7 +368,7 @@ public final class HostSession: Sendable {
             if let config = deps.wifi {
                 // One acceptor for the session's lifetime: candidates are every stored iPad secret (no
                 // primary account), and wireless never pairs (D13).
-                let acceptor = LinkAcceptor(secrets: deps.secrets, label: "lain.host.wifi",
+                let acceptor = LinkAcceptor(secrets: deps.secrets, label: "lain.host.wifi", versions: deps.versions,
                                             onReject: { [weak self] error in self?.wifiRefused(error) },
                                             onLink: { [weak self] accepted in self?.wifiAccepted(accepted) })
                 s.acceptor = acceptor
@@ -463,7 +505,7 @@ public final class HostSession: Sendable {
             // Only this loop's session ends; a Wi-Fi session goes on (§7.7 D29 decision 8).
             let connection = s.takeLive(ownedBy: .usb(generation: current.generation))
             s.device = nil
-            s.peerOutdated = false
+            s.peerGap = nil
             var next: Int?
             if !s.stopped, let first = s.attached.first {
                 dial(first, in: &s)
@@ -513,12 +555,12 @@ public final class HostSession: Sendable {
             do {
                 let (link, hello, paired) = try await HostLink.open(
                     dialer: USBMuxDialer(client: deps.usbmux, deviceID: device.deviceID), secrets: deps.secrets,
-                    peerID: device.serialNumber, allowPairing: true, hostId: deps.identity?.id ?? "")
+                    peerID: device.serialNumber, allowPairing: true, hostId: deps.identity?.id ?? "", versions: deps.versions)
                 if Task.isCancelled { link.close(); return }
                 failures = 0
                 closedInARow = 0
                 log.notice("link up with \(hello.deviceModel, privacy: .public) (\(paired ? "paired" : "authenticated", privacy: .public))")
-                updateStatus { $0.peerOutdated = false }
+                updateStatus { $0.peerGap = nil }
                 // A pairing (this one, or a bench's in another process) may have changed the stored
                 // secrets: the Wi-Fi listener re-reads them after every USB link-up (§7.7 D29 decision 9).
                 state.withLock { $0.wifiListener }?.refresh()
@@ -541,21 +583,23 @@ public final class HostSession: Sendable {
         }
     }
 
-    /// A failed USB link attempt: lain on the iPad speaks another protocol if it said so
-    /// (`versionMismatch`) or if it keeps closing realtime right after our `ChannelHello` (a v1 app
-    /// can't parse it and closes without a word). Returns the updated count of such closes in a row.
+    /// A failed USB link attempt: lain on the iPad shares no protocol version with this one if the
+    /// handshake said so (`noCommonVersion`, or a legacy app's `versionMismatch`), or if it keeps closing
+    /// realtime right after our `ChannelHello` (a v1 app can't parse it and closes without a word).
+    /// Returns the updated count of such closes in a row.
     private func noteUSBFailure(_ error: any Error, closedInARow: Int) -> Int {
-        switch error as? TransportError {
-        case .versionMismatch?:
-            log.error("lain on the iPad speaks another protocol: \(String(describing: error), privacy: .public)")
-            updateStatus { $0.peerOutdated = true }
+        if let gap = VersionGap(error) {
+            log.error("lain on the iPad shares no protocol version with this Mac: \(String(describing: error), privacy: .public)")
+            updateStatus { $0.peerGap = gap }
             return 0
+        }
+        switch error as? TransportError {
         case .closed?:
             let count = closedInARow + 1
             if count == tuning.closesBeforeUpdateHint {
                 log.error("lain on the iPad closed the link right after ChannelHello \(count) times: another protocol?")
             }
-            if count >= tuning.closesBeforeUpdateHint { updateStatus { $0.peerOutdated = true } }
+            if count >= tuning.closesBeforeUpdateHint { updateStatus { $0.peerGap = HostStatus.olderAppGap } }
             return count
         default:
             return 0
@@ -582,9 +626,8 @@ public final class HostSession: Sendable {
     }
 
     /// One USB session; returns when it has ended and been torn down: true, or false if the link was
-    /// turned away before serving (another protocol, or the claim refused).
+    /// turned away before serving (the claim refused).
     private func run(_ link: Link, hello: Hello, generation: UInt64, peer: String) async -> Bool {
-        guard acceptsVersion(of: hello, on: link) else { return false }
         let connection = makeConnection(link)
         let (claimed, change) = state.withLock { s in
             (s.claim(connection, .usb(generation: generation), transport: link.transport, peer: peer), s.refreshStatus())
@@ -620,8 +663,8 @@ public final class HostSession: Sendable {
     /// A connection the Wi-Fi acceptor refused (after TLS, so a paired iPad): one on another protocol
     /// is worth telling the owner about.
     private func wifiRefused(_ error: any Error) {
-        guard case .versionMismatch? = error as? TransportError else { return }
-        updateStatus { $0.peerOutdated = true }
+        guard let gap = VersionGap(error) else { return }
+        updateStatus { $0.peerGap = gap }
     }
 
     /// One accepted Wi-Fi link (§7.7 D29 decision 8): the client's `Hello` within `helloTimeout`, then,
@@ -645,11 +688,10 @@ public final class HostSession: Sendable {
             }
             hello = h
         } catch {
-            if case .versionMismatch? = error as? TransportError { updateStatus { $0.peerOutdated = true } }
+            if let gap = VersionGap(error) { updateStatus { $0.peerGap = gap } }
             log.notice("Wi-Fi link from \(peer, privacy: .public) ended before its Hello: \(String(describing: error), privacy: .public)")
             return link.close()
         }
-        guard acceptsVersion(of: hello, on: link) else { return }
 
         enum Admission: Sendable { case refused, busy(String), claimed(displaced: HostConnection?, previousVideo: [HostVideoPipeline]) }
         let connection = makeConnection(link)
@@ -660,7 +702,7 @@ public final class HostSession: Sendable {
             guard let claimed = s.claim(connection, .wifi(generation: generation), transport: link.transport, peer: peer) else {
                 return (.refused, nil)
             }
-            s.peerOutdated = false
+            s.peerGap = nil
             return (.claimed(displaced: claimed.displaced, previousVideo: claimed.previousVideo), s.refreshStatus())
         }
         publish(change)
@@ -681,16 +723,6 @@ public final class HostSession: Sendable {
     }
 
     // MARK: Session
-
-    /// A `Hello` in another protocol version is answered and closed, and the owner told to update the
-    /// iPad (§7.7 D29 decision 4).
-    private func acceptsVersion(of hello: Hello, on link: Link) -> Bool {
-        guard hello.protocolVersion != LainProtocol.majorVersion else { return true }
-        link.realtime.send(.error(ErrorMessage(code: .versionMismatch, message: "host speaks v\(LainProtocol.majorVersion)")))
-        link.close()
-        updateStatus { $0.peerOutdated = true }
-        return false
-    }
 
     private func makeConnection(_ link: Link) -> HostConnection {
         // The streamed display is the session's virtual display once video is up (§5.1); until then, or
@@ -728,6 +760,10 @@ public final class HostSession: Sendable {
             connection.link.realtime.send(.helloAck(.host(display: display, settings: deps.settings(), chroma: chroma ?? .yuv444,
                                                           hostId: deps.identity?.id ?? "", hostName: deps.identity?.name ?? "")))
             connection.sendLayoutIfChanged()   // the first one always goes
+            sendSetup(to: connection)
+            if !connection.link.olderPeerMisses.isEmpty {
+                log.notice("lain on the iPad runs protocol v\(connection.link.version), this Mac \(VersionList.offered, privacy: .public): it works, without \(connection.link.olderPeerMisses.map(\.summary).joined(separator: ", "), privacy: .public)")
+            }
             updateStatus { s in if s.live?.connection === connection { s.liveModel = hello.deviceModel } }
             await withTaskCancellationHandler {
                 await connection.run()
@@ -818,6 +854,7 @@ final class HostConnection: Sendable {
     private let layoutQueue = DispatchQueue(label: "lain.host.layout", qos: .utility)
     /// The last `DisplayLayout` sent; taken only by the handshake and the layout check.
     private let lastLayout = Mutex<DisplayLayout?>(nil)
+    private let lastSetup = Mutex<HostSetup?>(nil)
     /// Set once the realtime connection has closed or the session was finished; `waiter` is `run()`.
     private let ended = Mutex<(done: Bool, waiter: CheckedContinuation<Void, Never>?)>((false, nil))
 
@@ -971,6 +1008,18 @@ final class HostConnection: Sendable {
             return s.warp.sample(global, atNs: now)
         }
         if let warp { link.realtime.send(.cursorWarp(CursorWarp(x: warp.x, y: warp.y))) }
+    }
+
+    // MARK: Setup
+
+    /// Sends `setup` if it differs from the last one sent (the first always goes). The caller checked
+    /// that the link's version has `HostSetup`.
+    func sendSetupIfChanged(_ setup: HostSetup) {
+        lastSetup.withLock { last in
+            guard setup != last, !ended.withLock({ $0.done }) else { return }
+            last = setup
+            link.realtime.send(.hostSetup(setup))
+        }
     }
 
     // MARK: Layout

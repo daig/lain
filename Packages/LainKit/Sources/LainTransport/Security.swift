@@ -2,8 +2,8 @@ import CryptoKit
 import Foundation
 import Synchronization
 
-/// ChannelHello authentication (§7.6): HMAC-SHA256 over version, kind and session token, keyed by
-/// the 32-byte pairing secret.
+/// ChannelHello authentication (§7.6): HMAC-SHA256 over the offered versions, kind and session token,
+/// keyed by the 32-byte pairing secret.
 public enum ChannelAuth {
     /// An all-zero HMAC asks for USB pairing.
     public static let pairingMAC = [UInt8](repeating: 0, count: ChannelHello.macSize)
@@ -17,9 +17,10 @@ public enum ChannelAuth {
                                               using: SymmetricKey(data: secret))
     }
 
-    /// A ChannelHello carrying its HMAC.
-    public static func hello(kind: ConnectionKind, token: [UInt8], secret: [UInt8]?) -> ChannelHello {
-        var h = ChannelHello(connectionKind: kind, sessionToken: token, hmac: pairingMAC)
+    /// A ChannelHello carrying its HMAC. `versions` nil: `VersionList.offered`.
+    public static func hello(kind: ConnectionKind, token: [UInt8], secret: [UInt8]?,
+                             versions: VersionList? = nil) -> ChannelHello {
+        var h = ChannelHello(versions: versions, connectionKind: kind, sessionToken: token, hmac: pairingMAC)
         if let secret { h.hmac = mac(secret: secret, for: h) }
         return h
     }

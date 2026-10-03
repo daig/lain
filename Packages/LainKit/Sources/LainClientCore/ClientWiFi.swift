@@ -92,8 +92,8 @@ public struct LastConnectedHost: Sendable {
     }
 }
 
-/// Which discovered Macs the client may dial (§7.7 D29): a canonical host id, the client's protocol
-/// major version, and a Wi-Fi secret (`mac:<hostId>`) in the store. Every service of such a Mac is a
+/// Which discovered Macs the client may dial (§7.7 D29): a canonical host id, a protocol version this
+/// iPad also offers (TXT `vs`, PROTOCOL-VERSIONING §3.2), and a Wi-Fi secret (`mac:<hostId>`) in the store. Every service of such a Mac is a
 /// candidate (one id can be advertised twice, e.g. after a Bonjour rename), the last-connected Mac's
 /// first. What can't be dialed is kept, for the status. Hosts with a malformed id are ignored.
 struct WiFiDialPlan: Equatable {
@@ -104,6 +104,8 @@ struct WiFiDialPlan: Equatable {
 
     struct OtherVersion: Equatable {
         var host: DiscoveredHost
+        /// Which side needs the update.
+        var gap: VersionGap
         /// This iPad holds its secret: probably its own Mac, one side needs an update.
         var paired: Bool
     }
@@ -115,12 +117,13 @@ struct WiFiDialPlan: Equatable {
 
     init() {}
 
-    /// `secret` reads an account of the client's store.
-    init(hosts: [DiscoveredHost], preferring lastHostId: String?, secret: (String) -> [UInt8]?) {
+    /// `secret` reads an account of the client's store; `versions` nil: `VersionList.offered`.
+    init(hosts: [DiscoveredHost], preferring lastHostId: String?, versions: VersionList? = nil,
+         secret: (String) -> [UInt8]?) {
         for host in hosts where PairingAccounts.isCanonicalHostId(host.hostId) {
             let stored = secret(PairingAccounts.mac(host.hostId))
-            if host.protocolVersion != LainProtocol.majorVersion {
-                otherVersion.append(OtherVersion(host: host, paired: stored != nil))
+            if let gap = VersionGap(local: versions, advertised: host.versions) {
+                otherVersion.append(OtherVersion(host: host, gap: gap, paired: stored != nil))
             } else if let stored {
                 candidates.append(Candidate(host: host, secret: stored))
             } else {
@@ -205,6 +208,8 @@ final class WiFiLoop {
         var lastAttemptAt: UInt64
         /// Dials in a row TLS refused this iPad's key on.
         var keyRefusals = 0
+        /// Its handshake found no common protocol version (its TXT suggested one): which side to update.
+        var versionGap: VersionGap?
 
         var refusesKey: Bool { keyRefusals >= WiFiLoop.refusedAfter }
 
@@ -213,6 +218,7 @@ final class WiFiLoop {
             backoff.reset()
             until = 0
             keyRefusals = 0
+            versionGap = nil
         }
     }
 
@@ -362,7 +368,7 @@ extension SessionCore {
         let now = MonotonicClock.now()
         updateDiscovery(now: now)
         w.plan = current == nil && w.discovery != nil
-            ? WiFiDialPlan(hosts: w.hosts, preferring: w.config.lastHost.get(), secret: storedSecret)
+            ? WiFiDialPlan(hosts: w.hosts, preferring: w.config.lastHost.get(), versions: versions, secret: storedSecret)
                 .ordered(lastGood: w.config.lastHost.service, lastTried: { w.services[$0]?.lastAttemptAt ?? now })
             : WiFiDialPlan()
         guard current == nil, w.dialing == nil, !w.paused, !w.plan.candidates.isEmpty else { return }
@@ -391,17 +397,21 @@ extension SessionCore {
         if w.paused { return nil }
         if w.discoveryState == .denied || w.dialDenied { return .localNetworkDenied }
         if let busy = w.busyHost, MonotonicClock.now() < w.backoffUntil { return .hostBusy(hostName: busy) }
-        if let next = w.plan.candidates.first(where: { !refuses($0.host) }) {
+        let gap = { (host: DiscoveredHost) in w.services[host.endpoint]?.versionGap }
+        if let next = w.plan.candidates.first(where: { !refuses($0.host) && gap($0.host) == nil }) {
             return .connecting(hostName: next.host.name, interfaces: next.host.interfaceNames)
         }
+        if let gapped = w.plan.candidates.first(where: { gap($0.host) != nil }), let g = gap(gapped.host) {
+            return .versionMismatch(hostName: gapped.host.name, gap: g)
+        }
         if let refusing = w.plan.candidates.first { return .pairingRefused(hostName: refusing.host.name) }
-        if let usbMismatch { return .versionMismatch(hostName: nil, remote: usbMismatch) }
+        if let usbGap { return .versionMismatch(hostName: nil, gap: usbGap) }
         if let other = w.plan.otherVersion.first(where: \.paired) {
-            return .versionMismatch(hostName: other.host.name, remote: other.host.protocolVersion)
+            return .versionMismatch(hostName: other.host.name, gap: other.gap)
         }
         if let host = w.plan.needsCable.first { return .needsCable(hostName: host.name) }
         if let other = w.plan.otherVersion.first {
-            return .versionMismatch(hostName: other.host.name, remote: other.host.protocolVersion)
+            return .versionMismatch(hostName: other.host.name, gap: other.gap)
         }
         if w.discovery != nil || w.discoveryRestartAt != 0 { return .searching }
         return nil
@@ -495,7 +505,7 @@ extension SessionCore {
         var dialer: any StreamDialer = WiFiLinkDialer(endpoint: host.endpoint, psk: WiFiPSK(secret: secret),
                                                       options: w.config.options, timeout: w.config.dialTimeout)
         if let interpose = w.config.interpose { dialer = interpose(dialer) }
-        let links = LinkDialer(dialer: dialer, label: "lain.client.wifi")
+        let links = LinkDialer(dialer: dialer, label: "lain.client.wifi", versions: versions)
         log.notice("Wi-Fi: dialing \(host.description, privacy: .public)")
         let task = Task { [weak self] in
             let result: Result<Link, any Error>
@@ -540,7 +550,9 @@ extension SessionCore {
             default:
                 keyRefused = false
             }
-            let delay = penalize(attempt.host, keyRefused: keyRefused)
+            let gap = VersionGap(error, local: versions)
+            let delay = penalize(attempt.host, keyRefused: keyRefused, versionGap: gap)
+            if let gap { log.error("Wi-Fi: \(attempt.host.name, privacy: .public) shares no protocol version with this iPad: \(String(describing: gap), privacy: .public)") }
             log.notice("Wi-Fi: dialing \(attempt.host.name, privacy: .public) failed (\(String(describing: error), privacy: .public)); that service again in \(delay) s")
             if w.services[attempt.host.endpoint]?.keyRefusals == WiFiLoop.refusedAfter {
                 log.error("Wi-Fi: \(attempt.host.name, privacy: .public) keeps refusing this iPad's key: it doesn't hold this pairing (a USB session pairs again)")
@@ -554,12 +566,14 @@ extension SessionCore {
     /// iPad's key (any other outcome resets the count). A service that keeps refusing it is still
     /// retried, every `maxBackoff`: the Mac may load the key again by itself (it retries a failed read).
     @discardableResult
-    private func penalize(_ host: DiscoveredHost, keyRefused: Bool = false) -> Double {
+    private func penalize(_ host: DiscoveredHost, keyRefused: Bool = false, versionGap: VersionGap? = nil) -> Double {
         guard let w = wifi else { return 0 }
         let now = MonotonicClock.now()
         var entry = w.services[host.endpoint] ?? w.newService(seenAt: now)
         entry.keyRefusals = keyRefused ? entry.keyRefusals + 1 : 0
-        let delay = entry.refusesKey ? w.config.maxBackoff : entry.backoff.take()
+        entry.versionGap = versionGap
+        // A Mac on another version won't change until someone updates one side: retry rarely.
+        let delay = entry.refusesKey || versionGap != nil ? w.config.maxBackoff : entry.backoff.take()
         entry.until = now + Self.ns(delay)
         w.services[host.endpoint] = entry
         return delay

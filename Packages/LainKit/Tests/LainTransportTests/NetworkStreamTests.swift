@@ -559,7 +559,8 @@ func closedLoopbackPort() throws -> UInt16 {
         let server = try await LoopbackTLSServer(psks: [wifiPSKA])
         defer { server.listener.cancel() }
         let (clientStream, serverStream) = try await server.pair()
-        let client = MessageChannel(stream: clientStream, label: "client"), host = MessageChannel(stream: serverStream, label: "host")
+        let client = MessageChannel(stream: clientStream, label: "client", version: LainProtocol.newestVersion)
+        let host = MessageChannel(stream: serverStream, label: "host", version: LainProtocol.newestVersion)
         host.setHandler { env in
             switch env.message {
             case .hello: host.send(.helloAck(sampleHelloAck))

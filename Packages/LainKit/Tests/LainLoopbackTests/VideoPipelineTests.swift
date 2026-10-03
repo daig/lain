@@ -48,8 +48,8 @@ final class VideoPipeline: @unchecked Sendable {
         self.ackDelayMs = ackDelayMs
         self.keepImages = keepImages
         let (a, b) = MemoryStream.pair()
-        host = MessageChannel(stream: a, label: "host.video")
-        client = MessageChannel(stream: b, label: "client.video")
+        host = MessageChannel(stream: a, label: "host.video", version: LainProtocol.newestVersion)
+        client = MessageChannel(stream: b, label: "client.video", version: LainProtocol.newestVersion)
         let box = WeakRef<VideoPipeline>()
         encoder = try VideoEncoder(settings: VideoEncoder.Settings(width: Self.width, height: Self.height)) { out in
             box.value?.encoded(out)

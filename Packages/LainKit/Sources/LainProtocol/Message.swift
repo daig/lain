@@ -1,44 +1,34 @@
-/// Every message in §7.5 as one tagged union.
+/// Every message in §7.5 as one tagged union: the newest version's model (PROTOCOL-VERSIONING §3.3).
 public enum Message: Sendable, Equatable {
-    case channelHello(ChannelHello)
+    case channelHello(ChannelHello), channelAccept(ChannelAccept)
     case hello(Hello), helloAck(HelloAck)
-    case start(Start), stop(Stop)
     case ping(Ping), pong(Pong)
     case keyframeRequest(KeyframeRequest)
-    case stats(Stats)
-    case configUpdate(ConfigUpdate)
-    case displayChanged(DisplayChanged)
     case error(ErrorMessage)
     case pair(Pair)
     case displayLayout(DisplayLayout)
+    case hostSetup(HostSetup)
     case videoConfig(VideoConfig), videoFrame(VideoFrame), frameAck(FrameAck)
-    case audioConfig(AudioConfig), audioPacket(AudioPacket)
     case cursorShape(CursorShape), cursorSelect(CursorSelect), cursorWarp(CursorWarp)
     case keyEvent(KeyEvent), pointerMove(PointerMove), pointerButton(PointerButton), scroll(Scroll), gesture(Gesture)
     case releaseAll(ReleaseAll)
-    case probeRequest(ProbeRequest), probeAck(ProbeAck)
 
     public var payload: any WireMessage {
         switch self {
         case .channelHello(let m): m
+        case .channelAccept(let m): m
         case .hello(let m): m
         case .helloAck(let m): m
-        case .start(let m): m
-        case .stop(let m): m
         case .ping(let m): m
         case .pong(let m): m
         case .keyframeRequest(let m): m
-        case .stats(let m): m
-        case .configUpdate(let m): m
-        case .displayChanged(let m): m
         case .error(let m): m
         case .pair(let m): m
         case .displayLayout(let m): m
+        case .hostSetup(let m): m
         case .videoConfig(let m): m
         case .videoFrame(let m): m
         case .frameAck(let m): m
-        case .audioConfig(let m): m
-        case .audioPacket(let m): m
         case .cursorShape(let m): m
         case .cursorSelect(let m): m
         case .cursorWarp(let m): m
@@ -48,8 +38,6 @@ public enum Message: Sendable, Equatable {
         case .scroll(let m): m
         case .gesture(let m): m
         case .releaseAll(let m): m
-        case .probeRequest(let m): m
-        case .probeAck(let m): m
         }
     }
 
@@ -61,29 +49,29 @@ public enum Message: Sendable, Equatable {
         return []
     }
 
-    public static func decode(type: MessageType, payload: ArraySlice<UInt8>) throws(ProtocolError) -> Message {
-        var r = ByteReader(payload)
+    /// Lifts a payload of `version` into the model: fields the version doesn't have get their defaults.
+    /// `version` nil: the type's default (`MessageType.defaultVersion`).
+    public static func decode(type: MessageType, payload: ArraySlice<UInt8>,
+                              version: UInt8? = nil) throws(ProtocolError) -> Message {
+        let version = version ?? type.defaultVersion
+        guard type.exists(in: version) else { throw .unknownType(type.rawValue) }
+        var r = ByteReader(payload, version: version)
         let m: Message
         switch type {
         case .channelHello: m = .channelHello(try ChannelHello(from: &r))
+        case .channelAccept: m = .channelAccept(try ChannelAccept(from: &r))
         case .hello: m = .hello(try Hello(from: &r))
         case .helloAck: m = .helloAck(try HelloAck(from: &r))
-        case .start: m = .start(try Start(from: &r))
-        case .stop: m = .stop(try Stop(from: &r))
         case .ping: m = .ping(try Ping(from: &r))
         case .pong: m = .pong(try Pong(from: &r))
         case .keyframeRequest: m = .keyframeRequest(try KeyframeRequest(from: &r))
-        case .stats: m = .stats(try Stats(from: &r))
-        case .configUpdate: m = .configUpdate(try ConfigUpdate(from: &r))
-        case .displayChanged: m = .displayChanged(try DisplayChanged(from: &r))
         case .error: m = .error(try ErrorMessage(from: &r))
         case .pair: m = .pair(try Pair(from: &r))
         case .displayLayout: m = .displayLayout(try DisplayLayout(from: &r))
+        case .hostSetup: m = .hostSetup(try HostSetup(from: &r))
         case .videoConfig: m = .videoConfig(try VideoConfig(from: &r))
         case .videoFrame: m = .videoFrame(try VideoFrame(from: &r))
         case .frameAck: m = .frameAck(try FrameAck(from: &r))
-        case .audioConfig: m = .audioConfig(try AudioConfig(from: &r))
-        case .audioPacket: m = .audioPacket(try AudioPacket(from: &r))
         case .cursorShape: m = .cursorShape(try CursorShape(from: &r))
         case .cursorSelect: m = .cursorSelect(try CursorSelect(from: &r))
         case .cursorWarp: m = .cursorWarp(try CursorWarp(from: &r))
@@ -93,8 +81,6 @@ public enum Message: Sendable, Equatable {
         case .scroll: m = .scroll(try Scroll(from: &r))
         case .gesture: m = .gesture(try Gesture(from: &r))
         case .releaseAll: m = .releaseAll(try ReleaseAll(from: &r))
-        case .probeRequest: m = .probeRequest(try ProbeRequest(from: &r))
-        case .probeAck: m = .probeAck(try ProbeAck(from: &r))
         }
         try r.finish()
         return m
@@ -108,28 +94,68 @@ public struct Envelope: Sendable, Equatable {
     public init(header: FrameHeader, message: Message) { self.header = header; self.message = message }
 }
 
+/// A message written at one version (lower, PROTOCOL-VERSIONING §3.3).
+public enum Lowered: Sendable, Equatable {
+    /// Everything the message holds exists at that version.
+    case exact([UInt8])
+    /// Advisory fields the version doesn't have were left out.
+    case projected([UInt8], dropped: [String])
+    /// The message, or something it holds, doesn't exist at that version: not sendable there.
+    case unrepresentable(String)
+
+    public var bytes: [UInt8]? {
+        switch self {
+        case .exact(let b), .projected(let b, _): b
+        case .unrepresentable: nil
+        }
+    }
+}
+
 public enum MessageCodec {
-    /// Header + payload, ready to write to a connection. `version` goes in the header (nil:
-    /// `LainProtocol.majorVersion`); pass another one only to answer a mismatched peer with an
-    /// `Error(versionMismatch)` it can parse (the `ErrorMessage` payload is unchanged since v1; §7.5).
-    public static func encode(_ message: Message, sequence: UInt32, timestampNs: UInt64,
-                              flags: HeaderFlags? = nil, version: UInt8? = nil) -> [UInt8] {
-        var body = ByteWriter(capacity: 64)
+    /// Header + payload at `version` (a session version, or the handshake's), or why it can't be.
+    public static func lower(_ message: Message, to version: UInt8, sequence: UInt32, timestampNs: UInt64,
+                             flags: HeaderFlags? = nil) -> Lowered {
+        guard message.type.exists(in: version) else { return .unrepresentable("\(message.type) doesn't exist in v\(version)") }
+        var body = ByteWriter(capacity: 64, version: version)
         message.payload.encode(into: &body)
-        var w = ByteWriter(capacity: FrameHeader.size + body.bytes.count)
+        if let why = body.refused { return .unrepresentable(why) }
+        var w = ByteWriter(capacity: FrameHeader.size + body.bytes.count, version: version)
         FrameHeader(version: version, type: message.type, flags: flags ?? message.impliedFlags, sequence: sequence,
                     timestampNs: timestampNs, payloadLength: UInt32(body.bytes.count)).encode(into: &w)
+        w.raw(body.bytes)
+        return body.dropped.isEmpty ? .exact(w.bytes) : .projected(w.bytes, dropped: body.dropped)
+    }
+
+    /// Header + payload, ready to write. `version` nil: the type's default (`MessageType.defaultVersion`).
+    /// The message must be representable there; channels use `lower` instead.
+    public static func encode(_ message: Message, sequence: UInt32, timestampNs: UInt64,
+                              flags: HeaderFlags? = nil, version: UInt8? = nil) -> [UInt8] {
+        let lowered = lower(message, to: version ?? message.type.defaultVersion, sequence: sequence,
+                            timestampNs: timestampNs, flags: flags)
+        guard let bytes = lowered.bytes else { preconditionFailure("\(lowered)") }
+        return bytes
+    }
+
+    /// `Error(versionMismatch)` framed in a legacy peer's own version, which it can parse (the `Error`
+    /// payload is the same in every version), so a one-sided update says why (PROTOCOL-VERSIONING §7).
+    public static func legacyVersionMismatch(remote: UInt8, why: String, sequence: UInt32, timestampNs: UInt64) -> [UInt8] {
+        var body = ByteWriter(version: LainProtocol.handshakeVersion)
+        ErrorMessage(code: .versionMismatch, message: why).encode(into: &body)
+        var w = ByteWriter(capacity: FrameHeader.size + body.bytes.count, version: LainProtocol.handshakeVersion)
+        FrameHeader(version: remote, type: .error, sequence: sequence, timestampNs: timestampNs,
+                    payloadLength: UInt32(body.bytes.count)).encode(into: &w)
         w.raw(body.bytes)
         return w.bytes
     }
 
-    /// Decodes exactly one complete message.
+    /// Decodes exactly one complete message, at the version its header names.
     public static func decode(_ bytes: [UInt8]) throws(ProtocolError) -> Envelope {
         let header = try FrameHeader.decode(bytes[...])
         guard bytes.count - FrameHeader.size == Int(header.payloadLength) else {
             throw bytes.count - FrameHeader.size < Int(header.payloadLength) ? .truncated : .malformed("length mismatch")
         }
-        return Envelope(header: header, message: try Message.decode(type: header.type, payload: bytes[FrameHeader.size...]))
+        return Envelope(header: header, message: try Message.decode(type: header.type, payload: bytes[FrameHeader.size...],
+                                                                    version: header.version))
     }
 }
 
@@ -154,7 +180,8 @@ public struct FrameParser: Sendable {
         let header = try FrameHeader.decode(buffer[start...])
         let end = start + FrameHeader.size + Int(header.payloadLength)
         guard buffer.count >= end else { return nil }
-        let message = try Message.decode(type: header.type, payload: buffer[(start + FrameHeader.size)..<end])
+        let message = try Message.decode(type: header.type, payload: buffer[(start + FrameHeader.size)..<end],
+                                         version: header.version)
         start = end
         if start > 1 << 20 { buffer.removeFirst(start); start = 0 }   // compact occasionally
         return Envelope(header: header, message: message)
