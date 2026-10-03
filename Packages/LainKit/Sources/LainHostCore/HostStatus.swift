@@ -13,9 +13,23 @@ public enum HostStatus: Sendable, Equatable {
     /// on its own.
     case error(String)
 
-    /// lain on the iPad can't talk to this one (§7.5, §7.7 D29 decision 4): a v1 app closes the link
-    /// right after `ChannelHello`, a newer one answers `Error(versionMismatch)`.
-    public static let iPadNeedsUpdate = HostStatus.error("lain on the iPad speaks another protocol: update it")
+    /// lain on the iPad shares no protocol version with this one (PROTOCOL-VERSIONING §8): which side to
+    /// update.
+    public static func versionGap(_ gap: VersionGap) -> HostStatus {
+        switch gap {
+        case .peerOlder(let peer):
+            .error("lain on the iPad is too old (it speaks \(peer), this Mac protocol \(VersionList.offered)): update it")
+        case .peerNewer(let peer):
+            .error("lain on the iPad is newer (it speaks \(peer), this Mac protocol \(VersionList.offered)): update lain on this Mac")
+        case .differentBuilds(let version):
+            .error("the iPad runs a different development build of protocol v\(version): update both from the same tree")
+        }
+    }
+
+    /// lain on the iPad keeps closing the link right after `ChannelHello` without a word: a very old app
+    /// (v1) that can't parse it.
+    public static let iPadNeedsUpdate = versionGap(olderAppGap)
+    static let olderAppGap = VersionGap.peerOlder(peer: "an older protocol")
 
     /// Video capture stopped on its own in several sessions in a row: the attached iPad is dialed again
     /// once the backoff is over (`HostSession.Tuning.captureRetryInterval`), or at once if it is replugged.
@@ -35,7 +49,8 @@ public enum HostStatus: Sendable, Equatable {
         return false
     }
 
-    public static let protocolDescription = "Protocol v\(LainProtocol.majorVersion)"
+    /// "Protocol v3–v4" (what this Mac offers).
+    public static var protocolDescription: String { "Protocol \(VersionList.offered)" }
 }
 
 extension LinkTransport {

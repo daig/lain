@@ -1,7 +1,8 @@
 #!/bin/zsh
 # Update lain on the Mac and on the iPad in one go, from Terminal on the lain display. On a headless Mac the
-# iPad is the only screen and input, and a host and an iPad app on different protocol versions can't hold a
-# session, so this prepares everything first and then swaps both apps back to back:
+# iPad is the only screen and input, and a host and an iPad app that share no protocol version can't hold a
+# session (since v3 one version apart is fine: ARCHITECTURE §7.5, D31; the v2 → v3 update isn't), so this
+# prepares everything first and then swaps both apps back to back:
 #   1. finds the iPad, builds the iPad app (Debug, for that iPad) and the host (Release), and copies the host
 #      next to the installed one (Scripts/install-host.sh --stage); if any of that fails, nothing is installed
 #      and lain keeps running;

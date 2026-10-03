@@ -44,45 +44,68 @@ public enum MouseButton: UInt8, Sendable, CaseIterable { case left = 0, right = 
 
 // MARK: - Control
 
+/// The first frame on every connection (handshake layer, frozen: PROTOCOL-VERSIONING §3.1). The dialer
+/// offers its versions; the acceptor answers `ChannelAccept`.
 public struct ChannelHello: WireMessage {
     public static let type = MessageType.channelHello
     public static let tokenSize = 16, macSize = 32
-    public var protocolVersion: UInt8
+    /// The dialer's versions with their digests.
+    public var versions: VersionList
     public var connectionKind: ConnectionKind
     /// Random per session; ties the three connections together.
     public var sessionToken: [UInt8]
-    /// HMAC-SHA256 over the fields above, keyed by the pairing secret (computed in LainTransport).
+    /// HMAC-SHA256 over every field above, keyed by the pairing secret (computed in LainTransport).
     /// All zeros requests pairing (§7.6); only the USB listener accepts that.
     public var hmac: [UInt8]
 
-    /// `protocolVersion` nil: `LainProtocol.majorVersion`.
-    public init(protocolVersion: UInt8? = nil, connectionKind: ConnectionKind,
-                sessionToken: [UInt8], hmac: [UInt8]) {
+    /// `versions` nil: `VersionList.offered`.
+    public init(versions: VersionList? = nil, connectionKind: ConnectionKind, sessionToken: [UInt8], hmac: [UInt8]) {
         precondition(sessionToken.count == Self.tokenSize && hmac.count == Self.macSize)
-        self.protocolVersion = protocolVersion ?? LainProtocol.majorVersion
+        self.versions = versions ?? .offered
         self.connectionKind = connectionKind
         self.sessionToken = sessionToken
         self.hmac = hmac
     }
 
-    /// The bytes the HMAC covers.
-    public var authenticatedBytes: [UInt8] { [protocolVersion, connectionKind.rawValue] + sessionToken }
+    /// The bytes the HMAC covers: everything before it.
+    public var authenticatedBytes: [UInt8] {
+        var w = ByteWriter(version: LainProtocol.handshakeVersion)
+        w.versionList(versions); w.u8(connectionKind.rawValue); w.raw(sessionToken)
+        return w.bytes
+    }
 
     public func encode(into w: inout ByteWriter) {
-        w.u8(protocolVersion); w.u8(connectionKind.rawValue); w.raw(sessionToken); w.raw(hmac)
+        w.versionList(versions); w.u8(connectionKind.rawValue); w.raw(sessionToken); w.raw(hmac)
     }
 
     public init(from r: inout ByteReader) throws(ProtocolError) {
-        protocolVersion = try r.u8()
+        versions = try r.versionList()
         connectionKind = try r.enumValue(ConnectionKind.self)
         sessionToken = try r.raw(Self.tokenSize)
         hmac = try r.raw(Self.macSize)
     }
 }
 
+/// The acceptor's answer to an authenticated `ChannelHello`, on every connection (handshake layer,
+/// frozen: PROTOCOL-VERSIONING §3.1): the version the session runs at, the highest common to both lists
+/// with equal digests, or 0 when there is none (then the connection closes).
+public struct ChannelAccept: WireMessage {
+    public static let type = MessageType.channelAccept
+    /// 0: no common version.
+    public var chosen: UInt8
+    /// The acceptor's own versions.
+    public var versions: VersionList
+    public init(chosen: UInt8, versions: VersionList) { self.chosen = chosen; self.versions = versions }
+    public func encode(into w: inout ByteWriter) { w.u8(chosen); w.versionList(versions) }
+    public init(from r: inout ByteReader) throws(ProtocolError) {
+        chosen = try r.u8()
+        versions = try r.versionList()
+        guard chosen == 0 || versions.versions.contains(chosen) else { throw .malformed("chose v\(chosen) outside its list") }
+    }
+}
+
 public struct Hello: WireMessage {
     public static let type = MessageType.hello
-    public var protocolVersion: UInt8
     public var deviceModel: String
     public var pixelWidth: UInt32
     public var pixelHeight: UInt32
@@ -91,11 +114,8 @@ public struct Hello: WireMessage {
     public var decodeCapabilities: DecodeCapabilities
     public var keyboardType: KeyboardType
 
-    /// `protocolVersion` nil: `LainProtocol.majorVersion`.
-    public init(protocolVersion: UInt8? = nil, deviceModel: String, pixelWidth: UInt32,
-                pixelHeight: UInt32, scale: UInt8, maxRefreshRate: UInt16, decodeCapabilities: DecodeCapabilities,
-                keyboardType: KeyboardType) {
-        self.protocolVersion = protocolVersion ?? LainProtocol.majorVersion
+    public init(deviceModel: String, pixelWidth: UInt32, pixelHeight: UInt32, scale: UInt8, maxRefreshRate: UInt16,
+                decodeCapabilities: DecodeCapabilities, keyboardType: KeyboardType) {
         self.deviceModel = deviceModel
         self.pixelWidth = pixelWidth
         self.pixelHeight = pixelHeight
@@ -106,12 +126,12 @@ public struct Hello: WireMessage {
     }
 
     public func encode(into w: inout ByteWriter) {
-        w.u8(protocolVersion); w.string(deviceModel); w.u32(pixelWidth); w.u32(pixelHeight); w.u8(scale)
+        w.string(deviceModel); w.u32(pixelWidth); w.u32(pixelHeight); w.u8(scale)
         w.u16(maxRefreshRate); w.u32(decodeCapabilities.rawValue); w.u8(keyboardType.rawValue)
     }
 
     public init(from r: inout ByteReader) throws(ProtocolError) {
-        protocolVersion = try r.u8(); deviceModel = try r.string(); pixelWidth = try r.u32(); pixelHeight = try r.u32()
+        deviceModel = try r.string(); pixelWidth = try r.u32(); pixelHeight = try r.u32()
         scale = try r.u8(); maxRefreshRate = try r.u16()
         decodeCapabilities = DecodeCapabilities(rawValue: try r.u32()); keyboardType = try r.enumValue(KeyboardType.self)
     }
@@ -183,22 +203,6 @@ public struct HelloAck: WireMessage {
     }
 }
 
-public struct Start: WireMessage {
-    public static let type = MessageType.start
-    public init() {}
-    public func encode(into w: inout ByteWriter) {}
-    public init(from r: inout ByteReader) throws(ProtocolError) {}
-}
-
-public struct Stop: WireMessage {
-    public static let type = MessageType.stop
-    public enum Reason: UInt8, Sendable { case userRequested = 0, backgrounded = 1, shuttingDown = 2 }
-    public var reason: Reason
-    public init(reason: Reason) { self.reason = reason }
-    public func encode(into w: inout ByteWriter) { w.u8(reason.rawValue) }
-    public init(from r: inout ByteReader) throws(ProtocolError) { reason = try r.enumValue(Reason.self) }
-}
-
 /// NTP-style exchange for RTT and clock offset (§9): Ping carries t0, Pong t0 plus the peer's t1/t2.
 public struct Ping: WireMessage {
     public static let type = MessageType.ping
@@ -240,102 +244,32 @@ public struct KeyframeRequest: WireMessage {
     }
 }
 
-/// A key/value pair; keys are open-ended so new stats and settings don't change the wire format.
-public struct KeyValue: Sendable, Equatable {
-    public var key: UInt16
-    public var value: Int64
-    public init(_ key: UInt16, _ value: Int64) { self.key = key; self.value = value }
-}
-
-extension ByteWriter {
-    mutating func keyValues(_ kvs: [KeyValue]) {
-        u16(UInt16(kvs.count)); for kv in kvs { u16(kv.key); i64(kv.value) }
-    }
-}
-
-extension ByteReader {
-    mutating func keyValues() throws(ProtocolError) -> [KeyValue] {
-        let n = Int(try u16())
-        guard remaining >= n * 10 else { throw .truncated }
-        var out: [KeyValue] = []
-        out.reserveCapacity(n)
-        for _ in 0..<n { out.append(KeyValue(try u16(), try i64())) }
-        return out
-    }
-}
-
-/// Client-side telemetry for the HUD and bitrate control (keys in `StatKey`).
-public struct Stats: WireMessage {
-    public static let type = MessageType.stats
-    public var entries: [KeyValue]
-    public init(entries: [KeyValue]) { self.entries = entries }
-    public func encode(into w: inout ByteWriter) { w.keyValues(entries) }
-    public init(from r: inout ByteReader) throws(ProtocolError) { entries = try r.keyValues() }
-}
-
-public enum StatKey {
-    public static let framesReceived: UInt16 = 1
-    public static let framesDecoded: UInt16 = 2
-    public static let framesDropped: UInt16 = 3
-    public static let decodeP50Us: UInt16 = 4
-    public static let decodeP95Us: UInt16 = 5
-    public static let presentP50Us: UInt16 = 6
-    public static let presentP95Us: UInt16 = 7
-}
-
-/// Settings changes in either direction (keys in `ConfigKey`).
-public struct ConfigUpdate: WireMessage {
-    public static let type = MessageType.configUpdate
-    public var entries: [KeyValue]
-    public init(entries: [KeyValue]) { self.entries = entries }
-    public func encode(into w: inout ByteWriter) { w.keyValues(entries) }
-    public init(from r: inout ByteReader) throws(ProtocolError) { entries = try r.keyValues() }
-}
-
-public enum ConfigKey {
-    public static let bitrate: UInt16 = 1
-    public static let chroma: UInt16 = 2
-    public static let refreshRate: UInt16 = 3
-    public static let keepDisplayAfterDisconnect: UInt16 = 4
-}
-
-public struct DisplayChanged: WireMessage {
-    public static let type = MessageType.displayChanged
-    public var displayID: UInt32
-    public var pixelWidth: UInt32
-    public var pixelHeight: UInt32
-    public var pointWidth: UInt32
-    public var pointHeight: UInt32
-    public var refreshRate: UInt16
-    public init(displayID: UInt32, pixelWidth: UInt32, pixelHeight: UInt32, pointWidth: UInt32, pointHeight: UInt32,
-                refreshRate: UInt16) {
-        self.displayID = displayID; self.pixelWidth = pixelWidth; self.pixelHeight = pixelHeight
-        self.pointWidth = pointWidth; self.pointHeight = pointHeight; self.refreshRate = refreshRate
-    }
-    public func encode(into w: inout ByteWriter) {
-        w.u32(displayID); w.u32(pixelWidth); w.u32(pixelHeight); w.u32(pointWidth); w.u32(pointHeight); w.u16(refreshRate)
-    }
-    public init(from r: inout ByteReader) throws(ProtocolError) {
-        displayID = try r.u32(); pixelWidth = try r.u32(); pixelHeight = try r.u32()
-        pointWidth = try r.u32(); pointHeight = try r.u32(); refreshRate = try r.u16()
-    }
-}
-
+/// A refusal or failure. In handshake frames (before a version is agreed) any code is accepted, so a
+/// newer peer's reason still arrives; in session frames the code must be known (PROTOCOL-VERSIONING §3.1).
 public struct ErrorMessage: WireMessage {
     public static let type = MessageType.error
-    public enum Code: UInt16, Sendable {
-        case versionMismatch = 1, authenticationFailed = 2, permissionMissing = 3, displayUnavailable = 4, `internal` = 5
+    public struct Code: RawRepresentable, Hashable, Sendable, CustomStringConvertible {
+        public let rawValue: UInt16
+        public init(rawValue: UInt16) { self.rawValue = rawValue }
+        /// Answered only to a legacy peer (a version before negotiation), framed in its version.
+        public static let versionMismatch = Code(rawValue: 1)
+        public static let authenticationFailed = Code(rawValue: 2)
+        // 3 (permissionMissing) and 4 (displayUnavailable) are reserved: defined in v1–v2, never sent.
+        public static let `internal` = Code(rawValue: 5)
         /// The host won't start this session now: another is live (e.g. over USB, which is preferred) or it
         /// is backing off. Retry later (§7.7).
-        case busy = 6
+        public static let busy = Code(rawValue: 6)
+        static let names: [UInt16: String] = [1: "versionMismatch", 2: "authenticationFailed", 5: "internal", 6: "busy"]
+        public var isKnown: Bool { Self.names[rawValue] != nil }
+        public var description: String { Self.names[rawValue] ?? "code \(rawValue)" }
     }
     public var code: Code
     public var message: String
     public init(code: Code, message: String) { self.code = code; self.message = message }
     public func encode(into w: inout ByteWriter) { w.u16(code.rawValue); w.string(message) }
     public init(from r: inout ByteReader) throws(ProtocolError) {
-        let raw = try r.u16()
-        guard let c = Code(rawValue: raw) else { throw .malformed("error code \(raw)") }
+        let c = Code(rawValue: try r.u16())
+        guard c.isKnown || r.version == LainProtocol.handshakeVersion else { throw .malformed("error code \(c.rawValue)") }
         code = c; message = try r.string()
     }
 }
@@ -395,6 +329,55 @@ public struct DisplayLayout: WireMessage {
                                isStreamed: try r.bool()))
         }
         displays = out
+    }
+}
+
+/// v4: the Mac's setup state, so the iPad can say what's missing and where to fix it. Sent after
+/// `HelloAck` and whenever it changes, only to peers with `ProtocolFeature.hostSetup`.
+public struct HostSetup: WireMessage {
+    public static let type = MessageType.hostSetup
+
+    public enum Requirement: UInt8, Sendable, CaseIterable {
+        case screenRecording = 0, accessibility = 1, localNetwork = 2, startAtLogin = 3
+    }
+
+    public enum State: UInt8, Sendable {
+        case granted = 0, missing = 1
+        /// The host can't tell (Local Network on macOS before the listener first advertises).
+        case unknown = 2
+    }
+
+    public struct Item: Sendable, Equatable {
+        public var requirement: Requirement
+        public var state: State
+        public init(_ requirement: Requirement, _ state: State) { self.requirement = requirement; self.state = state }
+    }
+
+    public var items: [Item]
+    /// Why the live session has no video, for the owner (empty: it has video, or it's starting).
+    public var videoProblem: String
+    /// The Mac has a display besides lain's, where its setup window shows.
+    public var hasOtherDisplay: Bool
+
+    public init(items: [Item], videoProblem: String, hasOtherDisplay: Bool) {
+        self.items = items; self.videoProblem = videoProblem; self.hasOtherDisplay = hasOtherDisplay
+    }
+
+    public func state(of requirement: Requirement) -> State? { items.first { $0.requirement == requirement }?.state }
+    public var missing: [Requirement] { items.filter { $0.state == .missing }.map(\.requirement) }
+
+    public func encode(into w: inout ByteWriter) {
+        w.u8(UInt8(min(items.count, 255)))
+        for item in items.prefix(255) { w.u8(item.requirement.rawValue); w.u8(item.state.rawValue) }
+        w.string(videoProblem); w.bool(hasOtherDisplay)
+    }
+
+    public init(from r: inout ByteReader) throws(ProtocolError) {
+        let n = Int(try r.u8())
+        var items: [Item] = []
+        for _ in 0..<n { items.append(Item(try r.enumValue(Requirement.self), try r.enumValue(State.self))) }
+        self.items = items
+        videoProblem = try r.string(); hasOtherDisplay = try r.bool()
     }
 }
 
@@ -480,38 +463,6 @@ public struct FrameAck: WireMessage {
     public func encode(into w: inout ByteWriter) { w.u32(frameId); w.u64(receivedAtNs); w.u32(bytes) }
     public init(from r: inout ByteReader) throws(ProtocolError) {
         frameId = try r.u32(); receivedAtNs = try r.u64(); bytes = try r.u32()
-    }
-}
-
-// MARK: - Audio
-
-public struct AudioConfig: WireMessage {
-    public static let type = MessageType.audioConfig
-    public var sampleRate: UInt32
-    public var channels: UInt8
-    public var encoding: AudioEncoding
-    public var framesPerPacket: UInt16
-    public init(sampleRate: UInt32, channels: UInt8, encoding: AudioEncoding, framesPerPacket: UInt16) {
-        self.sampleRate = sampleRate; self.channels = channels; self.encoding = encoding; self.framesPerPacket = framesPerPacket
-    }
-    public func encode(into w: inout ByteWriter) { w.u32(sampleRate); w.u8(channels); w.u8(encoding.rawValue); w.u16(framesPerPacket) }
-    public init(from r: inout ByteReader) throws(ProtocolError) {
-        sampleRate = try r.u32(); channels = try r.u8(); encoding = try r.enumValue(AudioEncoding.self)
-        framesPerPacket = try r.u16()
-    }
-}
-
-public struct AudioPacket: WireMessage {
-    public static let type = MessageType.audioPacket
-    public var packetId: UInt32
-    public var captureTimeNs: UInt64
-    public var samples: [UInt8]
-    public init(packetId: UInt32, captureTimeNs: UInt64, samples: [UInt8]) {
-        self.packetId = packetId; self.captureTimeNs = captureTimeNs; self.samples = samples
-    }
-    public func encode(into w: inout ByteWriter) { w.u32(packetId); w.u64(captureTimeNs); w.blob(samples) }
-    public init(from r: inout ByteReader) throws(ProtocolError) {
-        packetId = try r.u32(); captureTimeNs = try r.u64(); samples = try r.blob()
     }
 }
 
@@ -670,22 +621,3 @@ public struct ReleaseAll: WireMessage {
     public init(from r: inout ByteReader) throws(ProtocolError) { reason = try r.enumValue(Reason.self) }
 }
 
-// MARK: - Latency probe (§9)
-
-public struct ProbeRequest: WireMessage {
-    public static let type = MessageType.probeRequest
-    public var probeId: UInt32
-    public var sentAtNs: UInt64
-    public init(probeId: UInt32, sentAtNs: UInt64) { self.probeId = probeId; self.sentAtNs = sentAtNs }
-    public func encode(into w: inout ByteWriter) { w.u32(probeId); w.u64(sentAtNs) }
-    public init(from r: inout ByteReader) throws(ProtocolError) { probeId = try r.u32(); sentAtNs = try r.u64() }
-}
-
-public struct ProbeAck: WireMessage {
-    public static let type = MessageType.probeAck
-    public var probeId: UInt32
-    public var detectedAtNs: UInt64
-    public init(probeId: UInt32, detectedAtNs: UInt64) { self.probeId = probeId; self.detectedAtNs = detectedAtNs }
-    public func encode(into w: inout ByteWriter) { w.u32(probeId); w.u64(detectedAtNs) }
-    public init(from r: inout ByteReader) throws(ProtocolError) { probeId = try r.u32(); detectedAtNs = try r.u64() }
-}

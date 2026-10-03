@@ -5,24 +5,38 @@ import Synchronization
 
 private let log = Telemetry.logger("wifi")
 
-/// The host's Bonjour TXT record (§7.7, D29): `v` = the protocol major version, `id` = the host id.
+/// The host's Bonjour TXT record (§7.7, D29): `v` = the newest protocol version, `vs` = every version
+/// it supports, `id` = the host id. Only a pre-filter: the handshake decides (PROTOCOL-VERSIONING §3.2).
 public enum LainTXT {
-    /// The iPad dials only hosts that speak its major version.
+    /// The newest version. Legacy iPads read only this, and compare it with their own.
     public static let versionKey = "v"
+    /// Every supported version, comma-separated ("3,4"). The iPad dials only hosts that share one.
+    public static let versionsKey = "vs"
     /// A canonical UUID; the iPad dials only ids it holds a Wi-Fi secret for (`mac:<id>`).
     public static let hostIdKey = "id"
     /// `bench=1` marks `--bench wifi` (for logs).
     public static let benchKey = "bench"
 
-    /// `version` nil: `LainProtocol.majorVersion`.
-    public static func dictionary(hostId: String, version: UInt8? = nil, bench: Bool = false) -> [String: String] {
-        var txt = [versionKey: String(version ?? LainProtocol.majorVersion), hostIdKey: hostId]
+    /// `versions` nil: `VersionList.offered`'s.
+    public static func dictionary(hostId: String, versions: [UInt8]? = nil, bench: Bool = false) -> [String: String] {
+        let versions = versions ?? VersionList.offered.versions
+        var txt = [versionKey: String(versions.max() ?? 0), versionsKey: versions.map(String.init).joined(separator: ","),
+                   hostIdKey: hostId]
         if bench { txt[benchKey] = "1" }
         return txt
     }
 
-    public static func record(hostId: String, version: UInt8? = nil, bench: Bool = false) -> NWTXTRecord {
-        NWTXTRecord(dictionary(hostId: hostId, version: version, bench: bench))
+    public static func record(hostId: String, versions: [UInt8]? = nil, bench: Bool = false) -> NWTXTRecord {
+        NWTXTRecord(dictionary(hostId: hostId, versions: versions, bench: bench))
+    }
+
+    /// The versions a TXT record advertises: `vs`, or a legacy host's single `v`; empty if neither parses.
+    public static func versions(in txt: [String: String]) -> [UInt8] {
+        if let list = txt[versionsKey] {
+            let parsed = list.split(separator: ",").compactMap { UInt8($0) }
+            if !parsed.isEmpty { return parsed.sorted() }
+        }
+        return txt[versionKey].flatMap { UInt8($0) }.map { [$0] } ?? []
     }
 }
 
@@ -32,8 +46,8 @@ public struct DiscoveredHost: Sendable, Hashable, CustomStringConvertible {
     public var hostId: String
     /// The Bonjour instance name: the Mac's computer name unless renamed after a conflict.
     public var name: String
-    /// The TXT `v`; nil if missing or not a number.
-    public var protocolVersion: UInt8?
+    /// The protocol versions it advertises, ascending (`LainTXT.versions(in:)`); empty if none parse.
+    public var versions: [UInt8]
     /// What to dial: the `.service` endpoint, resolved when a connection starts (so a listener that
     /// moved to a new port is still found).
     public var endpoint: NWEndpoint
@@ -41,11 +55,11 @@ public struct DiscoveredHost: Sendable, Hashable, CustomStringConvertible {
     public var interfaceNames: [String]
     public var isBench: Bool
 
-    public init(hostId: String, name: String, protocolVersion: UInt8?, endpoint: NWEndpoint,
+    public init(hostId: String, name: String, versions: [UInt8], endpoint: NWEndpoint,
                 interfaceNames: [String] = [], isBench: Bool = false) {
         self.hostId = hostId
         self.name = name
-        self.protocolVersion = protocolVersion
+        self.versions = versions
         self.endpoint = endpoint
         self.interfaceNames = interfaceNames
         self.isBench = isBench
@@ -57,14 +71,19 @@ public struct DiscoveredHost: Sendable, Hashable, CustomStringConvertible {
         guard let hostId = txt[LainTXT.hostIdKey], !hostId.isEmpty else { return nil }
         let name: String
         if case .service(let serviceName, _, _, _) = endpoint { name = serviceName } else { name = endpoint.debugDescription }
-        self.init(hostId: hostId, name: name, protocolVersion: txt[LainTXT.versionKey].flatMap { UInt8($0) },
+        self.init(hostId: hostId, name: name, versions: LainTXT.versions(in: txt),
                   endpoint: endpoint, interfaceNames: interfaceNames, isBench: txt[LainTXT.benchKey] == "1")
     }
 
-    /// For logs: "Mac mini [<id> v2 on en0,awdl0]".
+    /// Whether it advertises a version this side also offers (`offered` nil: `VersionList.offered`).
+    public func sharesVersion(with offered: VersionList? = nil) -> Bool {
+        !Set(versions).isDisjoint(with: (offered ?? .offered).versions)
+    }
+
+    /// For logs: "Mac mini [<id> v3,v4 on en0,awdl0]".
     public var description: String {
-        let version = protocolVersion.map { String($0) } ?? "?"
-        return "\(name) [\(hostId) v\(version) on \(interfaceNames.joined(separator: ","))\(isBench ? ", bench" : "")]"
+        let version = versions.isEmpty ? "v?" : versions.map { "v\($0)" }.joined(separator: ",")
+        return "\(name) [\(hostId) \(version) on \(interfaceNames.joined(separator: ","))\(isBench ? ", bench" : "")]"
     }
 
     init?(_ result: NWBrowser.Result) {

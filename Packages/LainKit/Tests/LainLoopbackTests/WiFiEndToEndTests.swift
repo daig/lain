@@ -223,7 +223,7 @@ import Testing
         #expect(await eventually { host.wifiPort != nil })
         let port = try #require(host.wifiPort)
         #expect(host.wifiStatus == .advertising(name: nil, port: port, pairedCount: 1))
-        beacon.show([DiscoveredHost(hostId: Self.identity.id, name: Self.identity.name, protocolVersion: LainProtocol.majorVersion,
+        beacon.show([DiscoveredHost(hostId: Self.identity.id, name: Self.identity.name, versions: LainProtocol.supportedVersions,
                                     endpoint: .hostPort(host: .ipv4(.loopback), port: try #require(NWEndpoint.Port(rawValue: port))),
                                     interfaceNames: ["lo0"])])
 

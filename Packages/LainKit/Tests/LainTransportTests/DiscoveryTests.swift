@@ -9,22 +9,26 @@ import Testing
     let hostId = "6F9619FF-8B86-D011-B42D-00C04FC964FF"
     let service = NWEndpoint.service(name: "Mac mini", type: "_lain._tcp", domain: "local.", interface: nil)
 
-    @Test func txtCarriesTheVersionAndHostId() {
-        #expect(LainTXT.dictionary(hostId: hostId) == ["v": String(LainProtocol.majorVersion), "id": hostId])
-        #expect(LainTXT.record(hostId: hostId).dictionary == ["v": String(LainProtocol.majorVersion), "id": hostId])
-        #expect(LainTXT.dictionary(hostId: hostId, version: 2, bench: true) == ["v": "2", "id": hostId, "bench": "1"])
+    @Test func txtCarriesTheVersionsAndHostId() {
+        let offered = VersionList.offered.versions
+        let expected = ["v": String(offered.last!), "vs": offered.map(String.init).joined(separator: ","), "id": hostId]
+        #expect(LainTXT.dictionary(hostId: hostId) == expected)
+        #expect(LainTXT.record(hostId: hostId).dictionary == expected)
+        #expect(LainTXT.dictionary(hostId: hostId, versions: [3, 4], bench: true)
+                    == ["v": "4", "vs": "3,4", "id": hostId, "bench": "1"])
         // Through the DNS-SD wire format and back.
-        let wire = LainTXT.record(hostId: hostId, version: 2).data
-        #expect(NWTXTRecord(wire).dictionary == ["v": "2", "id": hostId])
+        let wire = LainTXT.record(hostId: hostId, versions: [3, 4]).data
+        #expect(NWTXTRecord(wire).dictionary == ["v": "4", "vs": "3,4", "id": hostId])
     }
 
     @Test func aBrowseResultMapsToADiscoveredHost() throws {
-        let host = try #require(DiscoveredHost(endpoint: service, txt: LainTXT.dictionary(hostId: hostId, version: 2),
+        let host = try #require(DiscoveredHost(endpoint: service, txt: LainTXT.dictionary(hostId: hostId, versions: [3, 4]),
                                                interfaceNames: ["en0", "awdl0"]))
-        #expect(host == DiscoveredHost(hostId: hostId, name: "Mac mini", protocolVersion: 2, endpoint: service,
+        #expect(host == DiscoveredHost(hostId: hostId, name: "Mac mini", versions: [3, 4], endpoint: service,
                                        interfaceNames: ["en0", "awdl0"]))
         #expect(!host.isBench)
-        #expect(host.description == "Mac mini [\(hostId) v2 on en0,awdl0]")
+        #expect(host.description == "Mac mini [\(hostId) v3,v4 on en0,awdl0]")
+        #expect(host.sharesVersion(with: VersionList.supported))
         let bench = DiscoveredHost(endpoint: service, txt: LainTXT.dictionary(hostId: hostId, bench: true), interfaceNames: [])
         #expect(bench?.isBench == true)
     }
@@ -33,11 +37,15 @@ import Testing
         // No id: nothing to match against the client's secrets.
         #expect(DiscoveredHost(endpoint: service, txt: ["v": "2"], interfaceNames: []) == nil)
         #expect(DiscoveredHost(endpoint: service, txt: ["v": "2", "id": ""], interfaceNames: []) == nil)
-        // A missing or malformed version is reported as unknown (the client won't dial it).
-        #expect(DiscoveredHost(endpoint: service, txt: ["id": hostId], interfaceNames: [])?.protocolVersion == nil)
-        #expect(DiscoveredHost(endpoint: service, txt: ["id": hostId, "v": "two"], interfaceNames: [])?.protocolVersion == nil)
-        #expect(DiscoveredHost(endpoint: service, txt: ["id": hostId, "v": "300"], interfaceNames: [])?.protocolVersion == nil)
-        #expect(DiscoveredHost(endpoint: service, txt: ["id": hostId, "v": "1"], interfaceNames: [])?.protocolVersion == 1)
+        // A missing or malformed version is reported as none (the client won't dial it).
+        #expect(DiscoveredHost(endpoint: service, txt: ["id": hostId], interfaceNames: [])?.versions == [])
+        #expect(DiscoveredHost(endpoint: service, txt: ["id": hostId, "v": "two"], interfaceNames: [])?.versions == [])
+        #expect(DiscoveredHost(endpoint: service, txt: ["id": hostId, "v": "300"], interfaceNames: [])?.versions == [])
+        // A legacy host advertises only `v`; `vs` wins when it parses.
+        #expect(DiscoveredHost(endpoint: service, txt: ["id": hostId, "v": "2"], interfaceNames: [])?.versions == [2])
+        #expect(DiscoveredHost(endpoint: service, txt: ["id": hostId, "v": "5", "vs": "4,x,5"], interfaceNames: [])?.versions == [4, 5])
+        #expect(DiscoveredHost(endpoint: service, txt: ["id": hostId, "v": "2", "vs": ""], interfaceNames: [])?.versions == [2])
+        #expect(DiscoveredHost(endpoint: service, txt: ["id": hostId, "v": "2"], interfaceNames: [])?.sharesVersion() == false)
         // The id is passed through as advertised: whether it is canonical is the client's check.
         #expect(DiscoveredHost(endpoint: service, txt: ["id": "not-a-uuid"], interfaceNames: [])?.hostId == "not-a-uuid")
         // Not a Bonjour service (a fixed endpoint in tests): named after the endpoint.
@@ -55,7 +63,7 @@ import Testing
     }
 
     @Test func fixedDiscoveryReportsItsStateAndListThenUpdates() async {
-        let host = DiscoveredHost(hostId: hostId, name: "Mac mini", protocolVersion: LainProtocol.majorVersion, endpoint: service)
+        let host = DiscoveredHost(hostId: hostId, name: "Mac mini", versions: LainProtocol.supportedVersions, endpoint: service)
         let discovery = FixedHostDiscovery(hosts: [host])
         let lists = Inbox<[DiscoveredHost]>(), states = Inbox<DiscoveryState>()
         discovery.start(onChange: { lists.put($0) }, onState: { states.put($0) })

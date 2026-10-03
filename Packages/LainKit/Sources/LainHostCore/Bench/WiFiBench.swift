@@ -921,7 +921,7 @@ public enum WiFiBench {
                 break
             case .registered(let name):
                 advertisedName = name
-                say("advertised as “\(name)” (\(LainProtocol.bonjourServiceType), TXT v=\(LainProtocol.majorVersion) "
+                say("advertised as “\(name)” (\(LainProtocol.bonjourServiceType), TXT vs=\(VersionList.offered.versions.map(String.init).joined(separator: ",")) "
                     + "id=\(options.identity.id) bench=1)")
             case .unregistered(let name):
                 say("no longer advertised as “\(name)”")
@@ -937,8 +937,8 @@ public enum WiFiBench {
 
         private func refused(_ error: any Error) {
             guard !finished else { return }
-            if let e = error as? TransportError, case .versionMismatch(let remote) = e {
-                say("refused a connection: lain on the iPad speaks protocol v\(remote), this Mac v\(LainProtocol.majorVersion)")
+            if let gap = VersionGap(error) {
+                say("refused a connection: no protocol version in common with lain on the iPad (\(gap)); this Mac \(VersionList.offered)")
             } else {
                 say("refused a connection: \(error)")
             }

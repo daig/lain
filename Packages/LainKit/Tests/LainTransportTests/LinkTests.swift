@@ -78,10 +78,10 @@ struct ClientHarness {
     @Test func connectionsThatDoNotOpenWithChannelHelloAreClosed() async throws {
         let client = try ClientHarness()
         defer { client.listener.cancel() }
-        // Wrong first message: rejected with an Error.
+        // Wrong first message (a handshake frame, but not ChannelHello): rejected with an Error.
         let wrong = MessageChannel(stream: try TCP.connectLoopback(port: client.listener.port), label: "wrong")
         wrong.start()
-        wrong.send(.ping(Ping(id: 1, sentAtNs: 1)))
+        wrong.send(.pair(Pair(secret: ChannelAuth.randomBytes(Pair.secretSize))))
         let reply = try await wrong.next(timeoutSeconds: 2)
         #expect(reply.message.type == .error)
         // Silence: closed after the hello timeout.
@@ -200,9 +200,10 @@ struct ClientHarness {
         let store = ScriptedSecrets()
         let host = try AcceptorHarness(secrets: store)   // like the host's Wi-Fi acceptor: wireless never pairs (D13)
         defer { host.cancel() }
-        let link = try await LinkDialer(dialer: LoopbackDialer(port: host.port)).open(pairing: Pair(secret: ChannelAuth.randomBytes(32)))
-        defer { link.close() }
-        await #expect(throws: TransportError.authenticationFailed) { _ = try await LinkDialer.reply(on: link, timeoutSeconds: 2) }
+        // Refused in place of its ChannelAccept, so the dialer's open fails.
+        await #expect(throws: TransportError.authenticationFailed) {
+            _ = try await LinkDialer(dialer: LoopbackDialer(port: host.port)).open(pairing: Pair(secret: ChannelAuth.randomBytes(32)))
+        }
         #expect(transportError(await host.rejected.next()) == .authenticationFailed)
         #expect(store.writeCount == 0)
         #expect(await host.accepted.next(within: 0.2) == nil)
@@ -249,6 +250,14 @@ struct ClientHarness {
         realtime.send(.channelHello(ChannelAuth.hello(kind: .realtime, token: token, secret: secret)))
         let accepted = try #require(await host.accepted.next())
         #expect(accepted.link.sessionToken == token && accepted.peer == "IPAD")
+        // Each was answered at the session's version once it joined.
+        for channel in [realtime, video, audio] {
+            guard case .channelAccept(let a) = try await channel.next(timeoutSeconds: 2).message else {
+                Issue.record("no ChannelAccept"); return
+            }
+            #expect(a.chosen == LainProtocol.newestVersion)
+            channel.setVersion(a.chosen)
+        }
         accepted.link.video.send(.ping(Ping(id: 7, sentAtNs: 0)))
         #expect(try await video.next(timeoutSeconds: 2).message == .ping(Ping(id: 7, sentAtNs: 0)))
     }
@@ -348,73 +357,161 @@ struct ClientHarness {
         link2.close()
     }
 
-    @Test func aPeerOnAnotherVersionIsToldWhyInItsOwnFraming() async throws {
+    @Test func aLegacyPeerIsToldWhyInItsOwnFraming() async throws {
         let client = try AcceptingClient(secrets: InMemorySecretStore())
         defer { client.listener.cancel() }
-        // A v1 host's first frame: a pairing ChannelHello in a v1 header.
-        let v1 = try TCP.connectLoopback(port: client.listener.port)
-        defer { v1.close() }
+        // A v2 host's first frame: a pairing ChannelHello in a v2 header.
+        let v2 = try TCP.connectLoopback(port: client.listener.port)
+        defer { v2.close() }
         let reply = LockedBytes(), closed = Inbox<Bool>()
-        v1.start(queue: DispatchQueue(label: "v1"), onBytes: { _ = reply.append($0) }, onClose: { _ in closed.put(true) })
-        let hello = ChannelHello(protocolVersion: 1, connectionKind: .realtime, sessionToken: ChannelAuth.randomBytes(16),
-                                 hmac: ChannelAuth.pairingMAC)
-        v1.write(MessageCodec.encode(.channelHello(hello), sequence: 0, timestampNs: 0, version: 1))
+        v2.start(queue: DispatchQueue(label: "v2"), onBytes: { _ = reply.append($0) }, onClose: { _ in closed.put(true) })
+        v2.write(legacyChannelHello(version: 2))
         #expect(await closed.next() == true)
         let answer = reply.bytes
         try #require(answer.count > FrameHeader.size)
-        #expect(answer[2] == 1)   // framed in v1…
-        var inOurs = answer
-        inOurs[2] = LainProtocol.majorVersion
-        guard case .error(let e) = try MessageCodec.decode(inOurs).message else { Issue.record("not an Error"); return }
-        #expect(e.code == .versionMismatch)   // …with the Error layout v1 already had
-        #expect(transportError(await client.rejected.next()) == .versionMismatch(remote: 1))
+        #expect(answer[2] == 2)   // framed in v2…
+        guard case .error(let e) = try MessageCodec.decode(reframed(answer, version: LainProtocol.handshakeVersion)).message else {
+            Issue.record("not an Error"); return
+        }
+        #expect(e.code == .versionMismatch)   // …with the Error layout v2 already had
+        #expect(transportError(await client.rejected.next()) == .versionMismatch(remote: 2))
         #expect(client.secrets.allSecrets().isEmpty && client.accepted.count == 0)
 
-        // A dialer that gets such an answer (here from a peer on v1) says so, instead of just "closed".
-        let peer = try TCPListener(port: 0, queue: DispatchQueue(label: "v1.peer")) { socket in
+        // A dialer that gets such an answer (here from a peer on v2) says so, instead of just "closed".
+        let peer = try TCPListener(port: 0, queue: DispatchQueue(label: "v2.peer")) { socket in
             let answered = Mutex(false)
-            socket.start(queue: DispatchQueue(label: "v1.conn"), onBytes: { _ in
+            socket.start(queue: DispatchQueue(label: "v2.conn"), onBytes: { _ in
                 guard answered.withLock({ a in defer { a = true }; return !a }) else { return }
                 socket.write(answer)
                 socket.close()
             }, onClose: { _ in })
         }
         defer { peer.cancel() }
-        await #expect(throws: TransportError.versionMismatch(remote: 1)) {
+        await #expect(throws: TransportError.versionMismatch(remote: 2)) {
             _ = try await HostLink.open(dialer: LoopbackDialer(port: peer.port), secrets: InMemorySecretStore(), peerID: "IPAD",
                                         allowPairing: true)
         }
     }
 
-    @Test func anErrorVersionMismatchReplyIsAVersionMismatch() async throws {
-        // A peer that frames its answer in our version (it read our header, not our ChannelHello).
+    @Test func aLegacyAcceptorsAnswerInOurFramingIsAVersionMismatch() async throws {
+        // A v2 acceptor answers our handshake frame with Error(versionMismatch) framed in our header's
+        // version (it can't read our ChannelHello).
         let sockets = Inbox<SocketStream>()
         let peer = try TCPListener(port: 0, queue: DispatchQueue(label: "peer")) { socket in
             sockets.put(socket)
             socket.start(queue: DispatchQueue(label: "peer.conn"), onBytes: { _ in }, onClose: { _ in })
-            socket.write(MessageCodec.encode(.error(ErrorMessage(code: .versionMismatch, message: "v3 here")), sequence: 0,
-                                             timestampNs: 0))
+            socket.write(MessageCodec.legacyVersionMismatch(remote: LainProtocol.handshakeVersion, why: "v2 here",
+                                                            sequence: 0, timestampNs: 0))
         }
         defer { peer.cancel() }
-        let link = try await LinkDialer(dialer: LoopbackDialer(port: peer.port)).open(secret: ChannelAuth.randomBytes(32))
-        await #expect(throws: TransportError.versionMismatch(remote: 0)) { _ = try await LinkDialer.reply(on: link, timeoutSeconds: 2) }
-        link.close()
+        await #expect(throws: TransportError.versionMismatch(remote: 0)) {
+            _ = try await LinkDialer(dialer: LoopbackDialer(port: peer.port)).open(secret: ChannelAuth.randomBytes(32))
+        }
         while let socket = await sockets.next(within: 0) { socket.close() }
     }
 }
 
-/// `MessageChannel`'s version-mismatch surfacing (§7.5).
+/// Negotiation (PROTOCOL-VERSIONING §3.2): the highest version both lists name with equal digests.
+@Suite struct Negotiation {
+    func open(dialer dialerVersions: VersionList, acceptor acceptorVersions: VersionList,
+              secrets: InMemorySecretStore = InMemorySecretStore()) async throws -> (Link, AcceptingClient<InMemorySecretStore>) {
+        let client = try AcceptingClient(secrets: secrets, versions: acceptorVersions)
+        let links = LinkDialer(dialer: LoopbackDialer(port: client.listener.port), versions: dialerVersions)
+        let link = try await links.open(pairing: Pair(secret: ChannelAuth.randomBytes(32)))
+        return (link, client)
+    }
+
+    @Test(arguments: [
+        (versions((3, 1), (4, 1)), versions((3, 1), (4, 1)), UInt8(4)),
+        (versions((3, 1)), versions((3, 1), (4, 1)), UInt8(3)),          // an older dialer
+        (versions((3, 1), (4, 1)), versions((3, 1)), UInt8(3)),          // an older acceptor
+        (versions((3, 1), (4, 1)), versions((3, 1), (4, 2)), UInt8(3)),  // two builds of v4: v3 is common
+        (versions((4, 1), (5, 1)), versions((3, 1), (4, 1)), UInt8(4)),
+    ])
+    func theHighestCommonVersionWins(dialer: VersionList, acceptor: VersionList, expected: UInt8) async throws {
+        let (link, client) = try await open(dialer: dialer, acceptor: acceptor)
+        defer { link.close(); client.listener.cancel() }
+        #expect(link.version == expected && link.peerVersions == acceptor)
+        #expect(link.channels.allSatisfy { $0.version == expected })
+        let accepted = try #require(await client.accepted.next())
+        #expect(accepted.link.version == expected && accepted.link.peerVersions == dialer)
+        #expect(accepted.link.channels.allSatisfy { $0.version == expected })
+        // The session's first message arrives framed in the agreed version.
+        let hello = try await link.realtime.next(timeoutSeconds: 2)
+        #expect(hello.header.version == expected && hello.message == .hello(sampleHello))
+        accepted.link.close()
+    }
+
+    @Test func noCommonVersionIsReportedOnBothSidesAndNothingPairs() async throws {
+        let secrets = InMemorySecretStore()
+        let client = try AcceptingClient(secrets: secrets, versions: versions((5, 1), (6, 1)))
+        defer { client.listener.cancel() }
+        let links = LinkDialer(dialer: LoopbackDialer(port: client.listener.port), versions: versions((3, 1), (4, 1)))
+        await #expect(throws: TransportError.noCommonVersion(local: versions((3, 1), (4, 1)), peer: versions((5, 1), (6, 1)))) {
+            _ = try await links.open(pairing: Pair(secret: ChannelAuth.randomBytes(32)))
+        }
+        #expect(transportError(await client.rejected.next())
+                    == .noCommonVersion(local: versions((5, 1), (6, 1)), peer: versions((3, 1), (4, 1))))
+        #expect(secrets.allSecrets().isEmpty && client.accepted.count == 0)   // a pairing waits for a version
+        #expect(VersionGap(TransportError.noCommonVersion(local: versions((3, 1), (4, 1)), peer: versions((5, 1), (6, 1))))
+                    == .peerNewer(peer: "protocol v5–v6"))
+    }
+
+    @Test func gapsNameTheSideToUpdate() {
+        #expect(VersionGap(local: versions((5, 1), (6, 1)), peer: versions((3, 1), (4, 1))) == .peerOlder(peer: "protocol v3–v4"))
+        #expect(VersionGap(local: versions((3, 1), (4, 1)), peer: versions((5, 1))) == .peerNewer(peer: "protocol v5"))
+        #expect(VersionGap(local: versions((4, 1)), peer: versions((4, 2))) == .differentBuilds(version: 4))
+        #expect(VersionGap(TransportError.versionMismatch(remote: 2)) == .peerOlder(peer: "protocol v2"))
+        #expect(VersionGap(TransportError.versionMismatch(remote: 0)) == .peerOlder(peer: "a protocol from before v3"))
+        #expect(VersionGap(TransportError.closed) == nil)
+        #expect(VersionGap(local: versions((3, 1), (4, 1)), advertised: [4, 5]) == nil)   // shared: the handshake decides
+        #expect(VersionGap(local: versions((3, 1), (4, 1)), advertised: [2]) == .peerOlder(peer: "protocol v2"))
+        #expect(VersionGap(local: versions((3, 1), (4, 1)), advertised: [5, 6]) == .peerNewer(peer: "protocol v5–v6"))
+        #expect(VersionGap(local: versions((3, 1), (4, 1)), advertised: []) == .peerOlder(peer: "an unknown protocol"))
+    }
+
+    @Test func anAcceptThatIsntTheHighestCommonVersionFailsTheLink() async throws {
+        // A peer (or a bug) that picks a lower version than both sides share.
+        let peer = try TCPListener(port: 0, queue: DispatchQueue(label: "downgrader")) { socket in
+            socket.start(queue: DispatchQueue(label: "downgrader.conn"), onBytes: { _ in }, onClose: { _ in })
+            socket.write(MessageCodec.encode(.channelAccept(ChannelAccept(chosen: 3, versions: versions((3, 1), (4, 1)))),
+                                             sequence: 0, timestampNs: 0))
+        }
+        defer { peer.cancel() }
+        let links = LinkDialer(dialer: LoopbackDialer(port: peer.port), versions: versions((3, 1), (4, 1)))
+        await #expect(throws: TransportError.self) { _ = try await links.open(secret: ChannelAuth.randomBytes(32)) }
+    }
+
+    @Test func videoMustOfferWhatItsRealtimeOffered() async throws {
+        let secret = ChannelAuth.randomBytes(32)
+        let client = try AcceptingClient(secrets: InMemorySecretStore([PairingAccounts.usbHost: secret]),
+                                         versions: versions((3, 1), (4, 1)))
+        defer { client.listener.cancel() }
+        let token = ChannelAuth.randomBytes(16)
+        let realtime = try rawChannel(to: client.listener.port, "rt")
+        realtime.send(.channelHello(ChannelAuth.hello(kind: .realtime, token: token, secret: secret, versions: versions((3, 1), (4, 1)))))
+        #expect(try await realtime.next(timeoutSeconds: 2).message
+                    == .channelAccept(ChannelAccept(chosen: 4, versions: versions((3, 1), (4, 1)))))
+        let video = try rawChannel(to: client.listener.port, "video")
+        video.send(.channelHello(ChannelAuth.hello(kind: .video, token: token, secret: secret, versions: versions((3, 1)))))
+        guard case .error(let e) = try await video.next(timeoutSeconds: 2).message else { Issue.record("not refused"); return }
+        #expect(e.code == .authenticationFailed)
+        realtime.close()
+    }
+}
+
+/// `MessageChannel`'s version-mismatch surfacing: a frame in a version this build doesn't implement.
 @Suite struct ChannelVersionMismatch {
-    @Test func aFrameInAnotherVersionIsTheCloseError() async throws {
+    @Test func aLegacyFrameIsTheCloseError() async throws {
         let (a, b) = MemoryStream.pair()
         let channel = MessageChannel(stream: b, label: "b")
         channel.start()
         a.start(queue: DispatchQueue(label: "a"), onBytes: { _ in }, onClose: { _ in })
-        a.write(MessageCodec.encode(.ping(Ping(id: 1, sentAtNs: 0)), sequence: 0, timestampNs: 0, version: 3))
-        await #expect(throws: TransportError.versionMismatch(remote: 3)) { _ = try await channel.next(timeoutSeconds: 2) }
+        a.write(reframed(MessageCodec.encode(.ping(Ping(id: 1, sentAtNs: 0)), sequence: 0, timestampNs: 0), version: 2))
+        await #expect(throws: TransportError.versionMismatch(remote: 2)) { _ = try await channel.next(timeoutSeconds: 2) }
         let reported = Inbox<TransportError?>()
         channel.setCloseHandler { reported.put($0 as? TransportError) }
-        #expect(await reported.next() == .versionMismatch(remote: 3))
+        #expect(await reported.next() == .versionMismatch(remote: 2))
     }
 
     @Test func onlyAnAcceptorAnswersAndOnlyAMismatchedFirstFrame() async throws {
@@ -425,7 +522,7 @@ struct ClientHarness {
             let got = LockedBytes(), closed = Inbox<Bool>()
             a.start(queue: DispatchQueue(label: "a"), onBytes: { _ = got.append($0) }, onClose: { _ in closed.put(true) })
             for m in first { a.write(MessageCodec.encode(m, sequence: 0, timestampNs: 0)) }
-            a.write(MessageCodec.encode(.ping(Ping(id: 1, sentAtNs: 0)), sequence: 0, timestampNs: 0, version: 1))
+            a.write(reframed(MessageCodec.encode(.ping(Ping(id: 1, sentAtNs: 0)), sequence: 0, timestampNs: 0), version: 1))
             #expect(await closed.next() == true)
             withExtendedLifetime((a, channel)) {}
             return got.bytes
@@ -433,7 +530,8 @@ struct ClientHarness {
         let answered = await answer(acceptor: true, first: [])
         #expect(answered.count > FrameHeader.size && answered[2] == 1 && answered[3] == MessageType.error.rawValue)
         #expect(await answer(acceptor: false, first: []).isEmpty)
-        #expect(await answer(acceptor: true, first: [.start(Start())]).isEmpty)
+        let hello = ProtocolSamples.all.first { $0.type == .channelHello }!
+        #expect(await answer(acceptor: true, first: [hello]).isEmpty)
     }
 }
 

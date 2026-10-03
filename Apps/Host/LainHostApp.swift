@@ -1,3 +1,4 @@
+import CoreGraphics
 import LainHostCore
 import Observation
 import SwiftUI
@@ -56,6 +57,7 @@ struct LainHostApp: App {
         MenuBarExtra("lain", systemImage: "ipad.landscape") {
             Text(host.status.title)
             Text(host.wifiLine)
+            if let note = host.peerVersionNote { Text(note) }
             if !host.hasAccessibility {
                 Text("Input is off until lain has Accessibility")
                 Button("Grant Accessibility…") { host.requestAccessibility() }
@@ -93,6 +95,8 @@ final class HostController {
     private(set) var loginAgent = LoginAgent.state
     /// The live session's video numbers (or why it has none), refreshed once a second.
     private(set) var videoLines: [String]?
+    /// lain on the iPad runs an older protocol version (it works): what updating it adds.
+    private(set) var peerVersionNote: String?
 
     @ObservationIgnored private var session: HostSession?
     @ObservationIgnored private var accessPoll: Task<Void, Never>?
@@ -112,7 +116,8 @@ final class HostController {
         // advertises (§7.7 D29 decision 12).
         let session = HostSession(dependencies: .init(sink: InputInjector(), video: { HostVideoPipeline.live() },
                                                       identity: identity,
-                                                      wifi: identity.map { _ in HostWiFiConfig(advertise: true) })) {
+                                                      wifi: identity.map { _ in HostWiFiConfig(advertise: true) },
+                                                      setup: Self.probeSetup)) {
             [weak self] status in
             // Main-queue hops keep status updates in order.
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.status = status } }
@@ -133,8 +138,24 @@ final class HostController {
                 if self?.videoLines != lines { self?.videoLines = lines }
                 let wifi = identity == nil ? "Wi-Fi: off: this Mac's lain id couldn't be loaded" : session.wifiStatus.title
                 if self?.wifiLine != wifi { self?.wifiLine = wifi }
+                let note = session.peerVersionNote
+                if self?.peerVersionNote != note { self?.peerVersionNote = note }
+                // A grant, a display attached: the iPad hears about it (if its version has HostSetup).
+                session.setupChanged()
             }
         }
+    }
+
+    /// The Mac's setup for the iPad (`HostSetup`, v4): permissions and whether a real display is attached.
+    /// Called from the session's queues.
+    nonisolated static func probeSetup() -> HostSetup {
+        let login: HostSetup.State = switch LoginAgent.state {
+        case .enabled: .granted
+        case .notFound: .unknown
+        default: .missing
+        }
+        return HostSetupProbe.setup(screenRecording: CGPreflightScreenCaptureAccess(), accessibility: InputInjector.hasAccess,
+                                    startAtLogin: login)
     }
 
     /// Registering loads the agent (RunAtLoad): launchd then starts the managed instance, which replaces

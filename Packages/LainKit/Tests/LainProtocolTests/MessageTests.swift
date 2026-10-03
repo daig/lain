@@ -44,9 +44,10 @@ import Testing
                                                             timestampNs: 0)).header.flags == [])
     }
 
-    @Test func channelHelloIsFixedSize() {
+    @Test func channelHelloSizeFollowsItsVersionList() {
         let m = Samples.all.first { $0.type == .channelHello }!
-        #expect(MessageCodec.encode(m, sequence: 0, timestampNs: 0).count == FrameHeader.size + 50)
+        // count, two (version, digest[8]) entries, kind, token[16], hmac[32]
+        #expect(MessageCodec.encode(m, sequence: 0, timestampNs: 0).count == FrameHeader.size + 1 + 2 * 9 + 1 + 16 + 32)
     }
 }
 
@@ -56,7 +57,7 @@ import Testing
     @Test func layoutIsLittleEndianPerSpec() {
         #expect(Array(ping[0..<24]) == [
             0x41, 0x4C,                                      // magic 0x4C41
-            LainProtocol.majorVersion, 0x05,                 // version, type = Ping
+            LainProtocol.newestVersion, 0x05,                // version, type = Ping
             0x00, 0x00, 0x00, 0x00,                          // flags, reserved
             0x04, 0x03, 0x02, 0x01,                          // sequence
             0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11,  // timestamp
@@ -70,31 +71,36 @@ import Testing
         #expect(throws: ProtocolError.badMagic(0x4C42)) { try MessageCodec.decode(mutated(0, 0x42)) }
     }
 
-    @Test func versionMismatchIsReported() {
-        let newer = LainProtocol.majorVersion + 1
+    @Test func versionsThisBuildDoesntImplementAreReported() {
+        for legacy in LainProtocol.legacyVersions {
+            #expect(throws: ProtocolError.versionMismatch(remote: legacy)) { try MessageCodec.decode(mutated(2, legacy)) }
+        }
+        let newer = LainProtocol.newestVersion + 1
         #expect(throws: ProtocolError.versionMismatch(remote: newer)) { try MessageCodec.decode(mutated(2, newer)) }
+        #expect(throws: ProtocolError.versionMismatch(remote: 0)) { try MessageCodec.decode(mutated(2, 0)) }
     }
 
-    @Test func encodesInAMismatchedPeersVersion() {
-        // An acceptor answers a v1 peer with Error(versionMismatch) in a v1 header, so the peer can read why.
-        let why = "host speaks v2"
-        let error = Message.error(ErrorMessage(code: .versionMismatch, message: why))
-        let v1 = MessageCodec.encode(error, sequence: 0, timestampNs: 0, version: 1)
-        #expect(v1[2] == 1)
-        var ours = v1
-        ours[2] = LainProtocol.majorVersion
-        #expect(ours == MessageCodec.encode(error, sequence: 0, timestampNs: 0))   // only the version byte differs
-        // v1's ErrorMessage layout: u16 code, then a u16-prefixed UTF-8 message.
-        #expect(Array(v1[FrameHeader.size...]) == [1, 0, UInt8(why.utf8.count), 0] + Array(why.utf8))
-        #expect(throws: ProtocolError.versionMismatch(remote: 1)) { try MessageCodec.decode(v1) }
-        var parser = FrameParser()
-        parser.append(v1)
-        #expect(throws: ProtocolError.versionMismatch(remote: 1)) { try parser.next() }
+    @Test func answersALegacyPeerInItsOwnVersion() throws {
+        // An acceptor answers a v2 peer with Error(versionMismatch) in a v2 header, so the peer can read why.
+        let why = "lain here speaks protocol v3–v4"
+        let v2 = MessageCodec.legacyVersionMismatch(remote: 2, why: why, sequence: 0, timestampNs: 0)
+        #expect(v2[2] == 2 && v2[3] == MessageType.error.rawValue)
+        // v1/v2's ErrorMessage layout: u16 code, then a u16-prefixed UTF-8 message.
+        #expect(Array(v2[FrameHeader.size...]) == [1, 0, UInt8(why.utf8.count), 0] + Array(why.utf8))
+        #expect(throws: ProtocolError.versionMismatch(remote: 2)) { try MessageCodec.decode(v2) }
+        // A legacy peer answering our handshake frames in our framing is readable here.
+        var ours = v2
+        ours[2] = LainProtocol.handshakeVersion
+        #expect(try MessageCodec.decode(ours).message == .error(ErrorMessage(code: .versionMismatch, message: why)))
     }
 
     @Test func unknownAndReservedTypes() {
         #expect(throws: ProtocolError.unknownType(0x22)) { try MessageCodec.decode(mutated(3, 0x22)) }
-        #expect(throws: ProtocolError.unknownType(0xFF)) { try MessageCodec.decode(mutated(3, 0xFF)) }
+        #expect(throws: ProtocolError.unknownType(0xFE)) { try MessageCodec.decode(mutated(3, 0xFE)) }
+        // Defined in v1–v2 but never sent, so left out of v3 and reserved (PROTOCOL-VERSIONING §7).
+        for pruned: UInt8 in [0x03, 0x04, 0x08, 0x09, 0x0A, 0x30, 0x31, 0x60, 0x61] {
+            #expect(throws: ProtocolError.unknownType(pruned)) { try MessageCodec.decode(mutated(3, pruned)) }
+        }
     }
 
     @Test func reservedFieldMustBeZero() {
@@ -114,7 +120,7 @@ import Testing
 
 @Suite struct PayloadValidation {
     @Test func unknownEnumValue() {
-        var b = MessageCodec.encode(.stop(Stop(reason: .userRequested)), sequence: 0, timestampNs: 0)
+        var b = MessageCodec.encode(.releaseAll(ReleaseAll(reason: .focusLost)), sequence: 0, timestampNs: 0)
         b[24] = 9
         #expect(throws: ProtocolError.self) { try MessageCodec.decode(b) }
     }
@@ -139,46 +145,27 @@ import Testing
     }
 
     @Test func hugeDeclaredCountIsTruncatedNotAllocated() {
-        var w = ByteWriter()
-        w.u16(0xFFFF)   // 65535 stat entries declared, none present
-        var b = MessageCodec.encode(.stats(Stats(entries: [])), sequence: 0, timestampNs: 0)
-        b.replaceSubrange(24..., with: w.bytes)
-        b[20] = 2
+        var b = MessageCodec.encode(.displayLayout(DisplayLayout(displays: [])), sequence: 0, timestampNs: 0)
+        b[24] = 0xFF   // 255 displays declared, none present
         #expect(throws: ProtocolError.truncated) { try MessageCodec.decode(b) }
     }
 }
 
-/// Protocol v2 (M6a). A v1 peer is refused by the header version first (`HeaderValidation`); these
-/// document that v1's payloads don't decode either, and the new `Error` code.
-@Suite struct VersionTwoPayloads {
-    @Test func v1HelloAckNoLongerDecodes() {
-        // v1's HelloAck ended at `macInputSource`.
-        var v1 = ByteWriter()
-        v1.u8(VideoCodec.hevc.rawValue); v1.u8(ChromaFormat.yuv444.rawValue); v1.u8(10); v1.u8(DisplayMode.extend.rawValue)
-        v1.u32(60_000_000); v1.u16(120); v1.u32(1376); v1.u32(1032); v1.u32(48_000); v1.u8(2)
-        v1.u8(AudioEncoding.pcm16LE.rawValue); v1.u32(500); v1.u32(225); v1.u32(30); v1.string("com.apple.keylayout.Colemak")
-        var v2 = ByteWriter()
-        HelloAck(codec: .hevc, chroma: .yuv444, bitDepth: 10, displayMode: .extend, bitrate: 60_000_000, refreshRate: 120,
-                 displayPointWidth: 1376, displayPointHeight: 1032, audioSampleRate: 48_000, audioChannels: 2,
-                 audioEncoding: .pcm16LE, doubleClickIntervalMs: 500, keyRepeatDelayMs: 225, keyRepeatIntervalMs: 30,
-                 macInputSource: "com.apple.keylayout.Colemak").encode(into: &v2)
-        #expect(v2.bytes == v1.bytes + [0, 0, 0, 0])   // the same values in v2: plus two (here empty) strings
-        #expect(throws: ProtocolError.truncated) { try Message.decode(type: .helloAck, payload: v1.bytes[...]) }
-    }
-
-    @Test func v1PairNoLongerDecodes() {
-        let v1: [UInt8] = Array(200..<232)   // v1's Pair: the 32-byte secret alone
-        #expect(throws: ProtocolError.truncated) { try Message.decode(type: .pair, payload: v1[...]) }
-    }
-
-    @Test func errorBusyRoundTrips() throws {
+/// `Error` in both layers (PROTOCOL-VERSIONING §3.1): any code in a handshake frame, only known codes in
+/// a session frame.
+@Suite struct ErrorCodes {
+    @Test func busyRoundTripsAndUnknownCodesOnlyPassInHandshakeFrames() throws {
         let busy = Message.error(ErrorMessage(code: .busy, message: "a USB session is live"))
         let bytes = MessageCodec.encode(busy, sequence: 0, timestampNs: 0)
         #expect(Array(bytes[24..<26]) == [6, 0])
         #expect(try MessageCodec.decode(bytes).message == busy)
         var unknown = bytes
-        unknown[24] = 7   // an unknown code is fatal: new codes need a new major version
+        unknown[24] = 7
         #expect(throws: ProtocolError.malformed("error code 7")) { try MessageCodec.decode(unknown) }
+        unknown[2] = LainProtocol.handshakeVersion   // a newer peer's refusal still arrives
+        let decoded = try MessageCodec.decode(unknown)
+        #expect(decoded.message == .error(ErrorMessage(code: ErrorMessage.Code(rawValue: 7), message: "a USB session is live")))
+        #expect("\(ErrorMessage.Code(rawValue: 7))" == "code 7")
     }
 }
 

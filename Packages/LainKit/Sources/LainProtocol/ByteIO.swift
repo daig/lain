@@ -1,11 +1,46 @@
-/// Explicit little-endian binary encoding for headers and payloads (§7.4: not Codable).
+/// Explicit little-endian binary encoding for headers and payloads (§7.4: not Codable). Writer and
+/// reader carry the protocol version they write or read, so a payload's fields can depend on it
+/// (PROTOCOL-VERSIONING §3.3).
 
 public struct ByteWriter: Sendable {
     public private(set) var bytes: [UInt8]
+    /// The version being written: a session version, or `LainProtocol.handshakeVersion`.
+    public let version: UInt8
+    /// Advisory fields left out because `version` predates them: the message was projected.
+    public private(set) var dropped: [String] = []
+    /// Why the message can't be written at `version`, if it can't.
+    public private(set) var refused: String?
 
-    public init(capacity: Int = 64) {
+    /// What happens to a newer field's non-default value when an older version is written.
+    public enum Lowering: Sendable {
+        /// Advisory: a receiver that ignores it still behaves correctly. It's left out.
+        case drop
+        /// The message can't be sent at that version; senders check the feature first.
+        case refuse
+    }
+
+    /// `version` nil: `LainProtocol.newestVersion`.
+    public init(capacity: Int = 64, version: UInt8? = nil) {
         bytes = []
         bytes.reserveCapacity(capacity)
+        self.version = version ?? LainProtocol.newestVersion
+    }
+
+    /// A field added in version `since`: written from that version on. Writing an older version leaves
+    /// it out, and a non-default value is then dropped or refused as `lowering` says.
+    public mutating func since<T: Equatable>(_ since: UInt8, _ name: String, _ value: T, default defaultValue: T,
+                                             lowering: Lowering, write: (inout ByteWriter, T) -> Void) {
+        if version >= since { return write(&self, value) }
+        guard value != defaultValue else { return }
+        switch lowering {
+        case .drop: dropped.append(name)
+        case .refuse: refuse("\(name) doesn't exist in v\(version)")
+        }
+    }
+
+    /// Marks the message unrepresentable at `version` (the first reason wins).
+    public mutating func refuse(_ why: String) {
+        if refused == nil { refused = why }
     }
 
     @inline(__always) public mutating func u8(_ v: UInt8) { bytes.append(v) }
@@ -30,13 +65,24 @@ public struct ByteWriter: Sendable {
 public struct ByteReader {
     private let bytes: ArraySlice<UInt8>
     private var index: Int
+    /// The version being read: a session version, or `LainProtocol.handshakeVersion`.
+    public let version: UInt8
 
-    public init(_ bytes: ArraySlice<UInt8>) {
+    /// `version` nil: `LainProtocol.newestVersion`.
+    public init(_ bytes: ArraySlice<UInt8>, version: UInt8? = nil) {
         self.bytes = bytes
         index = bytes.startIndex
+        self.version = version ?? LainProtocol.newestVersion
     }
 
-    public init(_ bytes: [UInt8]) { self.init(bytes[...]) }
+    public init(_ bytes: [UInt8], version: UInt8? = nil) { self.init(bytes[...], version: version) }
+
+    /// A field added in version `since`: read from that version on, `defaultValue` before it (lift,
+    /// PROTOCOL-VERSIONING §3.3).
+    public mutating func since<T>(_ since: UInt8, default defaultValue: T,
+                                  read: (inout ByteReader) throws(ProtocolError) -> T) throws(ProtocolError) -> T {
+        version >= since ? try read(&self) : defaultValue
+    }
 
     public var remaining: Int { bytes.endIndex - index }
 

@@ -2,7 +2,7 @@ import Dispatch
 import LainTelemetry
 import Synchronization
 
-/// The three authenticated connections of one session (§7.1).
+/// The three authenticated connections of one session (§7.1), at the version both sides negotiated.
 public struct Link: Sendable {
     public let sessionToken: [UInt8]
     public let realtime: MessageChannel
@@ -10,17 +10,36 @@ public struct Link: Sendable {
     public let audio: MessageChannel
     /// What the link runs over, read from its realtime connection (§7.7).
     public let transport: LinkTransport
+    /// The negotiated protocol version (PROTOCOL-VERSIONING §3.2).
+    public let version: UInt8
+    /// The versions the peer supports; nil for a link made without a handshake (tests).
+    public let peerVersions: VersionList?
+    /// The versions this side offered.
+    public let localVersions: VersionList
 
+    /// `version` nil: `LainProtocol.newestVersion`; `localVersions` nil: `VersionList.offered`. Channels
+    /// still in the handshake layer (a link made without one, in tests) are set to `version`.
     public init(sessionToken: [UInt8], realtime: MessageChannel, video: MessageChannel, audio: MessageChannel,
-                transport: LinkTransport = .usb) {
+                transport: LinkTransport = .usb, version: UInt8? = nil, peerVersions: VersionList? = nil,
+                localVersions: VersionList? = nil) {
         self.sessionToken = sessionToken
         self.realtime = realtime
         self.video = video
         self.audio = audio
         self.transport = transport
+        self.version = version ?? LainProtocol.newestVersion
+        self.peerVersions = peerVersions
+        self.localVersions = localVersions ?? .offered
+        for channel in [realtime, video, audio] where channel.version == nil { channel.setVersion(self.version) }
     }
 
     public var channels: [MessageChannel] { [realtime, video, audio] }
+
+    /// Whether the session's version has `feature` (PROTOCOL-VERSIONING §3.4).
+    public func supports(_ feature: ProtocolFeature) -> Bool { feature.isSupported(at: version) }
+
+    /// The peer runs an older version than this side's newest: the features it misses.
+    public var olderPeerMisses: [ProtocolFeature] { ProtocolFeature.missing(at: version, upTo: localVersions.newest) }
 
     public func close() { channels.forEach { $0.close() } }
 }
@@ -88,14 +107,22 @@ public struct LinkDialer: Sendable {
     /// What the link runs over, read from its realtime stream (by default the stream's own path:
     /// `LinkTransport(stream:)`).
     public let transport: @Sendable (any ByteStream) -> LinkTransport
+    /// The versions offered in `ChannelHello`.
+    public let versions: VersionList
+    /// How long each connection's `ChannelAccept` may take.
+    public let acceptTimeout: Double
 
+    /// `versions` nil: `VersionList.offered`.
     public init(dialer: any StreamDialer, label: String = "lain.link",
                 configure: @escaping @Sendable (ConnectionKind, any ByteStream) -> Void = { _, _ in },
-                transport: @escaping @Sendable (any ByteStream) -> LinkTransport = { LinkTransport(stream: $0) }) {
+                transport: @escaping @Sendable (any ByteStream) -> LinkTransport = { LinkTransport(stream: $0) },
+                versions: VersionList? = nil, acceptTimeout: Double = 5) {
         self.dialer = dialer
         self.label = label
         self.configure = configure
         self.transport = transport
+        self.versions = versions ?? .offered
+        self.acceptTimeout = acceptTimeout
     }
 
     /// A new session authenticated with a stored secret.
@@ -116,21 +143,56 @@ public struct LinkDialer: Sendable {
                 opened.append(channel)
                 channel.start()
                 if kind == .realtime, let pair {
-                    channel.send(.channelHello(ChannelAuth.hello(kind: kind, token: token, secret: nil)))
+                    channel.send(.channelHello(ChannelAuth.hello(kind: kind, token: token, secret: nil, versions: versions)))
                     channel.send(.pair(pair))
                 } else {
-                    channel.send(.channelHello(ChannelAuth.hello(kind: kind, token: token, secret: secret)))
+                    channel.send(.channelHello(ChannelAuth.hello(kind: kind, token: token, secret: secret, versions: versions)))
                 }
                 return channel
             }
             let realtime = try await connect(.realtime)
             let video = try await connect(.video)
             let audio = try await connect(.audio)
+            // Every connection is answered with the same version, or the link fails (PROTOCOL-VERSIONING §3.2).
+            var agreed: (version: UInt8, peer: VersionList)?
+            for channel in [realtime, video, audio] {
+                let accepted = try await accepted(on: channel)
+                if let agreed, agreed.version != accepted.version {
+                    throw TransportError.unexpectedMessage("connections answered v\(agreed.version) and v\(accepted.version)")
+                }
+                channel.setVersion(accepted.version)
+                agreed = accepted
+            }
             return Link(sessionToken: token, realtime: realtime, video: video, audio: audio,
-                        transport: transport(realtime.stream))
+                        transport: transport(realtime.stream), version: agreed?.version, peerVersions: agreed?.peer,
+                        localVersions: versions)
         } catch {
             opened.forEach { $0.close() }
             throw error
+        }
+    }
+
+    /// The acceptor's answer on one connection: the chosen version, which must be the highest common one
+    /// by this side's own count. A refusal throws: `Error(authenticationFailed)` as `authenticationFailed`;
+    /// no common version as `noCommonVersion`; a legacy peer's `Error(versionMismatch)` (or a frame in its
+    /// own version) as `versionMismatch`; any other `Error` as `unexpectedMessage`.
+    private func accepted(on channel: MessageChannel) async throws(TransportError) -> (version: UInt8, peer: VersionList) {
+        let env = try await channel.next(timeoutSeconds: acceptTimeout)
+        switch env.message {
+        case .channelAccept(let a):
+            guard a.chosen != 0 else { throw .noCommonVersion(local: versions, peer: a.versions) }
+            guard a.chosen == versions.highestCommon(with: a.versions) else {
+                throw .unexpectedMessage("ChannelAccept chose v\(a.chosen) of \(a.versions), offered \(versions)")
+            }
+            return (a.chosen, a.versions)
+        case .error(let e) where e.code == .authenticationFailed:
+            throw .authenticationFailed
+        case .error(let e) where e.code == .versionMismatch:
+            throw .versionMismatch(remote: 0)   // a legacy acceptor, answering in our framing
+        case .error(let e):
+            throw .unexpectedMessage("Error(\(e.code)): \(e.message)")
+        default:
+            throw .unexpectedMessage("\(env.message.type) instead of ChannelAccept")
         }
     }
 
@@ -142,7 +204,7 @@ public struct LinkDialer: Sendable {
         if case .error(let e) = first.message {
             switch e.code {
             case .authenticationFailed: throw .authenticationFailed
-            case .versionMismatch: throw .versionMismatch(remote: 0)   // framed in ours: the peer's is unknown
+            case .versionMismatch: throw .versionMismatch(remote: 0)   // a legacy peer: its version is unknown
             default: break
             }
         }
@@ -164,13 +226,15 @@ public enum HostLink {
     /// Wi-Fi too) on realtime. The new secret is stored once `Hello` arrives. `paired` says whether this
     /// session paired (true) or authenticated with the stored secret. A client that couldn't read its
     /// secret (`Error(internal)`) fails the attempt without re-pairing: the caller just retries.
+    /// `versions` nil: `VersionList.offered`.
     public static func open(dialer: some StreamDialer, secrets: some SecretStore, peerID: String,
-                            allowPairing: Bool, hostId: String = "") async throws -> (link: Link, hello: Hello, paired: Bool) {
+                            allowPairing: Bool, hostId: String = "",
+                            versions: VersionList? = nil) async throws -> (link: Link, hello: Hello, paired: Bool) {
         let stored = try secrets.secret(for: peerID)
         if stored == nil && !allowPairing { throw TransportError.noSecret }
         let links = LinkDialer(dialer: dialer, label: "lain.host", configure: { kind, stream in
             if kind == .video, let socket = stream as? SocketStream { socket.setSendBufferSize(videoSendBuffer) }
-        })
+        }, versions: versions)
         do {
             return try await attempt(links, secrets: secrets, peerID: peerID, secret: stored, hostId: hostId)
         } catch TransportError.authenticationFailed where stored != nil && allowPairing {
@@ -256,6 +320,7 @@ public final class LinkAcceptor: Sendable {
     private let primaryAccount: String?
     private let pairing: Pairing
     private let transport: @Sendable (any ByteStream) -> LinkTransport
+    private let versions: VersionList
     private let onReject: @Sendable (any Error) -> Void
     private let onLink: @Sendable (AcceptedLink) -> Void
     private let log = Telemetry.logger("link")
@@ -265,6 +330,9 @@ public final class LinkAcceptor: Sendable {
         var secret: [UInt8]
         var peer: String
         var paired: Bool
+        /// The negotiated version, and the dialer's list that video and audio must repeat.
+        var version: UInt8
+        var peerVersions: VersionList
         var realtime: MessageChannel
         var video: MessageChannel?
         var audio: MessageChannel?
@@ -302,13 +370,16 @@ public final class LinkAcceptor: Sendable {
     ///     `authenticationFailed` thus always means "read fine, nothing matched".
     ///   - transport: what an accepted link runs over, read from its realtime stream (by default the
     ///     stream's own path: `LinkTransport(stream:)`).
-    ///   - onReject: a refused connection, on the acceptor's queue: `TransportError.versionMismatch` (the
-    ///     peer runs another lain: worth telling the owner), `.authenticationFailed`, `.unexpectedMessage`,
-    ///     or the secret store's error.
+    ///   - versions: what this side supports (nil: `VersionList.offered`). Each authenticated connection is
+    ///     answered with `ChannelAccept`: the highest version common to both lists, or 0 and a close.
+    ///   - onReject: a refused connection, on the acceptor's queue: `TransportError.versionMismatch` (a
+    ///     legacy peer) or `.noCommonVersion` (the peer runs another lain: worth telling the owner),
+    ///     `.authenticationFailed`, `.unexpectedMessage`, or the secret store's error.
     ///   - onLink: a complete link, on the acceptor's queue.
     public init(secrets: some SecretStore, primaryAccount: String? = nil, pairing: Pairing = .refuse,
                 label: String = "lain.acceptor",
                 transport: @escaping @Sendable (any ByteStream) -> LinkTransport = { LinkTransport(stream: $0) },
+                versions: VersionList? = nil,
                 onReject: @escaping @Sendable (any Error) -> Void = { _ in },
                 onLink: @escaping @Sendable (AcceptedLink) -> Void) {
         control = DispatchQueue(label: "\(label).acceptor", qos: .userInitiated)
@@ -317,6 +388,7 @@ public final class LinkAcceptor: Sendable {
         self.primaryAccount = primaryAccount
         self.pairing = pairing
         self.transport = transport
+        self.versions = versions ?? .offered
         self.onReject = onReject
         self.onLink = onLink
     }
@@ -372,8 +444,18 @@ public final class LinkAcceptor: Sendable {
         onReject(error)
     }
 
-    /// The connection closed during its handshake. A first frame in another major version was already
-    /// answered by the channel (§7.5): report it.
+    /// Authenticated, but no version is common: `ChannelAccept` with 0 and this side's list, so the dialer
+    /// can say which side to update, then a close.
+    private func refuseVersion(_ channel: MessageChannel, _ hello: ChannelHello) {
+        _ = state.withLock { $0.leaveHandshake(channel) }
+        log.error("rejecting connection: it offers \(hello.versions, privacy: .public), this side \(self.versions, privacy: .public)")
+        channel.send(.channelAccept(ChannelAccept(chosen: 0, versions: versions)))
+        channel.close()
+        onReject(TransportError.noCommonVersion(local: versions, peer: hello.versions))
+    }
+
+    /// The connection closed during its handshake. A legacy peer's first frame was already answered by
+    /// the channel in its own version: report it.
     private func closedEarly(_ channel: MessageChannel, _ error: (any Error)?) {
         guard state.withLock({ $0.leaveHandshake(channel) }) else { return }
         guard let e = error as? TransportError, case .versionMismatch(let remote) = e else { return }
@@ -392,10 +474,6 @@ public final class LinkAcceptor: Sendable {
         guard case .channelHello(let hello) = env.message else {
             return reject(channel, .authenticationFailed, "first message was \(env.message.type)",
                           TransportError.unexpectedMessage("\(env.message.type)"))
-        }
-        guard hello.protocolVersion == LainProtocol.majorVersion else {
-            return reject(channel, .versionMismatch, "protocol v\(hello.protocolVersion)",
-                          TransportError.versionMismatch(remote: hello.protocolVersion))
         }
         switch hello.connectionKind {
         case .realtime where hello.hmac == ChannelAuth.pairingMAC:
@@ -420,7 +498,8 @@ public final class LinkAcceptor: Sendable {
                 return reject(channel, .authenticationFailed, "HMAC under another pairing than the TLS key",
                               TransportError.authenticationFailed)
             }
-            establish(hello, peer: match.peer, secret: match.secret, paired: false, realtime: channel)
+            guard let version = versions.highestCommon(with: hello.versions) else { return refuseVersion(channel, hello) }
+            establish(hello, peer: match.peer, secret: match.secret, paired: false, version: version, realtime: channel)
         case .video, .audio:
             route(hello, channel)
         }
@@ -457,24 +536,28 @@ public final class LinkAcceptor: Sendable {
             return reject(channel, .authenticationFailed, "expected Pair, got \(env.message.type)",
                           TransportError.unexpectedMessage("\(env.message.type)"))
         }
+        // A pairing replaces the stored secret, so it's stored only once a version is agreed.
+        guard let version = versions.highestCommon(with: hello.versions) else { return refuseVersion(channel, hello) }
         do {
             try store(pair)
         } catch {
             return reject(channel, .internal, "could not store pairing secret", error)
         }
         log.notice("paired over USB (\(peer, privacy: .public))")
-        establish(hello, peer: peer, secret: pair.secret, paired: true, realtime: channel)
+        establish(hello, peer: peer, secret: pair.secret, paired: true, version: version, realtime: channel)
     }
 
     // MARK: Sessions (all on `control`)
 
-    private func establish(_ hello: ChannelHello, peer: String, secret: [UInt8], paired: Bool, realtime: MessageChannel) {
+    private func establish(_ hello: ChannelHello, peer: String, secret: [UInt8], paired: Bool, version: UInt8,
+                           realtime: MessageChannel) {
         let token = hello.sessionToken
         enum Outcome: Sendable { case gone, duplicate, established(early: [(hello: ChannelHello, channel: MessageChannel)]) }
         let outcome = state.withLock { s -> Outcome in
             guard s.leaveHandshake(realtime) else { return .gone }
             guard !s.finished.contains(token), !s.pending.contains(where: { $0.token == token }) else { return .duplicate }
-            s.pending.append(Session(token: token, secret: secret, peer: peer, paired: paired, realtime: realtime))
+            s.pending.append(Session(token: token, secret: secret, peer: peer, paired: paired, version: version,
+                                     peerVersions: hello.versions, realtime: realtime))
             let early = s.waiting.filter { $0.hello.sessionToken == token }
             s.waiting.removeAll { $0.hello.sessionToken == token }
             return .established(early: early)
@@ -486,6 +569,8 @@ public final class LinkAcceptor: Sendable {
             log.error("closing a second realtime connection for one session")
             realtime.close()
         case .established(let early):
+            realtime.send(.channelAccept(ChannelAccept(chosen: version, versions: versions)))
+            realtime.setVersion(version)
             control.asyncAfter(deadline: .now() + Self.helloTimeout) { [weak self] in self?.dropIncomplete(token) }
             for w in early { join(w.hello, w.channel, secret: secret) }
         }
@@ -526,11 +611,13 @@ public final class LinkAcceptor: Sendable {
         }
         enum Joined: Sendable {
             case orphan
-            case partial(replaced: MessageChannel?)
+            case otherVersions(VersionList)
+            case partial(replaced: MessageChannel?, version: UInt8)
             case complete(Session, video: MessageChannel, audio: MessageChannel, replaced: MessageChannel?)
         }
         let joined = state.withLock { s -> Joined in
             guard let i = s.pending.firstIndex(where: { $0.token == hello.sessionToken }) else { return .orphan }
+            guard s.pending[i].peerVersions == hello.versions else { return .otherVersions(s.pending[i].peerVersions) }
             let replaced: MessageChannel?
             if hello.connectionKind == .video {
                 replaced = s.pending[i].video
@@ -539,20 +626,34 @@ public final class LinkAcceptor: Sendable {
                 replaced = s.pending[i].audio
                 s.pending[i].audio = channel
             }
-            guard let video = s.pending[i].video, let audio = s.pending[i].audio else { return .partial(replaced: replaced) }
+            guard let video = s.pending[i].video, let audio = s.pending[i].audio else {
+                return .partial(replaced: replaced, version: s.pending[i].version)
+            }
             let session = s.pending.remove(at: i)
             s.finish(session.token)
             return .complete(session, video: video, audio: audio, replaced: replaced)
         }
+        // Accepted at the session's version, before the link can reach the consumer.
+        func accept(_ version: UInt8) {
+            channel.send(.channelAccept(ChannelAccept(chosen: version, versions: versions)))
+            channel.setVersion(version)
+        }
         switch joined {
         case .orphan:
             channel.close()   // its session was dropped or cancelled meanwhile
-        case .partial(let replaced):
+        case .otherVersions(let realtimeVersions):
+            reject(channel, .authenticationFailed,
+                   "\(hello.connectionKind) offers \(hello.versions), its realtime \(realtimeVersions)",
+                   TransportError.unexpectedMessage("connections offer different versions"))
+        case .partial(let replaced, let version):
+            accept(version)
             replaced?.close()
         case .complete(let session, let video, let audio, let replaced):
+            accept(session.version)
             replaced?.close()
             let link = Link(sessionToken: session.token, realtime: session.realtime, video: video, audio: audio,
-                            transport: transport(session.realtime.stream))
+                            transport: transport(session.realtime.stream), version: session.version,
+                            peerVersions: session.peerVersions, localVersions: versions)
             onLink(AcceptedLink(link: link, peer: session.peer, secret: session.secret, paired: session.paired))
         }
     }
@@ -607,15 +708,16 @@ public final class ClientLinkListener: Sendable {
 
     /// With the details of each accepted link (which account matched, whether it paired) and of each
     /// refused connection (`LinkAcceptor`'s `onReject`: `versionMismatch` means the Mac runs another lain).
+    /// `versions` nil: `VersionList.offered`.
     public init(port: UInt16? = nil, secrets: some SecretStore,
-                peerID: String = PairingAccounts.usbHost, acceptsPairing: Bool,
+                peerID: String = PairingAccounts.usbHost, acceptsPairing: Bool, versions: VersionList? = nil,
                 onReject: @escaping @Sendable (any Error) -> Void,
                 onLink: @escaping @Sendable (AcceptedLink) -> Void) throws {
         let pairing: LinkAcceptor.Pairing = acceptsPairing
             ? .accept(peer: peerID, store: { pair in try ClientLinkListener.storePairing(pair, as: peerID, in: secrets) })
             : .refuse
         let acceptor = LinkAcceptor(secrets: secrets, primaryAccount: peerID, pairing: pairing, label: "lain.client",
-                                    onReject: onReject, onLink: onLink)
+                                    versions: versions, onReject: onReject, onLink: onLink)
         self.acceptor = acceptor
         let queue = DispatchQueue(label: "lain.client.listener", qos: .userInitiated)
         listener = try TCPListener(port: port ?? LainProtocol.usbPort, queue: queue) { socket in

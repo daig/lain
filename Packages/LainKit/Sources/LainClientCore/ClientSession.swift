@@ -34,7 +34,18 @@ public final class ClientSession: Sendable {
         public var transport: LinkTransport = .usb
         /// The Mac's name from its `HelloAck`; over Wi-Fi its Bonjour name until then.
         public var hostName = ""
+        /// The protocol version the link negotiated, and the newest this iPad offered (PROTOCOL-VERSIONING §3.2).
+        public var protocolVersion: UInt8 = 0
+        public var newestOffered: UInt8 = 0
+        /// The Mac's setup (v4 `HostSetup`): what's missing, why there's no video. nil until one arrives,
+        /// and always with a Mac on an older version.
+        public var setup: HostSetup?
         public init() {}
+
+        /// The Mac runs an older protocol than this iPad's newest: what updating it adds (empty if not).
+        public var olderMacMisses: [ProtocolFeature] {
+            protocolVersion == 0 ? [] : ProtocolFeature.missing(at: protocolVersion, upTo: newestOffered)
+        }
     }
 
     public enum Status: Sendable, Equatable {
@@ -44,9 +55,9 @@ public final class ClientSession: Sendable {
         case searching
         /// A lain Mac this iPad holds no Wi-Fi secret for (`mac:<hostId>`): one USB session records it.
         case needsCable(hostName: String)
-        /// A Mac runs another lain protocol version (nil name: the Mac on the cable; nil version: its
-        /// TXT record names none): one of the two needs an update.
-        case versionMismatch(hostName: String?, remote: UInt8?)
+        /// A Mac shares no protocol version with this iPad (nil name: the Mac on the cable): `gap` says
+        /// which of the two needs an update.
+        case versionMismatch(hostName: String?, gap: VersionGap)
         /// Local Network access is off for lain: browsing or dialing was refused (TN3179).
         case localNetworkDenied
         /// The Mac answered `Error(busy)` (it has another session, e.g. over USB); retrying later.
@@ -71,15 +82,18 @@ public final class ClientSession: Sendable {
     /// - Parameters:
     ///   - port: nil: `LainProtocol.usbPort` (the iPad); 0 in tests (the bound port is `port`).
     ///   - wifi: nil keeps the session USB-only.
+    ///   - versions: the protocol versions offered (PROTOCOL-VERSIONING §3.2); nil: `VersionList.offered`.
     ///   - onStatus: called in order on the session's queue; hop to the main queue for UI.
     public init(port: UInt16? = nil, secrets: some SecretStore, hello: Hello,
                 input: ClientInput = ClientInput(), video: ClientVideoPipeline? = nil, wifi: ClientWiFiConfig? = nil,
-                onStatus: @escaping @Sendable (Status) -> Void) throws {
-        let core = SessionCore(secrets: secrets, hello: hello, input: input, video: video, wifi: wifi, onStatus: onStatus)
+                versions: VersionList? = nil, onStatus: @escaping @Sendable (Status) -> Void) throws {
+        let versions = versions ?? .offered
+        let core = SessionCore(secrets: secrets, hello: hello, input: input, video: video, wifi: wifi, versions: versions,
+                               onStatus: onStatus)
         self.core = core
         self.input = input
         self.video = video
-        listener = try ClientLinkListener(port: port, secrets: secrets, acceptsPairing: true,
+        listener = try ClientLinkListener(port: port, secrets: secrets, acceptsPairing: true, versions: versions,
                                           onReject: { [weak core] error in
                                               guard let core else { return }
                                               core.queue.async { core.rejected(error) }
@@ -158,6 +172,8 @@ final class LinkState: Sendable {
 final class SessionCore: @unchecked Sendable {
     let queue = DispatchQueue(label: "lain.client.session", qos: .userInitiated)
     let secrets: any SecretStore
+    /// The protocol versions this iPad offers.
+    let versions: VersionList
     let hello: Hello
     let input: ClientInput
     let video: ClientVideoPipeline?
@@ -183,14 +199,15 @@ final class SessionCore: @unchecked Sendable {
     /// Bumped by every adoption and by `stop()`: a Wi-Fi dial decided under an older epoch is stale.
     var epoch: UInt64 = 0
     var stopped = false
-    /// The Mac on the cable speaks another protocol version (its connection was refused); cleared by
-    /// the next link.
-    var usbMismatch: UInt8?
+    /// The Mac on the cable shares no protocol version with this iPad (its connection was refused);
+    /// cleared by the next link.
+    var usbGap: VersionGap?
     private var published: ClientSession.Status?
 
     init(secrets: some SecretStore, hello: Hello, input: ClientInput, video: ClientVideoPipeline?,
-         wifi: ClientWiFiConfig?, onStatus: @escaping @Sendable (ClientSession.Status) -> Void) {
+         wifi: ClientWiFiConfig?, versions: VersionList, onStatus: @escaping @Sendable (ClientSession.Status) -> Void) {
         self.secrets = secrets
+        self.versions = versions
         self.hello = hello
         self.input = input
         self.video = video
@@ -258,10 +275,12 @@ final class SessionCore: @unchecked Sendable {
         let displaced = current
         generation &+= 1
         epoch &+= 1
-        usbMismatch = nil
+        usbGap = nil
         let g = generation
         var info = ClientSession.ConnectionInfo()
         info.transport = link.transport
+        info.protocolVersion = link.version
+        info.newestOffered = link.localVersions.newest ?? link.version
         if case .wifi(let host) = via { info.hostName = host.name }
         let state = LinkState(info)
         current = Current(link: link, generation: g, via: via, state: state, info: info)
@@ -338,6 +357,9 @@ final class SessionCore: @unchecked Sendable {
                 input.warp(x: w.x, y: w.y, generation: g)
             case .cursorShape, .cursorSelect:
                 video?.cursor.apply(env.message, generation: g)
+            case .hostSetup(let setup):
+                log.notice("HostSetup: missing \(setup.missing.map { "\($0)" }.joined(separator: ", "), privacy: .public); video problem: \(setup.videoProblem.isEmpty ? "none" : setup.videoProblem, privacy: .public)")
+                state.update({ $0.setup = setup }, publish: publishInfo)
             case .error(let e):
                 log.error("the Mac refused the session: \(String(describing: e.code), privacy: .public) \(e.message, privacy: .public)")
                 state.outcome.withLock { $0.error = e.code }
@@ -433,9 +455,9 @@ final class SessionCore: @unchecked Sendable {
 
     /// The USB listener refused a connection: a Mac on another protocol version is worth a status.
     func rejected(_ error: any Error) {
-        guard !stopped, case .versionMismatch(let remote)? = error as? TransportError else { return }
-        log.error("the Mac on the cable speaks lain protocol v\(remote); this iPad speaks v\(LainProtocol.majorVersion)")
-        usbMismatch = remote
+        guard !stopped, let gap = VersionGap(error, local: versions) else { return }
+        log.error("the Mac on the cable shares no lain protocol version with this iPad (\(VersionList.offered, privacy: .public)): \(String(describing: gap), privacy: .public)")
+        usbGap = gap
         publish()
     }
 
@@ -452,7 +474,7 @@ final class SessionCore: @unchecked Sendable {
     /// view (which ranks a refused USB connection), else waiting.
     func publish() {
         if let c = current { return emit(.connected(c.info)) }
-        emit(wifiStatus() ?? usbMismatch.map { .versionMismatch(hostName: nil, remote: $0) }
+        emit(wifiStatus() ?? usbGap.map { .versionMismatch(hostName: nil, gap: $0) }
              ?? .listening(port: port, wifi: wifi != nil))
     }
 

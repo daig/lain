@@ -124,9 +124,9 @@ final class WiFiMac: Sendable {
         (self.listener, self.acceptor) = (listener, acceptor)
     }
 
-    /// What Bonjour would report for it (TXT `v` = `version`, `id` = `hostId`).
-    func discovered(version: UInt8? = LainProtocol.majorVersion) -> DiscoveredHost {
-        DiscoveredHost(hostId: hostId, name: name, protocolVersion: version,
+    /// What Bonjour would report for it (TXT `vs` = `versions`, `id` = `hostId`).
+    func discovered(versions: [UInt8] = LainProtocol.supportedVersions) -> DiscoveredHost {
+        DiscoveredHost(hostId: hostId, name: name, versions: versions,
                        endpoint: .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!),
                        interfaceNames: ["lo0"])
     }
@@ -334,7 +334,7 @@ final class StallingService: Sendable {
 
     /// Listed under `hostId`, as `name`.
     func discovered(claiming hostId: String, name: String) -> DiscoveredHost {
-        DiscoveredHost(hostId: hostId, name: name, protocolVersion: LainProtocol.majorVersion,
+        DiscoveredHost(hostId: hostId, name: name, versions: LainProtocol.supportedVersions,
                        endpoint: .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!),
                        interfaceNames: ["lo0"])
     }
@@ -775,19 +775,19 @@ func eventually(within seconds: Double = 5, _ body: () -> Bool) async -> Bool {
     @Test func aMacOnAnotherProtocolVersionIsNotDialedAndTheStatusSaysSo() async throws {
         let mac = try await WiFiMac(secret: secret)
         defer { mac.cancel() }
-        let discoveries = Discoveries([mac.discovered(version: 1)])
+        let discoveries = Discoveries([mac.discovered(versions: [2])])
         let statuses = Inbox<ClientSession.Status>()
         let session = try ClientSession(port: 0, secrets: RecordingSecrets([PairingAccounts.mac(mac.hostId): secret]),
                                         hello: hello, wifi: testWiFi(discoveries)) { statuses.put($0) }
         defer { session.stop() }
         let status = try #require(await statuses.first { if case .versionMismatch = $0 { true } else { false } })
-        #expect(status == .versionMismatch(hostName: "Mac mini", remote: 1))
+        #expect(status == .versionMismatch(hostName: "Mac mini", gap: .peerOlder(peer: "protocol v2")))
         let detail = ClientStatus(status).detail
-        #expect(detail.contains("protocol v1") && detail.contains("update lain on the Mac"))
+        #expect(detail.contains("It speaks protocol v2") && detail.contains("update lain on the Mac"))
         #expect(await mac.links.next(within: WiFiTimes.grace + 0.5) == nil)
         // A TXT record without a version isn't dialed either.
-        discoveries.all.last?.update(hosts: [mac.discovered(version: nil)])
-        #expect(await statuses.first { $0 == .versionMismatch(hostName: "Mac mini", remote: nil) } != nil)
+        discoveries.all.last?.update(hosts: [mac.discovered(versions: [])])
+        #expect(await statuses.first { $0 == .versionMismatch(hostName: "Mac mini", gap: .peerOlder(peer: "an unknown protocol")) } != nil)
         #expect(await mac.links.next(within: 0.4) == nil)
     }
 
@@ -945,7 +945,7 @@ func eventually(within seconds: Double = 5, _ body: () -> Bool) async -> Bool {
     @Test func aFailingServiceFallsThroughToTheMacsOtherService() async throws {
         let mac = try await WiFiMac(secret: secret)
         defer { mac.cancel() }
-        let dead = DiscoveredHost(hostId: mac.hostId, name: "A Mac", protocolVersion: LainProtocol.majorVersion,
+        let dead = DiscoveredHost(hostId: mac.hostId, name: "A Mac", versions: LainProtocol.supportedVersions,
                                   endpoint: .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: try closedLoopbackPort())!),
                                   interfaceNames: ["lo0"])
         let probe = DialProbe()
@@ -1082,12 +1082,12 @@ func isPong(_ message: Message, _ id: UInt32) -> Bool {
 @Suite struct WiFiPolicyTests {
     @Test func onlyCanonicalPairedMacsOnOurVersionAreDialedLastConnectedFirst() {
         let x = UUID().uuidString, y = UUID().uuidString, z = UUID().uuidString
-        func host(_ id: String, _ name: String, port: UInt16, version: UInt8? = LainProtocol.majorVersion) -> DiscoveredHost {
-            DiscoveredHost(hostId: id, name: name, protocolVersion: version,
+        func host(_ id: String, _ name: String, port: UInt16, versions: [UInt8] = LainProtocol.supportedVersions) -> DiscoveredHost {
+            DiscoveredHost(hostId: id, name: name, versions: versions,
                            endpoint: .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!))
         }
         let hosts = [host(x, "X", port: 1), host(y, "Y", port: 2), host(y, "Y (2)", port: 3), host(z, "Z", port: 4),
-                     host(x.lowercased(), "x", port: 5), host(z, "Z old", port: 6, version: 1)]
+                     host(x.lowercased(), "x", port: 5), host(z, "Z old", port: 6, versions: [2])]
         let stored = [PairingAccounts.mac(x): [UInt8](repeating: 1, count: 32), PairingAccounts.mac(y): [UInt8](repeating: 2, count: 32),
                       PairingAccounts.mac(x.lowercased()): [UInt8](repeating: 3, count: 32)]
         let plan = WiFiDialPlan(hosts: hosts, preferring: y) { stored[$0] }
@@ -1095,7 +1095,7 @@ func isPong(_ message: Message, _ id: UInt32) -> Bool {
         #expect(plan.candidates.map(\.host.name) == ["Y", "Y (2)", "X"])
         #expect(plan.candidates.first?.secret == [UInt8](repeating: 2, count: 32))
         #expect(plan.needsCable.map(\.name) == ["Z"])
-        #expect(plan.otherVersion == [WiFiDialPlan.OtherVersion(host: hosts[5], paired: false)])
+        #expect(plan.otherVersion == [WiFiDialPlan.OtherVersion(host: hosts[5], gap: .peerOlder(peer: "protocol v2"), paired: false)])
         #expect(WiFiDialPlan(hosts: hosts, preferring: nil) { stored[$0] }.candidates.map(\.host.name) == ["X", "Y", "Y (2)"])
     }
 
@@ -1104,7 +1104,7 @@ func isPong(_ message: Message, _ id: UInt32) -> Bool {
     @Test func oneMacsServicesAreTriedLastAnsweredFirstThenInTurn() {
         let x = UUID().uuidString, y = UUID().uuidString
         func host(_ id: String, _ name: String, port: UInt16) -> DiscoveredHost {
-            DiscoveredHost(hostId: id, name: name, protocolVersion: LainProtocol.majorVersion,
+            DiscoveredHost(hostId: id, name: name, versions: LainProtocol.supportedVersions,
                            endpoint: .hostPort(host: .ipv4(.loopback), port: NWEndpoint.Port(rawValue: port)!))
         }
         let hosts = [host(x, "A", port: 1), host(y, "B", port: 2), host(x, "C", port: 3), host(x, "D", port: 4)]
@@ -1132,7 +1132,7 @@ func isPong(_ message: Message, _ id: UInt32) -> Bool {
 
     /// Browsing goes on only with no link, or over a peer-to-peer Wi-Fi link.
     @Test func onlyAPeerToPeerLinkKeepsTheBrowse() {
-        let mac = DiscoveredHost(hostId: UUID().uuidString, name: "Mac mini", protocolVersion: LainProtocol.majorVersion,
+        let mac = DiscoveredHost(hostId: UUID().uuidString, name: "Mac mini", versions: LainProtocol.supportedVersions,
                                  endpoint: .hostPort(host: .ipv4(.loopback), port: 1))
         #expect(WiFiLoop.browses(during: nil))
         #expect(!WiFiLoop.browses(during: (.usb(peer: PairingAccounts.usbHost, paired: false, secret: []), .usb)))
@@ -1146,8 +1146,11 @@ func isPong(_ message: Message, _ id: UInt32) -> Bool {
         #expect(ClientStatus(.listening(port: 1, wifi: true)).detail.contains("paired Mac with Wi-Fi on"))
         #expect(ClientStatus(.needsCable(hostName: "Mac mini")).title == "Found Mac mini")
         #expect(ClientStatus(.needsCable(hostName: "Mac mini")).detail == "Connect the cable once to use it over Wi-Fi")
-        #expect(ClientStatus(.versionMismatch(hostName: nil, remote: 1)).title == "The Mac runs another lain")
-        #expect(ClientStatus(.versionMismatch(hostName: "Mac mini", remote: 3)).detail.contains("update lain on this iPad"))
+        #expect(ClientStatus(.versionMismatch(hostName: nil, gap: .peerOlder(peer: "protocol v2"))).title == "The Mac runs another lain")
+        #expect(ClientStatus(.versionMismatch(hostName: nil, gap: .peerOlder(peer: "protocol v2"))).detail.contains("update lain on the Mac"))
+        #expect(ClientStatus(.versionMismatch(hostName: "Mac mini", gap: .peerNewer(peer: "protocol v5"))).detail.contains("update lain on this iPad"))
+        #expect(ClientStatus(.versionMismatch(hostName: "Mac mini", gap: .differentBuilds(version: 4))).detail
+                    .contains("different development build of protocol v4"))
         #expect(ClientStatus(.connecting(hostName: "Mac mini", interfaces: ["en0", "awdl0"])).detail == "over Wi-Fi (en0, awdl0)")
         #expect(ClientStatus(.pairingRefused(hostName: "Mac mini")).title == "Mac mini doesn't recognize this iPad")
         #expect(ClientStatus(.pairingRefused(hostName: "Mac mini")).detail == "Connect the USB-C cable once to pair again")

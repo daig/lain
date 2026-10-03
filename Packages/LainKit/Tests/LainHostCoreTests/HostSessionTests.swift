@@ -355,21 +355,24 @@ import Testing
         #expect(await statuses.first { $0 == .connecting } != nil)
         #expect(await statuses.next() == HostStatus.iPadNeedsUpdate)
         #expect(mux.connectCount == 9)
-        #expect(session.status.title == "Error: lain on the iPad speaks another protocol: update it")
+        #expect(session.status.title == "Error: lain on the iPad is too old (it speaks an older protocol, this Mac protocol \(VersionList.offered)): update it")
         // Unplugged, it is just waiting again.
         mux.detach(deviceID: 7)
         #expect(await statuses.first { $0 == .waitingForIPad } != nil)
     }
 
-    @Test func aNewerAppAnsweringVersionMismatchIsAskedToUpdate() async throws {
-        let answer = MessageCodec.encode(.error(ErrorMessage(code: .versionMismatch, message: "lain here speaks protocol v3")),
-                                         sequence: 0, timestampNs: 0, version: 3)
+    @Test func aLegacyAppAnsweringVersionMismatchIsAskedToUpdate() async throws {
+        // A v2 app answers our handshake frame in our header's version (it can't read our ChannelHello).
+        let answer = MessageCodec.legacyVersionMismatch(remote: LainProtocol.handshakeVersion, why: "lain here speaks protocol v2",
+                                                        sequence: 0, timestampNs: 0)
         let ipad = try OtherProtocolIPad(answer: answer)
         defer { ipad.cancel() }
         let (session, mux, statuses) = try ipad.session(retryEvery: .seconds(1))
         defer { session.stop(); mux.stop() }
         session.start()
-        #expect(await statuses.first { $0 == HostStatus.iPadNeedsUpdate } != nil)
+        let older = HostStatus.versionGap(.peerOlder(peer: "a protocol from before v3"))
+        #expect(await statuses.first { $0 == older } != nil)
+        #expect(session.status.title.contains("update it"))
         #expect(mux.connectCount == 3)   // the first link attempt said so
     }
 

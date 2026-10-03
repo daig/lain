@@ -107,7 +107,7 @@ import Testing
     @Test func nonInputMessagesAreLeftToTheCaller() {
         var r = HostInputRouter(sink: sink)
         #expect(r.handle(.ping(Ping(id: 1, sentAtNs: 2))) == .notInput)
-        #expect(r.handle(.start(Start())) == .notInput)
+        #expect(r.handle(.hostSetup(HostSetup(items: [], videoProblem: "", hasOtherDisplay: false))) == .notInput)
         #expect(r.handle(.keyframeRequest(KeyframeRequest(reason: .startup, lastGoodFrameId: 0))) == .notInput)
         #expect(sink.calls.isEmpty)
     }

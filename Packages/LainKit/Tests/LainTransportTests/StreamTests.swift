@@ -80,7 +80,8 @@ final class NSLockish: Sendable {
 @Suite struct Channels {
     func pair() -> (MessageChannel, MessageChannel) {
         let (a, b) = MemoryStream.pair()
-        let ca = MessageChannel(stream: a, label: "a"), cb = MessageChannel(stream: b, label: "b")
+        let ca = MessageChannel(stream: a, label: "a", version: LainProtocol.newestVersion)
+        let cb = MessageChannel(stream: b, label: "b", version: LainProtocol.newestVersion)
         ca.start(); cb.start()
         return (ca, cb)
     }
@@ -100,12 +101,12 @@ final class NSLockish: Sendable {
 
     @Test func receiveOnceTakesExactlyOne() async throws {
         let (a, b) = pair()
-        a.send(.start(Start()))
-        a.send(.stop(Stop(reason: .userRequested)))
+        a.send(.ping(Ping(id: 1, sentAtNs: 0)))
+        a.send(.releaseAll(ReleaseAll(reason: .focusLost)))
         let first = try await b.next(timeoutSeconds: 2)
-        #expect(first.message == .start(Start()))
+        #expect(first.message == .ping(Ping(id: 1, sentAtNs: 0)))
         let second = try await b.next(timeoutSeconds: 2)
-        #expect(second.message == .stop(Stop(reason: .userRequested)))
+        #expect(second.message == .releaseAll(ReleaseAll(reason: .focusLost)))
         await #expect(throws: TransportError.timeout) { try await b.next(timeoutSeconds: 0.05) }
     }
 
@@ -118,6 +119,52 @@ final class NSLockish: Sendable {
         a.start(queue: DispatchQueue(label: "a"), onBytes: { _ in }, onClose: { _ in })
         a.write([UInt8](repeating: 0xEE, count: 64))
         #expect(await closed.next() == true)
+    }
+}
+
+/// A channel takes only frames in its layer: handshake frames until `setVersion`, then that version's.
+@Suite struct ChannelVersions {
+    func closeError(of channel: MessageChannel) async -> (any Error)? {
+        let closed = Inbox<String>()
+        channel.setCloseHandler { closed.put(String(describing: $0)) }
+        return await closed.next().map { TransportError.unexpectedMessage($0) }
+    }
+
+    @Test func aChannelSwitchesFromTheHandshakeToItsVersion() async throws {
+        let (a, b) = MemoryStream.pair()
+        let ca = MessageChannel(stream: a, label: "a"), cb = MessageChannel(stream: b, label: "b")
+        ca.start(); cb.start()
+        let accept = ChannelAccept(chosen: 3, versions: VersionList.supported)
+        #expect(ca.send(.channelAccept(accept)))
+        ca.setVersion(3)
+        ca.send(.ping(Ping(id: 1, sentAtNs: 0)))
+        let first = try await cb.next(timeoutSeconds: 2)
+        #expect(first.header.version == LainProtocol.handshakeVersion && first.message == .channelAccept(accept))
+        cb.setVersion(3)   // before reading the session frame that follows
+        let second = try await cb.next(timeoutSeconds: 2)
+        #expect(second.header.version == 3 && second.message == .ping(Ping(id: 1, sentAtNs: 0)))
+    }
+
+    @Test func aFrameInAnotherVersionClosesTheChannel() async {
+        let (a, b) = MemoryStream.pair()
+        let ca = MessageChannel(stream: a, label: "a", version: 4), cb = MessageChannel(stream: b, label: "b", version: 3)
+        ca.start(); cb.start()
+        let closed = Inbox<String>()
+        cb.setCloseHandler { closed.put(String(describing: $0)) }
+        cb.setHandler { _ in Issue.record("delivered a v4 frame on a v3 channel") }
+        ca.send(.ping(Ping(id: 1, sentAtNs: 0)))
+        #expect(await closed.next()?.contains("a ping frame in v4 on a channel at v3") == true)
+    }
+
+    @Test func aSessionFrameBeforeTheVersionIsSetClosesTheChannel() async {
+        let (a, b) = MemoryStream.pair()
+        let ca = MessageChannel(stream: a, label: "a", version: 3), cb = MessageChannel(stream: b, label: "b")
+        ca.start(); cb.start()
+        let closed = Inbox<String>()
+        cb.setCloseHandler { closed.put(String(describing: $0)) }
+        cb.setHandler { _ in Issue.record("delivered a session frame during the handshake") }
+        ca.send(.ping(Ping(id: 1, sentAtNs: 0)))
+        #expect(await closed.next()?.contains("on a channel at the handshake") == true)
     }
 }
 
@@ -170,6 +217,9 @@ final class NSLockish: Sendable {
         other = hello
         other.sessionToken[0] ^= 1
         #expect(!ChannelAuth.isValid(other, secret: secret))
+        other = hello   // the offered versions are covered too: a downgrade can't be slipped in
+        other.versions = other.versions.capped(at: other.versions.oldest)
+        #expect(other.versions != hello.versions && !ChannelAuth.isValid(other, secret: secret))
         #expect(ChannelAuth.hello(kind: .realtime, token: token, secret: nil).hmac == ChannelAuth.pairingMAC)
     }
 }

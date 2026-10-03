@@ -70,7 +70,7 @@ import Testing
         // The iPad holds the Mac's Wi-Fi secret and sees the bench as that Mac; the app's backoffs, a short grace.
         let drops = Drops()
         let endpoint = NWEndpoint.hostPort(host: .ipv4(.loopback), port: try #require(NWEndpoint.Port(rawValue: bound)))
-        let host = DiscoveredHost(hostId: identity.id, name: identity.name, protocolVersion: LainProtocol.majorVersion,
+        let host = DiscoveredHost(hostId: identity.id, name: identity.name, versions: LainProtocol.supportedVersions,
                                   endpoint: endpoint, interfaceNames: ["lo0"], isBench: true)
         var wifi = ClientWiFiConfig(discovery: { FixedHostDiscovery(hosts: [host]) }, options: .loopback)
         wifi.grace = grace

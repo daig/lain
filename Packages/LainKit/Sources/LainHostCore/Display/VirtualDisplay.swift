@@ -20,6 +20,9 @@ public final class VirtualDisplay: @unchecked Sendable {
 
     public enum Failure: Error { case create, applySettings, didNotAppear }
 
+    /// "LA": tells lain's display apart from real ones (`HostSetupProbe.hasOtherDisplay`).
+    public static let vendorID: UInt32 = 0x4C41
+
     public let spec: Spec
     public let displayID: CGDirectDisplayID
     private let display: CGVirtualDisplay
@@ -31,7 +34,7 @@ public final class VirtualDisplay: @unchecked Sendable {
         d.maxPixelsWide = UInt32(spec.pixelWidth)
         d.maxPixelsHigh = UInt32(spec.pixelHeight)
         d.sizeInMillimeters = spec.sizeMillimeters
-        d.vendorID = 0x4C41      // "LA"
+        d.vendorID = Self.vendorID
         d.productID = 0x0001
         d.serialNum = 0x0001
         // Display P3: DCI-P3 primaries with a D65 white point.
