@@ -16,3 +16,5 @@ build/
 .swiftpm/
 # Agent worktrees (Claude Code workflows)
 .claude/worktrees/
+# Planning docs: kept local, not published
+/docs/
