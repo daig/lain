@@ -17,7 +17,10 @@ fn stored() -> Vec<(String, Vec<u8>)> {
 
 fn wifi_host(stored: &[(String, Vec<u8>)]) -> Acceptor<ScriptedSecrets> {
     let entries: Vec<(&str, &[u8])> = stored.iter().map(|(a, s)| (a.as_str(), s.as_slice())).collect();
-    Acceptor::new(ScriptedSecrets::new(&entries), AcceptorOptions { label: "test.wifi".into(), ..AcceptorOptions::default() })
+    Acceptor::new(
+        ScriptedSecrets::new(&entries),
+        AcceptorOptions { label: "test.wifi".into(), ..AcceptorOptions::default() },
+    )
 }
 
 fn err_msg(message: &str) -> Message {
@@ -108,7 +111,10 @@ async fn a_channel_hello_under_another_pairing_than_its_tls_key_is_refused() {
     assert_eq!(refusal(&host, one, two).await, err_msg("HMAC under another pairing than the TLS key"));
     assert_eq!(next(&mut host.rejections, T).await, Some(TransportError::AuthenticationFailed));
     // A dialer's open fails in place of its ChannelAccept.
-    assert_eq!(LinkDialer::new(host.bound_dialer(one)).open(two).await.err(), Some(TransportError::AuthenticationFailed));
+    assert_eq!(
+        LinkDialer::new(host.bound_dialer(one)).open(two).await.err(),
+        Some(TransportError::AuthenticationFailed)
+    );
     assert_eq!(next(&mut host.rejections, T).await, Some(TransportError::AuthenticationFailed));
 
     // Under a secret the host doesn't hold at all.
@@ -144,7 +150,10 @@ async fn a_bound_stream_is_bound_to_its_secret_only() {
     assert!(!channel.is_bound_to_secret(&[8; 32]));
     let plain = MessageChannel::new(memory_pair().0, "plain");
     assert!(plain.is_bound_to_secret(&[1; 32]), "an unbound stream can't tell: true");
-    bound.write_all(&MessageCodec::encode(&hello_msg(ConnectionKind::Audio, token(), None), 0, 0, None, None)).await.unwrap();
+    bound
+        .write_all(&MessageCodec::encode(&hello_msg(ConnectionKind::Audio, token(), None), 0, 0, None, None))
+        .await
+        .unwrap();
     drop(channel);
     let mut rest = Vec::new();
     bound.read_to_end(&mut rest).await.unwrap();

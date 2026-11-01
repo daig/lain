@@ -46,7 +46,8 @@ async fn negotiate(dialing: &VersionList, accepting: &VersionList) -> Outcome {
     let options = AcceptorOptions { versions: accepting.clone(), ..AcceptorOptions::default() };
     let mut acceptor = Acceptor::new(store(&[("PEER", &secret)]), options);
     let dialer = LinkDialer::new(acceptor.dialer()).versions(dialing.clone());
-    let dialed = dialer.open(&secret).await.map(|l| (l.version, l.older_peer_misses(), l.supports(ProtocolFeature::HostSetup)));
+    let dialed =
+        dialer.open(&secret).await.map(|l| (l.version, l.older_peer_misses(), l.supports(ProtocolFeature::HostSetup)));
     let accepted = match next(&mut acceptor.links, T).await {
         Some(a) => Ok((a.link.version, a.link.older_peer_misses())),
         None => Err(next(&mut acceptor.rejections, T).await.expect("a link or a rejection")),
@@ -87,8 +88,16 @@ async fn the_version_skew_matrix() {
                 None => {
                     let ours = ours.unwrap_err();
                     let theirs = theirs.unwrap_err();
-                    assert_eq!(VersionGap::from_error(&ours, &both), none(VersionGap::PeerNewer { peer: "protocol v5".into() }), "{context}");
-                    assert_eq!(VersionGap::from_error(&theirs, peer), none(VersionGap::PeerOlder { peer: "protocol v3–v4".into() }), "{context}");
+                    assert_eq!(
+                        VersionGap::from_error(&ours, &both),
+                        none(VersionGap::PeerNewer { peer: "protocol v5".into() }),
+                        "{context}"
+                    );
+                    assert_eq!(
+                        VersionGap::from_error(&theirs, peer),
+                        none(VersionGap::PeerOlder { peer: "protocol v3–v4".into() }),
+                        "{context}"
+                    );
                 }
             }
         }
@@ -133,7 +142,10 @@ async fn a_legacy_v2_peer_is_answered_in_v2_in_either_role() {
         assert_eq!(answer[2], 2);
         let error = next(&mut acceptor.rejections, T).await.unwrap();
         assert_eq!(error, TransportError::VersionMismatch { remote: 2 });
-        assert_eq!(VersionGap::from_error(&error, &offered()), Some(VersionGap::PeerOlder { peer: "protocol v2".into() }));
+        assert_eq!(
+            VersionGap::from_error(&error, &offered()),
+            Some(VersionGap::PeerOlder { peer: "protocol v2".into() })
+        );
     }
 }
 

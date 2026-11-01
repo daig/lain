@@ -152,7 +152,9 @@ impl Shared {
         });
         if first {
             match &reason {
-                CloseReason::Local | CloseReason::PeerClosed => tracing::debug!(channel = %self.label, "closing: {reason}"),
+                CloseReason::Local | CloseReason::PeerClosed => {
+                    tracing::debug!(channel = %self.label, "closing: {reason}")
+                }
                 _ => tracing::error!(channel = %self.label, "closing: {reason}"),
             }
             let _ = outbox.commands.send(Command::Close);

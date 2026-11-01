@@ -54,8 +54,11 @@ impl VersionGap {
         {
             return Some(Self::PeerNewer { peer: format!("protocol {}", describe(advertised)) });
         }
-        let peer =
-            if advertised.is_empty() { "an unknown protocol".into() } else { format!("protocol {}", describe(advertised)) };
+        let peer = if advertised.is_empty() {
+            "an unknown protocol".into()
+        } else {
+            format!("protocol {}", describe(advertised))
+        };
         Some(Self::PeerOlder { peer })
     }
 
