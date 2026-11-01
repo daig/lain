@@ -6,7 +6,7 @@
 use std::sync::Arc;
 
 use futures::StreamExt;
-use lain_platform::{Monitor, PlatformError, RectF};
+use lain_platform::{Monitor, PlatformError};
 use tokio::sync::{mpsc, watch};
 use tokio::time::Instant;
 use zbus::{Connection, Proxy};
@@ -242,9 +242,4 @@ impl Task {
         // Counted even when refused, so a layout Mutter won't take isn't retried until the monitors change.
         self.tracker.applied(set, Some(plan.arrangement));
     }
-}
-
-/// The global bounds of lain's display in `desktop`, if it is listed.
-pub fn lain_bounds(desktop: &Desktop) -> Option<RectF> {
-    desktop.lain().map(|m| m.monitor.bounds)
 }

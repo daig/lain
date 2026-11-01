@@ -145,7 +145,7 @@ impl SettingsSource for GnomeSettings {
 
 impl GnomeSettings {
     /// Reads the settings, then keeps them current from dconf's change notifications.
-    pub(crate) async fn start(conn: &Connection) -> Self {
+    pub async fn start(conn: &Connection) -> Self {
         let current = Arc::new(RwLock::new(read().await));
         tracing::debug!(settings = ?*current.read().unwrap_or_else(|e| e.into_inner()), "input settings");
         let rule = MatchRule::builder()

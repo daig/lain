@@ -21,7 +21,8 @@ pub struct GnomeSetup {
 }
 
 impl GnomeSetup {
-    pub(crate) fn new(desktop: watch::Receiver<Arc<Desktop>>) -> Self {
+    /// Reads `has_other_display` from the desktop that `monitors::spawn` publishes.
+    pub fn new(desktop: watch::Receiver<Arc<Desktop>>) -> Self {
         Self { desktop }
     }
 }
