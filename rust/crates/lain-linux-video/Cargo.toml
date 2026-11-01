@@ -23,6 +23,8 @@ tracing.workspace = true
 lain-media.workspace = true
 lain-platform = { workspace = true, features = ["fake"] }
 tempfile.workspace = true
+# The desktop tests (tests/live.rs) create lain's display through lain-gnome on the session bus.
+zbus.workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 
 [build-dependencies]

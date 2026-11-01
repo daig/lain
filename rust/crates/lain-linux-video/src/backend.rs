@@ -112,7 +112,6 @@ impl VideoBackend for LinuxVideo {
             source.refresh_hz.max(1),
             source.cursor.clone(),
         );
-        source.cursor.reset();
         let (session, events, _) = start_session(
             move || GpuPipeline::new(&node, settings),
             stream_info(&config),
