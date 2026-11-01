@@ -45,7 +45,10 @@ async fn receive_takes_exactly_one_and_times_out() {
     a.send(&ping(1, 0)).unwrap();
     a.send(&Message::ReleaseAll(ReleaseAll { reason: ReleaseReason::FocusLost })).unwrap();
     assert_eq!(b.recv_timeout(T).await.unwrap().message, ping(1, 0));
-    assert_eq!(b.recv_timeout(T).await.unwrap().message, Message::ReleaseAll(ReleaseAll { reason: ReleaseReason::FocusLost }));
+    assert_eq!(
+        b.recv_timeout(T).await.unwrap().message,
+        Message::ReleaseAll(ReleaseAll { reason: ReleaseReason::FocusLost })
+    );
     assert_eq!(b.recv_timeout(Duration::from_millis(50)).await, Err(TransportError::Timeout));
     // A timeout leaves the channel open.
     a.send(&ping(2, 0)).unwrap();

@@ -184,11 +184,8 @@ impl<S: SecretStore + Clone> Acceptor<S> {
     /// The client's USB listener (Swift: `ClientLinkListener`'s acceptor): primary account "host", pairing
     /// stored for USB and Wi-Fi, if `accepts_pairing`.
     pub fn client(secrets: S, accepts_pairing: bool, versions: VersionList) -> Self {
-        let pairing = if accepts_pairing {
-            Pairing::client(secrets.clone(), PairingAccounts::USB_HOST)
-        } else {
-            Pairing::Refuse
-        };
+        let pairing =
+            if accepts_pairing { Pairing::client(secrets.clone(), PairingAccounts::USB_HOST) } else { Pairing::Refuse };
         Self::new(
             secrets,
             AcceptorOptions {

@@ -20,7 +20,10 @@ use crate::{DialError, TransportError};
 pub enum LinkTransport {
     #[default]
     Usb,
-    Network { interface: Option<String>, peer_to_peer: bool },
+    Network {
+        interface: Option<String>,
+        peer_to_peer: bool,
+    },
 }
 
 /// A reliable, ordered byte pipe a [`MessageChannel`](crate::MessageChannel) runs over: a usbmuxd pipe

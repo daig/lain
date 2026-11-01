@@ -34,8 +34,7 @@ pub struct AcceptedLink {
 }
 
 /// What a [`Pairing::Accept`] does with the new secret; an error answers `Error(internal)`.
-pub type PairStore =
-    Arc<dyn Fn(Pair) -> Pin<Box<dyn Future<Output = Result<(), PlatformError>> + Send>> + Send + Sync>;
+pub type PairStore = Arc<dyn Fn(Pair) -> Pin<Box<dyn Future<Output = Result<(), PlatformError>> + Send>> + Send + Sync>;
 
 /// Whether an acceptor pairs. Swift: `LinkAcceptor.Pairing`.
 #[derive(Clone)]
@@ -309,8 +308,9 @@ impl<S: SecretStore> Inner<S> {
         tracing::error!(acceptor = %self.options.label, "rejecting connection: it offers {}, this side {versions}", hello.versions);
         let _ = channel.send(&Message::ChannelAccept(ChannelAccept { chosen: 0, versions: versions.clone() }));
         drop(channel);
-        let _ =
-            self.rejections.send(TransportError::NoCommonVersion { local: versions.clone(), peer: hello.versions.clone() });
+        let _ = self
+            .rejections
+            .send(TransportError::NoCommonVersion { local: versions.clone(), peer: hello.versions.clone() });
     }
 
     async fn handshake(self: Arc<Self>, mut channel: MessageChannel) {
@@ -427,7 +427,8 @@ impl<S: SecretStore> Inner<S> {
     async fn candidate(&self, hello: &ChannelHello) -> Result<Option<(String, Vec<u8>)>, PlatformError> {
         // Few candidates, in account order; each check is constant-time (§7.6).
         let matching = |all: BTreeMap<String, Vec<u8>>, skip: Option<&str>| {
-            all.into_iter().find(|(account, secret)| Some(account.as_str()) != skip && ChannelAuth::is_valid(hello, secret))
+            all.into_iter()
+                .find(|(account, secret)| Some(account.as_str()) != skip && ChannelAuth::is_valid(hello, secret))
         };
         let Some(primary) = &self.options.primary_account else {
             return Ok(matching(self.secrets.all_secrets().await?, None));

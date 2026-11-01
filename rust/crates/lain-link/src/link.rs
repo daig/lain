@@ -218,7 +218,9 @@ impl<D: StreamDialer> LinkDialer<D> {
                 }
                 Ok((chosen, versions))
             }
-            Message::Error(e) if e.code == ErrorCode::AUTHENTICATION_FAILED => Err(TransportError::AuthenticationFailed),
+            Message::Error(e) if e.code == ErrorCode::AUTHENTICATION_FAILED => {
+                Err(TransportError::AuthenticationFailed)
+            }
             // A legacy acceptor, answering in our framing.
             Message::Error(e) if e.code == ErrorCode::VERSION_MISMATCH => {
                 Err(TransportError::VersionMismatch { remote: 0 })

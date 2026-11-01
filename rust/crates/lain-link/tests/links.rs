@@ -51,7 +51,9 @@ impl<F: Fn(ConnectionKind, DuplexStream) + Send + Sync + 'static> StreamDialer f
 }
 
 /// A peer that answers each connection's first bytes with `answer`, then closes.
-fn answering(answer: impl Fn(ConnectionKind) -> Vec<u8> + Send + Sync + 'static) -> PeerDialer<impl Fn(ConnectionKind, DuplexStream)> {
+fn answering(
+    answer: impl Fn(ConnectionKind) -> Vec<u8> + Send + Sync + 'static,
+) -> PeerDialer<impl Fn(ConnectionKind, DuplexStream)> {
     let answer = Arc::new(answer);
     PeerDialer(move |kind, mut far: DuplexStream| {
         let answer = answer.clone();
@@ -144,7 +146,10 @@ async fn a_forged_video_connection_is_rejected() {
     realtime.send(&hello_msg(ConnectionKind::Realtime, token, Some(&[1; 32]))).unwrap();
     let mut forged = client.raw();
     forged.send(&hello_msg(ConnectionKind::Video, token, Some(&[2; 32]))).unwrap();
-    assert_eq!(forged.recv_timeout(T).await.unwrap().message, err_msg(ErrorCode::AUTHENTICATION_FAILED, "bad HMAC on video"));
+    assert_eq!(
+        forged.recv_timeout(T).await.unwrap().message,
+        err_msg(ErrorCode::AUTHENTICATION_FAILED, "bad HMAC on video")
+    );
     assert_eq!(forged.recv_timeout(T).await, Err(TransportError::Closed));
     assert!(next(&mut client.links, Duration::from_millis(300)).await.is_none());
     assert!(matches!(realtime.recv_timeout(T).await.unwrap().message, Message::ChannelAccept(_)));
@@ -228,7 +233,10 @@ async fn an_acceptor_that_does_not_pair_refuses_pairing() {
     let mut host = Acceptor::host(store_.clone());
     // Refused in place of its ChannelAccept, so the dialer's open fails.
     let pair = Pair { secret: ChannelAuth::random_bytes(), host_id: String::new() };
-    assert_eq!(LinkDialer::new(host.dialer()).open_pairing(&pair).await.err(), Some(TransportError::AuthenticationFailed));
+    assert_eq!(
+        LinkDialer::new(host.dialer()).open_pairing(&pair).await.err(),
+        Some(TransportError::AuthenticationFailed)
+    );
     assert_eq!(next(&mut host.rejections, T).await, Some(TransportError::AuthenticationFailed));
     assert_eq!(store_.write_count(), 0);
     assert!(next(&mut host.links, Duration::from_millis(200)).await.is_none());
@@ -285,7 +293,9 @@ async fn video_and_audio_may_arrive_before_realtime() {
     assert!(accepted.link.session_token == token && accepted.peer == "IPAD");
     // Each was answered at the session's version once it joined.
     for channel in [&mut realtime, &mut video, &mut audio] {
-        let Message::ChannelAccept(a) = channel.recv_timeout(T).await.unwrap().message else { panic!("no ChannelAccept") };
+        let Message::ChannelAccept(a) = channel.recv_timeout(T).await.unwrap().message else {
+            panic!("no ChannelAccept")
+        };
         assert_eq!(a.chosen, NEWEST_VERSION);
         channel.set_version(a.chosen);
     }
@@ -398,7 +408,8 @@ async fn pairing_stores_the_secret_for_usb_and_for_wifi_together() {
     let id = host_id();
     let mut client = client(store(&[]), true);
     let host_secrets = store(&[]);
-    let (_link, _, paired) = HostLink::open(client.dialer(), &host_secrets, "IPAD", true, &id, &offered()).await.unwrap();
+    let (_link, _, paired) =
+        HostLink::open(client.dialer(), &host_secrets, "IPAD", true, &id, &offered()).await.unwrap();
     assert!(paired);
     let secret = secret_of(&host_secrets, "IPAD").unwrap();
     let expected: std::collections::BTreeMap<_, _> =
@@ -501,7 +512,8 @@ async fn the_highest_common_version_wins() {
     for (dialer_versions, acceptor_versions, expected) in cases {
         let mut client = Acceptor::client(store(&[]), true, acceptor_versions.clone()).answering_hello();
         let pair = Pair { secret: ChannelAuth::random_bytes(), host_id: String::new() };
-        let mut link = LinkDialer::new(client.dialer()).versions(dialer_versions.clone()).open_pairing(&pair).await.unwrap();
+        let mut link =
+            LinkDialer::new(client.dialer()).versions(dialer_versions.clone()).open_pairing(&pair).await.unwrap();
         assert_eq!(link.version, expected);
         assert_eq!(link.peer_versions.as_ref(), Some(&acceptor_versions));
         assert!(link.channels().iter().all(|c| c.version() == Some(expected)));
@@ -538,8 +550,14 @@ fn gaps_name_the_side_to_update() {
     let newer = |p: &str| VersionGap::PeerNewer { peer: p.into() };
     assert_eq!(VersionGap::from_lists(&versions(&[(5, 1), (6, 1)]), &v34), older("protocol v3–v4"));
     assert_eq!(VersionGap::from_lists(&v34, &versions(&[(5, 1)])), newer("protocol v5"));
-    assert_eq!(VersionGap::from_lists(&versions(&[(4, 1)]), &versions(&[(4, 2)])), VersionGap::DifferentBuilds { version: 4 });
-    assert_eq!(VersionGap::from_error(&TransportError::VersionMismatch { remote: 2 }, &offered()), Some(older("protocol v2")));
+    assert_eq!(
+        VersionGap::from_lists(&versions(&[(4, 1)]), &versions(&[(4, 2)])),
+        VersionGap::DifferentBuilds { version: 4 }
+    );
+    assert_eq!(
+        VersionGap::from_error(&TransportError::VersionMismatch { remote: 2 }, &offered()),
+        Some(older("protocol v2"))
+    );
     assert_eq!(
         VersionGap::from_error(&TransportError::VersionMismatch { remote: 0 }, &offered()),
         Some(older("a protocol from before v3"))
@@ -560,10 +578,7 @@ async fn an_accept_that_isnt_the_highest_common_version_fails_the_link() {
     let accept = Message::ChannelAccept(ChannelAccept { chosen: 3, versions: versions(&[(3, 1), (4, 1)]) });
     let peer = answering(move |_| MessageCodec::encode(&accept, 0, 0, None, None));
     let error = LinkDialer::new(peer).versions(versions(&[(3, 1), (4, 1)])).open(&secret()).await.err();
-    assert_eq!(
-        error,
-        Some(TransportError::UnexpectedMessage("ChannelAccept chose v3 of v3–v4, offered v3–v4".into()))
-    );
+    assert_eq!(error, Some(TransportError::UnexpectedMessage("ChannelAccept chose v3 of v3–v4, offered v3–v4".into())));
 }
 
 #[tokio::test(start_paused = true)]
@@ -586,7 +601,9 @@ async fn video_must_offer_what_its_realtime_offered() {
     let mut client = Acceptor::client(store(&[("host", &secret)]), true, v34.clone()).answering_hello();
     let token = token();
     let mut realtime = client.raw();
-    realtime.send(&Message::ChannelHello(ChannelAuth::hello(ConnectionKind::Realtime, token, Some(&secret), &v34))).unwrap();
+    realtime
+        .send(&Message::ChannelHello(ChannelAuth::hello(ConnectionKind::Realtime, token, Some(&secret), &v34)))
+        .unwrap();
     assert_eq!(
         realtime.recv_timeout(T).await.unwrap().message,
         Message::ChannelAccept(ChannelAccept { chosen: 4, versions: v34.clone() })
@@ -616,7 +633,14 @@ fn account_names() {
     assert_eq!(PairingAccounts::host_id_from_account(&PairingAccounts::mac(&id.to_lowercase())), None);
     assert!(PairingAccounts::is_canonical_host_id(&id));
     assert!(PairingAccounts::is_canonical_host_id(ProtocolSamples::HOST_ID));
-    for bad in [id.to_lowercase(), String::new(), format!("{{{id}}}"), format!("{id} "), format!("mac:{id}"), id.replace('-', "")] {
+    for bad in [
+        id.to_lowercase(),
+        String::new(),
+        format!("{{{id}}}"),
+        format!("{id} "),
+        format!("mac:{id}"),
+        id.replace('-', ""),
+    ] {
         assert!(!PairingAccounts::is_canonical_host_id(&bad), "{bad}");
     }
 }
