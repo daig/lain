@@ -1,3 +1,4 @@
+import LainProtocol
 import Foundation
 import Synchronization
 import Testing
@@ -130,7 +131,7 @@ import Testing
 @Suite struct HostPreferencesTests {
     @Test func defaults() {
         let p = HostPreferences()
-        #expect(p.displayKeepAliveSeconds == 30 && p.displayScale == 2 && p.resumeAfterStop && p.systemKey)
+        #expect(p.displayKeepAliveSeconds == 30 && p.displayScale == 2 && p.resumeAfterStop && p.systemKey && p.colorFormat == .full)
     }
 
     @Test func roundTripsAndClamps() throws {
@@ -141,6 +142,7 @@ import Testing
         p.displayScale = 9
         p.resumeAfterStop = false
         p.systemKey = false
+        p.colorFormat = .reduced
         #expect(p.displayKeepAliveSeconds == 600 && p.displayScale == 3)
         p.save(to: defaults)
         #expect(HostPreferences.load(from: defaults) == p)
@@ -148,5 +150,17 @@ import Testing
         defaults.set(Double.nan, forKey: "displayScale")
         let q = HostPreferences.load(from: defaults)
         #expect(q.displayKeepAliveSeconds == 0 && q.displayScale == 2)
+    }
+}
+
+@Suite struct ColorFormatTests {
+    @Test func reducedForces420AndFullNeedsTheIPadsHardware() {
+        let with444 = Hello(deviceModel: "iPad", pixelWidth: 2752, pixelHeight: 2064, scale: 2, maxRefreshRate: 120,
+                            decodeCapabilities: [.hevcMain, .hevcMain44410Hardware], keyboardType: .ansi)
+        var without = with444
+        without.decodeCapabilities = [.hevcMain]
+        #expect(HostVideoPipeline.requestedChroma(for: with444, allows444: true) == .yuv444)
+        #expect(HostVideoPipeline.requestedChroma(for: with444, allows444: false) == .yuv420)
+        #expect(HostVideoPipeline.requestedChroma(for: without, allows444: true) == .yuv420)
     }
 }
