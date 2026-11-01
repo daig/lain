@@ -63,11 +63,10 @@ impl Server {
 
     pub fn with_options(secrets: &[Vec<u8>], options: ListenerOptions) -> Self {
         let (tx, accepted) = mpsc::channel(256);
-        let (listener, rejected) =
-            TlsPskListener::bind(PskTable::with_secrets(secrets), &options, move |c| {
-                let _ = tx.try_send(c);
-            })
-            .unwrap();
+        let (listener, rejected) = TlsPskListener::bind(PskTable::with_secrets(secrets), &options, move |c| {
+            let _ = tx.try_send(c);
+        })
+        .unwrap();
         Self { listener, accepted, rejected }
     }
 

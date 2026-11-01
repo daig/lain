@@ -132,10 +132,7 @@ impl TlsPskListener {
             }),
         });
         let accept_loop = tokio::spawn(accept_loop(listener, shared.clone()));
-        tracing::info!(
-            "Wi-Fi listener on {local_addr}: PSK identities {}",
-            shared.table.identities().join(", ")
-        );
+        tracing::info!("Wi-Fi listener on {local_addr}: PSK identities {}", shared.table.identities().join(", "));
         Ok((Self { local_addr, shared, accept_loop }, rejected))
     }
 
@@ -257,11 +254,11 @@ fn admit(shared: &Arc<Shared>, tcp: TcpStream, peer: SocketAddr) {
 
 async fn handshake(shared: Arc<Shared>, key: u64, tcp: TcpStream) {
     let started_ns = now_ns();
-    let result = match tokio::time::timeout(shared.handshake_timeout, accept_tls(&shared.context, tcp, started_ns)).await
-    {
-        Ok(result) => result,
-        Err(_) => Err(WiFiError::Timeout),
-    };
+    let result =
+        match tokio::time::timeout(shared.handshake_timeout, accept_tls(&shared.context, tcp, started_ns)).await {
+            Ok(result) => result,
+            Err(_) => Err(WiFiError::Timeout),
+        };
     let was_pending = shared.intake().pending.remove(key).is_some();
     match result {
         // Dropped by a cancel just now: not handed over (dropping it closes it).

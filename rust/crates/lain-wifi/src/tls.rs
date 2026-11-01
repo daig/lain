@@ -241,7 +241,8 @@ mod tests {
         let clone = table.clone();
         assert_eq!(table.len(), 2);
         assert_eq!(clone.identities(), {
-            let mut ids = vec![WiFiPsk::new(&[1; 32]).identity().to_owned(), WiFiPsk::new(&[2; 32]).identity().to_owned()];
+            let mut ids =
+                vec![WiFiPsk::new(&[1; 32]).identity().to_owned(), WiFiPsk::new(&[2; 32]).identity().to_owned()];
             ids.sort();
             ids
         });
@@ -316,7 +317,10 @@ mod tests {
         assert_eq!(s.check, Ok(NegotiatedTls::REQUIRED));
         assert_eq!(c.unwrap().check, Ok(NegotiatedTls::REQUIRED));
         let chosen = s.chosen.expect("recorded");
-        assert_eq!((chosen.identity.as_str(), chosen.secret.as_slice()), (WiFiPsk::new(&[2; 32]).identity(), &[2u8; 32][..]));
+        assert_eq!(
+            (chosen.identity.as_str(), chosen.secret.as_slice()),
+            (WiFiPsk::new(&[2; 32]).identity(), &[2u8; 32][..])
+        );
         // An unknown identity fails, and records nothing.
         let (s, c) = handshake(server(), client_context(&WiFiPsk::new(&[3; 32])).unwrap()).await;
         assert!(s.is_err() && c.is_err());
