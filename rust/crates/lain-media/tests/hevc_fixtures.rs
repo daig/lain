@@ -137,3 +137,22 @@ fn filler_data_is_dropped() {
     assert_eq!(au.data.len(), plain[3].2.data.len(), "the same slice length as without stuffing");
     assert!(au.data.len() < bytes.len() - 1723);
 }
+
+#[test]
+fn parameter_sets_of_packed_headers_only() {
+    // An encoder's packed VPS, SPS and PPS headers on their own, without a slice; out of order on purpose,
+    // they come back VPS, SPS, PPS.
+    let mut s = Vec::new();
+    for t in [nal::PPS, nal::VPS, nal::SPS] {
+        s.extend([0, 0, 0, 1, t << 1, 1, 0x80]);
+    }
+    let sets = hevc::parameter_sets(&s).unwrap();
+    assert_eq!(sets, [vec![nal::VPS << 1, 1, 0x80], vec![nal::SPS << 1, 1, 0x80], vec![nal::PPS << 1, 1, 0x80]]);
+    assert_eq!(hevc::parameter_sets(&read("256x144", "au-01.h265")), Ok(vec![]), "a P-frame carries none");
+    for dir in DIRS {
+        for (e, bytes, au) in stream(dir) {
+            assert_eq!(hevc::parameter_sets(&bytes).unwrap(), au.parameter_sets, "{dir}/{}", e.file);
+        }
+    }
+    assert_eq!(hevc::parameter_sets(&[1, 2, 3]), Err(hevc::HevcError::NoStartCode));
+}

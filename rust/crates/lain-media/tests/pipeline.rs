@@ -485,6 +485,113 @@ fn a_result_for_a_newer_capture_is_no_refinement_and_isnt_encoded_twice() {
     assert_eq!((s.offered, s.encoded), (3, 2), "capture 1, its refinement, capture 2");
 }
 
+/// The keyframe the pipeline still owes is asked for again, without a cap on the tries, at a backoff from
+/// 100 ms up to 1 s, however many idle refinements are left; once one goes out the backoff starts over.
+fn a_pending_keyframe_is_retried_on_an_idle_desktop(options: PipelineOptions) {
+    let mut rig = Rig::new(options, EncodeMode::Manual, None);
+    rig.handle.capture();
+    rig.settle();
+    for _ in 0..20 {
+        rig.advance(100 * MS);
+        for r in rig.handle.requests() {
+            rig.handle.complete(r.frame_id);
+        }
+        rig.settle();
+    }
+    assert_eq!(rig.pipeline.next_deadline(), None, "idle, nothing owed");
+    let sent_before = rig.frames().len();
+
+    // The client asks for a keyframe after a decode error; the encoder keeps failing it.
+    rig.pipeline.request_keyframe(KeyframeReason::DecodeError);
+    rig.settle();
+    let mut times = Vec::new();
+    for _ in 0..10 {
+        let r = *rig.handle.requests().last().unwrap();
+        assert!(r.keyframe, "every try is a keyframe");
+        times.push(rig.clock.now_ns());
+        let count = rig.handle.requests().len();
+        assert!(rig.handle.fail_encode(r.frame_id));
+        rig.settle();
+        let t = rig.pipeline.next_deadline().expect("a pending keyframe keeps a deadline");
+        rig.advance(t - rig.clock.now_ns());
+        assert_eq!(rig.handle.requests().len(), count + 1, "one more try at the deadline");
+    }
+    let gaps: Vec<u64> = times.windows(2).map(|w| (w[1] - w[0]) / MS).collect();
+    // The idle refinements (also keyframes now) may come between the tries.
+    let least = if options.max_refinements == 0 { 100 } else { 1 };
+    assert!(gaps.iter().all(|&g| (least..=1000).contains(&g)), "{gaps:?}");
+    assert_eq!(*gaps.last().unwrap(), 1000, "the backoff tops out at 1 s: {gaps:?}");
+    assert_eq!(rig.frames().len(), sent_before, "nothing sent while failing");
+
+    // The encoder recovers: the keyframe goes out, and the pipeline stops asking.
+    let r = *rig.handle.requests().last().unwrap();
+    assert!(rig.handle.complete(r.frame_id));
+    rig.settle();
+    let (frame, flags) = rig.frames().last().cloned().unwrap();
+    assert!(frame.is_keyframe && flags.contains(HeaderFlags::KEYFRAME));
+    rig.advance(30_000 * MS);
+    for r in rig.handle.requests() {
+        rig.handle.complete(r.frame_id);
+    }
+    rig.settle();
+    rig.advance(30_000 * MS);
+    assert_eq!(rig.pipeline.next_deadline(), None);
+    let count = rig.handle.requests().len();
+    assert!(count <= r.frame_id as usize + options.max_refinements as usize, "at most the refinements after it");
+
+    // A new failure starts the backoff over.
+    rig.handle.capture();
+    rig.settle();
+    let r = *rig.handle.requests().last().unwrap();
+    assert!(!r.keyframe);
+    assert!(rig.handle.fail_encode(r.frame_id));
+    rig.settle();
+    let now = rig.clock.now_ns();
+    let retry = now + 100 * MS;
+    let due = rig.pipeline.next_deadline().unwrap();
+    assert!(due <= retry, "retried within 100 ms");
+    rig.advance(100 * MS);
+    let r = *rig.handle.requests().last().unwrap();
+    assert!(r.keyframe);
+    assert!(rig.handle.complete(r.frame_id));
+    rig.settle();
+    assert!(rig.frames().last().unwrap().0.is_keyframe);
+}
+
+#[test]
+fn a_pending_keyframe_is_retried_on_an_idle_desktop_with_refinement() {
+    a_pending_keyframe_is_retried_on_an_idle_desktop(PipelineOptions::default());
+}
+
+#[test]
+fn a_pending_keyframe_is_retried_on_an_idle_desktop_without_refinement() {
+    a_pending_keyframe_is_retried_on_an_idle_desktop(no_refinement());
+}
+
+#[test]
+fn a_failed_plain_frame_is_made_good_on_an_idle_desktop() {
+    // No refinement and no new capture: the failure alone must lead to a keyframe of the last capture.
+    let mut rig = Rig::new(no_refinement(), EncodeMode::Manual, None);
+    rig.handle.capture();
+    rig.settle();
+    assert!(rig.handle.complete(1));
+    rig.settle();
+    rig.advance(FRAME_NS);
+    rig.handle.capture();
+    rig.settle();
+    assert!(rig.handle.fail_encode(2));
+    rig.settle();
+    rig.advance(10_000 * MS);
+    let requests = rig.handle.requests();
+    assert_eq!(requests.len(), 3);
+    assert!(requests[2].keyframe && !requests[2].refinement);
+    assert!(rig.handle.complete(3));
+    rig.settle();
+    let frames: Vec<_> = rig.frames().iter().map(|(f, _)| (f.frame_id, f.is_keyframe)).collect();
+    assert_eq!(frames, [(1, true), (3, true)]);
+    assert_eq!(rig.pipeline.next_deadline(), None);
+}
+
 /// A session that answers nothing itself: the test feeds the pipeline results directly.
 #[derive(Clone)]
 struct ScriptedSession {
@@ -664,6 +771,81 @@ fn a_result_for_no_outstanding_request_is_ignored() {
     assert!(s.messages().is_empty());
     let s2 = s.pipeline.stats();
     assert_eq!((s2.sent, s2.encode_failures), (1, 0));
+}
+
+impl Scripted {
+    /// The encoder's answer to `request`, showing `capture`.
+    fn answer(&mut self, request: EncodeRequest, capture: u64, annexb: Vec<u8>) {
+        let now = self.clock.now_ns();
+        self.pipeline.handle_event(VideoEvent::Encoded(EncodedFrame {
+            frame_id: request.frame_id,
+            capture,
+            capture_ns: now,
+            submit_ns: now,
+            encode_done_ns: now,
+            keyframe: request.keyframe,
+            annexb,
+        }));
+        self.pipeline.frame_ack(&FrameAck { frame_id: request.frame_id, received_at_ns: 0, bytes: 0 });
+    }
+
+    fn last_request(&self) -> EncodeRequest {
+        *self.session.requests().last().expect("a request")
+    }
+}
+
+#[test]
+fn a_p_frame_after_an_encode_failure_is_not_sent() {
+    let mut s = Scripted::new(256, 144);
+    s.step(fixture("256x144", 0));
+    s.messages();
+    s.captures += 1;
+    s.pipeline.handle_event(VideoEvent::Captured { capture: s.captures, capture_ns: s.clock.now_ns() });
+    let r = s.last_request();
+    s.pipeline.handle_event(VideoEvent::EncodeFailed { frame_id: r.frame_id });
+    // The forced keyframe comes back a P-frame, predicted from a picture the client never got.
+    let r2 = s.step(fixture("256x144", 1));
+    assert!(r2.keyframe);
+    assert!(s.messages().is_empty(), "not decodable by the client");
+    assert_eq!(s.pipeline.stats().encode_failures, 2);
+    let r3 = s.step(fixture("256x144", 5));
+    assert!(r3.keyframe, "asked again");
+    let out = s.messages();
+    assert!(matches!(&out[..], [o] if matches!(&o.message, Message::VideoFrame(f) if f.is_keyframe)));
+    // A P-frame for a keyframe the client asked for (no failure since the last keyframe) still goes out.
+    s.pipeline.request_keyframe(KeyframeReason::DecodeError);
+    let r4 = s.last_request();
+    assert!(r4.keyframe);
+    s.answer(r4, s.captures, fixture("256x144", 6));
+    assert!(matches!(&s.messages()[..], [o] if matches!(&o.message, Message::VideoFrame(f) if !f.is_keyframe)));
+}
+
+#[test]
+fn a_late_captured_for_a_shown_capture_is_not_encoded_again() {
+    let mut s = Scripted::new(256, 144);
+    s.step(fixture("256x144", 0));
+    // The result for capture 2's request shows capture 3, whose `Captured` comes after it.
+    s.pipeline.handle_event(VideoEvent::Captured { capture: 2, capture_ns: s.clock.now_ns() });
+    let r = s.last_request();
+    s.answer(r, 3, fixture("256x144", 1));
+    s.pipeline.handle_event(VideoEvent::Captured { capture: 3, capture_ns: s.clock.now_ns() });
+    assert_eq!(s.session.requests().len(), 2, "capture 3 was already shown");
+    let st = s.pipeline.stats();
+    assert_eq!((st.captured, st.sent, st.dropped_before_encode), (3, 2, 1));
+
+    // With a keyframe pending, the late capture is the keyframe's chance: it is encoded at once.
+    s.pipeline.handle_event(VideoEvent::Captured { capture: 4, capture_ns: s.clock.now_ns() });
+    let r = s.last_request();
+    s.answer(r, 4, fixture("256x144", 2));
+    s.pipeline.request_keyframe(KeyframeReason::DecodeError);
+    let r = s.last_request();
+    assert!(r.keyframe);
+    s.answer(r, 5, fixture("256x144", 3)); // a P-frame showing capture 5: the keyframe is still owed
+    assert_eq!(s.session.requests().len(), 4);
+    s.pipeline.handle_event(VideoEvent::Captured { capture: 5, capture_ns: s.clock.now_ns() });
+    let requests = s.session.requests();
+    assert_eq!(requests.len(), 5);
+    assert!(requests[4].keyframe);
 }
 
 #[test]

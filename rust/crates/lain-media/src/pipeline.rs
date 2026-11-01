@@ -67,6 +67,11 @@ pub enum VideoEnd {
     StoppedByUser,
 }
 
+/// The first wait before a pending keyframe is asked for again, on an idle desktop.
+const KEYFRAME_RETRY_FIRST_NS: u64 = 100_000_000;
+/// The longest wait between those tries: the backoff doubles up to it.
+const KEYFRAME_RETRY_MAX_NS: u64 = 1_000_000_000;
+
 /// A captured (or re-offered) frame in the gate (Swift: `HostVideoPipeline.Item`). The session holds the
 /// pixels; the pipeline holds only which capture it is.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -85,6 +90,8 @@ struct Outstanding {
     frame_id: u32,
     item: Item,
     keyframe: bool,
+    /// A keyframe asked for after a failure: the encoder's references may hold pictures the client never got.
+    recovery: bool,
 }
 
 /// The host video path for one session (Swift: `HostVideoPipeline`), as a state machine its owner drives:
@@ -118,9 +125,20 @@ struct Outstanding {
 ///   and a frame for a capture no newer than the one just shown is discarded from the slot instead of encoded
 ///   again (unless a keyframe is pending).
 /// - The `KEYFRAME` flag and `isKeyframe` come from the access unit's slices; a result whose keyframe-ness
-///   disagrees with the request is sent as what it is, and a keyframe still pending is asked for again.
+///   disagrees with the request is sent as what it is (except as below), and a keyframe still pending is
+///   asked for again.
 /// - A result before any parameter sets have been sent (which the client couldn't decode), or one that isn't
-///   valid Annex-B, isn't sent: it counts as a failure.
+///   valid Annex-B, isn't sent: it counts as a failure. So is a non-IRAP result for a keyframe asked for
+///   after a failure: it may predict from a picture the client never got, and the client, not waiting for a
+///   keyframe, would decode it.
+/// - While a keyframe is owed (after a failure, or a result that wasn't one) and nothing else will bring it,
+///   the newest capture is re-offered on a timer, 100 ms after the failure and then at a backoff doubling up
+///   to 1 s, without a cap on the tries; it starts over once a keyframe is sent. Swift relies on the idle
+///   refinements, at most `maxRefinements` of them, which suffice when the encoder never fails, but the
+///   client asks again only when a frame arrives, and cursor-only motion makes no capture.
+/// - A `Captured` for a capture a result has already shown (the session encodes its newest, and its events
+///   may come in either order) is not offered unless a keyframe is owed: it would only encode the same
+///   picture again. It counts as dropped before encoding.
 pub struct VideoPipeline<S: VideoSession, C: Clock> {
     session: S,
     clock: C,
@@ -134,6 +152,15 @@ pub struct VideoPipeline<S: VideoSession, C: Clock> {
     last_captured: Option<Item>,
     outstanding: Option<Outstanding>,
     next_frame_id: u32,
+    /// The newest capture a result has shown.
+    shown_capture: u64,
+    /// `Captured` events not offered because their capture was already shown.
+    skipped_shown: u64,
+    /// A request has failed since the last keyframe was sent.
+    reference_broken: bool,
+    /// When the owed keyframe is asked for again, and the wait after that.
+    keyframe_retry_ns: Option<u64>,
+    keyframe_backoff_ns: u64,
     /// The next request is a keyframe (Swift: the encoder's `forceKeyframe`, initially true).
     force_keyframe: bool,
     config_id: u32,
@@ -174,6 +201,11 @@ impl<S: VideoSession, C: Clock> VideoPipeline<S, C> {
             last_captured: None,
             outstanding: None,
             next_frame_id: 1,
+            shown_capture: 0,
+            skipped_shown: 0,
+            reference_broken: false,
+            keyframe_retry_ns: None,
+            keyframe_backoff_ns: KEYFRAME_RETRY_FIRST_NS,
             force_keyframe: true,
             config_id: 0,
             config: None,
@@ -296,16 +328,18 @@ impl<S: VideoSession, C: Clock> VideoPipeline<S, C> {
         }
     }
 
-    /// When [`on_timer`](Self::on_timer) next has work, on the clock's time line: the next idle refinement.
-    /// `None` when there is none to schedule; any later call into the pipeline may change that.
+    /// When [`on_timer`](Self::on_timer) next has work, on the clock's time line: the next idle refinement,
+    /// or the next try at a keyframe still owed. `None` when there is none to schedule; any later call into
+    /// the pipeline may change that.
     pub fn next_deadline(&self) -> Option<u64> {
         if !self.running || self.gate.slot_occupied() {
             return None;
         }
-        self.refiner.next_due()
+        [self.refiner.next_due(), self.keyframe_retry_due()].into_iter().flatten().min()
     }
 
-    /// The idle check (Swift: `idleTick`): re-offers the newest capture as a refinement when it is due.
+    /// The idle check (Swift: `idleTick`): re-offers the newest capture as a refinement when it is due, or
+    /// (not in Swift) as a plain frame when an owed keyframe is due to be tried again.
     pub fn on_timer(&mut self) {
         if !self.running || self.gate.slot_occupied() {
             return;
@@ -314,6 +348,10 @@ impl<S: VideoSession, C: Clock> VideoPipeline<S, C> {
         let Some(last) = self.last_captured else { return };
         if self.refiner.should_refine(now) {
             self.offer(Item { capture: last.capture, capture_ns: now, refinement: true });
+        } else if self.keyframe_retry_due().is_some_and(|due| now >= due) {
+            self.keyframe_retry_ns = None;
+            debug!(capture = last.capture, "keyframe still owed: re-offering the newest capture");
+            self.offer(Item { capture: last.capture, capture_ns: now, refinement: false });
         }
     }
 
@@ -323,7 +361,7 @@ impl<S: VideoSession, C: Clock> VideoPipeline<S, C> {
         HostVideoStats {
             offered: gate.offered,
             encoded: gate.encoded,
-            dropped_before_encode: gate.dropped_before_encode,
+            dropped_before_encode: gate.dropped_before_encode + self.skipped_shown,
             peak_in_flight: gate.peak_in_flight,
             in_flight: self.gate.in_flight(),
             bytes_per_second: self.rate.bytes_per_second(self.clock.now_ns(), 1_000_000_000),
@@ -351,7 +389,28 @@ impl<S: VideoSession, C: Clock> VideoPipeline<S, C> {
         self.stats.captured += 1;
         self.last_captured = Some(item);
         self.refiner.new_frame(now);
+        if capture <= self.shown_capture && !self.force_keyframe {
+            // A result has shown this capture already (see the type's doc). What waits in the slot is older.
+            self.gate.discard_slot_if(|i| i.capture < capture);
+            self.skipped_shown += 1;
+            debug!(capture, "capture already shown: not encoded again");
+            return;
+        }
         self.offer(item);
+    }
+
+    /// When an owed keyframe is next tried: only while nothing else will bring it (no request in the
+    /// encoder; the slot is checked by the callers).
+    fn keyframe_retry_due(&self) -> Option<u64> {
+        let owed = self.force_keyframe && self.outstanding.is_none() && self.last_captured.is_some();
+        self.keyframe_retry_ns.filter(|_| owed)
+    }
+
+    /// A keyframe is owed after a failure or a result that wasn't one: try again after the backoff.
+    fn schedule_keyframe_retry(&mut self) {
+        let now = self.clock.now_ns();
+        self.keyframe_retry_ns = Some(now.saturating_add(self.keyframe_backoff_ns));
+        self.keyframe_backoff_ns = (self.keyframe_backoff_ns * 2).min(KEYFRAME_RETRY_MAX_NS);
     }
 
     fn offer(&mut self, item: Item) {
@@ -369,7 +428,12 @@ impl<S: VideoSession, C: Clock> VideoPipeline<S, C> {
         let frame_id = self.next_frame_id;
         self.next_frame_id = self.next_frame_id.wrapping_add(1);
         let keyframe = std::mem::take(&mut self.force_keyframe);
-        self.outstanding = Some(Outstanding { frame_id, item, keyframe });
+        if keyframe {
+            // This request is the try; its result schedules the next one if needed.
+            self.keyframe_retry_ns = None;
+        }
+        let recovery = keyframe && self.reference_broken;
+        self.outstanding = Some(Outstanding { frame_id, item, keyframe, recovery });
         self.session.encode(EncodeRequest { frame_id, keyframe, refinement: item.refinement });
     }
 
@@ -387,6 +451,8 @@ impl<S: VideoSession, C: Clock> VideoPipeline<S, C> {
     fn failed(&mut self) {
         self.stats.encode_failures += 1;
         self.force_keyframe = true;
+        self.reference_broken = true;
+        self.schedule_keyframe_retry();
         let next = self.gate.encode_failed();
         self.submit(next);
     }
@@ -416,9 +482,20 @@ impl<S: VideoSession, C: Clock> VideoPipeline<S, C> {
             return self.failed();
         }
         if request.keyframe && !au.keyframe {
+            if request.recovery {
+                warn!(frame_id = frame.frame_id, "keyframe requested after a failure, encoder produced none");
+                return self.failed();
+            }
+            // The client asked for it, so it drops non-keyframes until one comes: harmless to send.
             warn!(frame_id = frame.frame_id, "keyframe requested, encoder produced none");
             self.force_keyframe = true;
+            self.schedule_keyframe_retry();
         }
+        if au.keyframe {
+            self.reference_broken = false;
+            self.keyframe_backoff_ns = KEYFRAME_RETRY_FIRST_NS;
+        }
+        self.shown_capture = self.shown_capture.max(frame.capture);
 
         let now = self.clock.now_ns();
         let same_capture = frame.capture == request.item.capture;

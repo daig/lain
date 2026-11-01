@@ -188,10 +188,16 @@ impl AccessUnit {
     }
 }
 
-/// The VPS, SPS and PPS in an Annex-B access unit, without start codes (Swift:
-/// `HEVC.parameterSets(_:)`, which reads them from a format description).
+/// The VPS, SPS and PPS in an Annex-B byte stream, without start codes, ordered VPS, SPS, PPS (stream order
+/// within a type), as [`AccessUnit::parameter_sets`]; empty when it holds none (Swift:
+/// `HEVC.parameterSets(_:)`, which reads them from a format description). Needs no slice: the input may be
+/// a whole access unit or just an encoder's packed parameter-set headers.
 pub fn parameter_sets(annexb: &[u8]) -> Result<Vec<Vec<u8>>, HevcError> {
-    Ok(AccessUnit::from_annexb(annexb)?.parameter_sets)
+    let units = split_annexb(annexb)?;
+    Ok([nal::VPS, nal::SPS, nal::PPS]
+        .into_iter()
+        .flat_map(|t| units.iter().filter(move |u| u.nal_type == t).map(|u| u.bytes.to_vec()))
+        .collect())
 }
 
 /// Whether an Annex-B access unit holds an IRAP slice (Swift: `HEVC.isKeyframe(_:)`, which reads the
