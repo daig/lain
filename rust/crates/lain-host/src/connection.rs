@@ -447,3 +447,94 @@ impl<P: Platform> Drop for HostConnection<P> {
         self.close_link();
     }
 }
+
+#[cfg(test)]
+mod tests {
+    //! Swift: `HostConnectionTests`, teardown ordering without a socket.
+    use lain_link::{LinkTransport, memory_pair};
+    use lain_platform::fake::FakePlatform;
+    use lain_proto::{KeyEvent, ModifierFlags, MouseButton, PointerButton};
+
+    use super::*;
+
+    fn connection() -> (Arc<HostConnection<FakePlatform>>, FakePlatform) {
+        let platform = FakePlatform::new();
+        let channel = || MessageChannel::new(memory_pair().0, "test");
+        let link = Link::new(
+            [0; 16],
+            channel(),
+            channel(),
+            channel(),
+            LinkTransport::Usb,
+            4,
+            None,
+            VersionList::offered().clone(),
+        );
+        let power = Arc::new(Power::new(platform.power.clone()));
+        (HostConnection::new(link, Arc::new(platform.clone()), power, &HostConfig::default()), platform)
+    }
+
+    fn key(usage: u16) -> Message {
+        Message::KeyEvent(KeyEvent {
+            usage_page: KeyEvent::KEYBOARD_PAGE,
+            usage,
+            is_down: true,
+            is_repeat: false,
+            modifiers: ModifierFlags(0),
+        })
+    }
+
+    #[tokio::test]
+    async fn input_handled_after_finish_is_dropped() {
+        let (connection, platform) = connection();
+        assert!(connection.start());
+        connection.handle(&key(0x04));
+        let pressed = platform.input.actions();
+        assert!(!pressed.is_empty());
+        connection.finish();
+        let released = platform.input.actions();
+        assert!(released.len() > pressed.len(), "the key is released");
+        // Buffered input drained after the release must not press anything again (invariant 4).
+        connection.handle(&key(0x05));
+        connection.handle(&Message::PointerButton(PointerButton {
+            button: MouseButton::Left,
+            is_down: true,
+            click_count: 1,
+            x: 1.0,
+            y: 1.0,
+            modifiers: ModifierFlags(0),
+        }));
+        assert_eq!(platform.input.actions(), released);
+        assert_eq!(platform.power.transitions(), [true, false]);
+        connection.finish();
+        assert_eq!(platform.power.transitions(), [true, false], "idempotent");
+    }
+
+    #[tokio::test]
+    async fn start_after_finish_takes_no_assertion() {
+        let (connection, platform) = connection();
+        connection.finish(); // a detach or stop raced the handshake
+        assert!(!connection.start());
+        assert!(platform.power.transitions().is_empty());
+    }
+
+    #[test]
+    fn setup_items_map_to_the_wire() {
+        let report = SetupReport {
+            items: vec![
+                (Requirement::StartAtLogin, RequirementState::Missing),
+                (Requirement::ScreenCapture, RequirementState::Unknown),
+            ],
+            has_other_display: true,
+        };
+        let setup = host_setup(report, "why".into());
+        assert_eq!(
+            setup.items,
+            [
+                SetupItem { requirement: SetupRequirement::StartAtLogin, state: SetupState::Missing },
+                SetupItem { requirement: SetupRequirement::ScreenRecording, state: SetupState::Unknown },
+            ]
+        );
+        assert_eq!((setup.video_problem.as_str(), setup.has_other_display), ("why", true));
+    }
+}

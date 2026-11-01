@@ -33,7 +33,7 @@ mod util;
 mod video;
 mod warp;
 
-pub use config::{HostConfig, Hook, Tuning, WifiAdmission};
+pub use config::{Hook, HostConfig, Tuning, WifiAdmission};
 pub use session::{HostSession, WifiStreams};
 pub use status::{HostStatus, menu_name};
 pub use util::PowerCount;

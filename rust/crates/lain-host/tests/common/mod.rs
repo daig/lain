@@ -207,7 +207,11 @@ impl TestPlatform {
         let mut fake = FakePlatform::new();
         fake.secrets = secrets;
         fake.settings.set(settings());
-        Self { display: TestDisplay { fake: fake.display.clone(), ..Default::default() }, fake, clock: TokioClock::default() }
+        Self {
+            display: TestDisplay { fake: fake.display.clone(), ..Default::default() },
+            fake,
+            clock: TokioClock::default(),
+        }
     }
     pub fn input(&self) -> &FakeInput {
         &self.fake.input
@@ -293,15 +297,7 @@ impl ClientLink {
             }
         });
         tokio::spawn(async move { while audio.recv().await.is_ok() {} });
-        Self {
-            realtime: senders.0,
-            video: senders.1,
-            audio: senders.2,
-            version,
-            transport,
-            received,
-            video_received,
-        }
+        Self { realtime: senders.0, video: senders.1, audio: senders.2, version, transport, received, video_received }
     }
 
     pub fn send(&self, message: Message) {
@@ -413,7 +409,11 @@ pub struct WifiIPad {
 }
 
 impl WifiIPad {
-    pub async fn connect(host: &mpsc::Sender<Box<dyn ByteStream>>, secret: &[u8], hello: Hello) -> Result<Self, TransportError> {
+    pub async fn connect(
+        host: &mpsc::Sender<Box<dyn ByteStream>>,
+        secret: &[u8],
+        hello: Hello,
+    ) -> Result<Self, TransportError> {
         let dialer = wifi_dialer(host, secret);
         let mut link = dialer.open(secret).await?;
         link.realtime.send(&Message::Hello(hello)).map_err(|_| TransportError::Closed)?;

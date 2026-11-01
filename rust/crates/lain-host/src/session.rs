@@ -721,7 +721,9 @@ impl<P: Platform> Inner<P> {
                 let count = closed_in_a_row + 1;
                 let hint = self.config.tuning.closes_before_update_hint;
                 if count == hint {
-                    error!("lain on the iPad closed the link right after ChannelHello {count} times: another protocol?");
+                    error!(
+                        "lain on the iPad closed the link right after ChannelHello {count} times: another protocol?"
+                    );
                 }
                 if count >= hint {
                     self.update_status(|s| s.peer_gap = Some(HostStatus::older_app_gap()));
@@ -766,14 +768,7 @@ impl<P: Platform> Inner<P> {
 
     /// One USB session; returns when it has ended and been torn down: true, or false if the link was turned
     /// away before serving.
-    async fn run_usb(
-        self: &Arc<Self>,
-        link: Link,
-        hello: Hello,
-        generation: u64,
-        peer: &str,
-        cancel: &Cancel,
-    ) -> bool {
+    async fn run_usb(self: &Arc<Self>, link: Link, hello: Hello, generation: u64, peer: &str, cancel: &Cancel) -> bool {
         let transport = link.transport.clone();
         let connection = self.make_connection(link);
         let claimed = self.update_status(|s| {
@@ -1094,7 +1089,8 @@ impl<P: Platform> Inner<P> {
     /// the streamed display's, else the primary monitor's.
     fn hello_ack(&self, connection: &HostConnection<P>, hello: &Hello, streaming: Option<Streaming>) -> HelloAck {
         let settings = self.platform.settings().input_settings();
-        let (width, height) = connection.target_monitor().map(|m| (m.bounds.width, m.bounds.height)).unwrap_or_default();
+        let (width, height) =
+            connection.target_monitor().map(|m| (m.bounds.width, m.bounds.height)).unwrap_or_default();
         let points = |v: f64| v.max(0.0).round() as u32;
         let (chroma, bit_depth) = match streaming {
             Some(s) => (s.chroma, s.bit_depth),

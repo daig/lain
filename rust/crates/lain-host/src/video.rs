@@ -205,8 +205,12 @@ impl SessionVideo {
         };
         let clock = platform.clock().clone();
         let mut pipeline = VideoPipeline::new(session, clock.clone(), options, out);
-        let mut cursor =
-            CursorMonitor::new(platform.cursor().clone(), clock.clone(), CursorMonitor::<P::Cursor, P::Clock>::DEFAULT_HZ, cursor_out);
+        let mut cursor = CursorMonitor::new(
+            platform.cursor().clone(),
+            clock.clone(),
+            CursorMonitor::<P::Cursor, P::Clock>::DEFAULT_HZ,
+            cursor_out,
+        );
         let info = pipeline.info();
         let streaming = Streaming { display: streamed, chroma: pipeline.chroma(), bit_depth: info.bit_depth };
         let (commands, mut commands_rx) = mpsc::unbounded_channel();
