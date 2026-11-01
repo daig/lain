@@ -18,8 +18,11 @@ public struct HostVideoStats: Sendable, Equatable {
     public var offered = 0
     /// Submitted to the encoder.
     public var encoded = 0
-    /// Replaced in the slot before they could be encoded (invariant 2: drops happen only here).
+    /// Replaced in the slot before they could be encoded (invariant 2: drops happen only here), while the
+    /// link was full (`droppedForLink`) or the encoder busy (`droppedForEncoder`).
     public var droppedBeforeEncode = 0
+    public var droppedForLink = 0
+    public var droppedForEncoder = 0
     public var encodeFailures = 0
     /// Frames put on the video connection.
     public var sent = 0
@@ -387,6 +390,8 @@ public final class HostVideoPipeline: Sendable {
             out.offered = g.offered
             out.encoded = g.encoded
             out.droppedBeforeEncode = g.droppedBeforeEncode
+            out.droppedForLink = g.droppedForLink
+            out.droppedForEncoder = g.droppedForEncoder
             out.peakInFlight = g.peakInFlight
         }
         out.inFlight = gate?.inFlight ?? 0
@@ -497,8 +502,9 @@ public final class HostVideoPipeline: Sendable {
             guard s.phase == .running else { return nil }
             if let a = s.acks.acked(frameId: ack.frameId, at: now) {
                 s.rttMs.record(Double(a.roundTripNs) / 1e6)
-                // Frames the gate held back since the last ack: the link is the limit.
-                if let held = s.gate?.stats.droppedBeforeEncode, held > s.heldBackSeen {
+                // Frames the gate held back for the link since the last ack (not those waiting for the encoder):
+                // only those say the link is the limit.
+                if let held = s.gate?.stats.droppedForLink, held > s.heldBackSeen {
                     s.heldBackSeen = held
                     s.bitrate?.heldBack(at: now)
                 }

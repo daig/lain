@@ -1144,7 +1144,10 @@ final class HostConnection: Sendable {
         let previous = lastDiagStats.withLock { p in defer { p = stats }; return p } ?? stats
         let captured = stats.captured - previous.captured
         guard window.sent > 0 || captured > 0 else { return }
-        diagLog.notice("\(window.line(captured: captured, droppedBeforeEncode: stats.droppedBeforeEncode - previous.droppedBeforeEncode), privacy: .public)")
+        let line = window.line(captured: captured, droppedBeforeEncode: stats.droppedBeforeEncode - previous.droppedBeforeEncode,
+                               forLink: stats.droppedForLink - previous.droppedForLink,
+                               forEncoder: stats.droppedForEncoder - previous.droppedForEncoder)
+        diagLog.notice("\(line, privacy: .public)")
     }
 
     // MARK: Stats (v5)

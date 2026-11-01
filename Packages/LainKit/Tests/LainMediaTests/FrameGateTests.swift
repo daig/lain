@@ -26,9 +26,23 @@ final class Submissions: Sendable {
         gate.offer(3)            // replaces 2
         #expect(subs.all == [1])
         #expect(gate.stats.droppedBeforeEncode == 1)
+        #expect(gate.stats.droppedForEncoder == 1 && gate.stats.droppedForLink == 0, "the encoder was the limit")
         gate.sent(frameId: 1)    // encoder free → 3 goes in
         #expect(subs.all == [1, 3])
         #expect(!gate.slotOccupied)
+    }
+
+    /// Held back while the in-flight window is full: the link is the limit (what adaptive bitrate listens to).
+    @Test func framesHeldBackForTheLinkAreCountedApart() {
+        let subs = Submissions()
+        let gate = FrameGate<Int>(maxInFlight: 2) { subs.add($0) }
+        gate.offer(1); gate.sent(frameId: 1)
+        gate.offer(2); gate.sent(frameId: 2)   // two in flight
+        gate.offer(3)                           // slot
+        gate.offer(4)                           // replaces 3: waiting for the link
+        #expect(gate.stats.droppedForLink == 1 && gate.stats.droppedForEncoder == 0)
+        gate.acked(frameId: 1)                  // room again → 4 goes in
+        #expect(subs.all == [1, 2, 4])
     }
 
     @Test func staleReofferNeverReplacesOrFollowsANewerFrame() {
@@ -61,7 +75,7 @@ final class Submissions: Sendable {
         #expect(gate.inFlight == 2)
         gate.acked(frameId: 1)
         #expect(subs.all == [1, 2, 4])
-        #expect(gate.stats == .init(offered: 4, encoded: 3, droppedBeforeEncode: 1, peakInFlight: 2))
+        #expect(gate.stats == .init(offered: 4, encoded: 3, droppedBeforeEncode: 1, droppedForLink: 1, peakInFlight: 2))
     }
 
     @Test func cumulativeAcksAndFailures() {
