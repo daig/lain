@@ -16,13 +16,17 @@ use lain_platform::RequirementState;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::service::{Control, set_keep_alive_persisted, set_scale_persisted, set_wifi_persisted};
+use crate::service::{
+    Control, set_keep_alive_persisted, set_resume_after_stop_persisted, set_scale_persisted, set_wifi_persisted,
+};
 
 enum Action {
     Wifi(bool),
     StartAtLogin(bool),
     Scale(Option<f64>),
     KeepAlive(u32),
+    Resume,
+    ResumeAfterStop(bool),
 }
 
 /// The keep-alive choices offered, in seconds.
@@ -52,6 +56,9 @@ struct LainTray {
     scale: Option<f64>,
     scale_options: Vec<f64>,
     keep_alive: u32,
+    /// Video was stopped on the desktop (GNOME's sharing indicator).
+    stopped: bool,
+    resume_after_stop: bool,
     actions: mpsc::UnboundedSender<Action>,
 }
 
@@ -77,6 +84,18 @@ impl ksni::Tray for LainTray {
         let line = |label: &str| StandardItem { label: label.into(), enabled: false, ..Default::default() }.into();
         let mut items: Vec<ksni::MenuItem<Self>> = vec![line(&self.status), line(&self.wifi)];
         items.extend(self.video.iter().map(|l| line(l)));
+        if self.stopped {
+            items.push(
+                StandardItem {
+                    label: "Resume video".into(),
+                    activate: Box::new(|t: &mut Self| {
+                        let _ = t.actions.send(Action::Resume);
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
         items.push(ksni::MenuItem::Separator);
         items.push(
             CheckmarkItem {
@@ -146,6 +165,17 @@ impl ksni::Tray for LainTray {
         );
         items.push(
             CheckmarkItem {
+                label: "Resume after Stop sharing".into(),
+                checked: self.resume_after_stop,
+                activate: Box::new(|t: &mut Self| {
+                    let _ = t.actions.send(Action::ResumeAfterStop(!t.resume_after_stop));
+                }),
+                ..Default::default()
+            }
+            .into(),
+        );
+        items.push(
+            CheckmarkItem {
                 label: "Start at login".into(),
                 checked: self.start_at_login,
                 activate: Box::new(|t: &mut Self| {
@@ -172,6 +202,8 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
         scale: None,
         scale_options: FALLBACK_SCALES.to_vec(),
         keep_alive: 0,
+        stopped: false,
+        resume_after_stop: false,
         actions,
     };
     let handle = match tray.spawn().await {
@@ -193,6 +225,8 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
         let login = autostart.start_at_login() == RequirementState::Granted;
         let (scale, options, keep_alive) =
             (control.scale_setting(), control.scale_options(), control.keep_alive_seconds());
+        let (stopped, resume_after_stop) =
+            (control.video_problem() == "capture stopped on the desktop", control.resume_after_stop());
         handle
             .update(|t| {
                 t.connected = s.is_connected();
@@ -206,6 +240,8 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
                     t.scale_options = options;
                 }
                 t.keep_alive = keep_alive;
+                t.stopped = stopped;
+                t.resume_after_stop = resume_after_stop;
             })
             .await;
         tokio::select! {
@@ -222,6 +258,15 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
                 Action::Scale(scale) => {
                     info!(?scale, "tray: scale");
                     if let Err(e) = set_scale_persisted(&*control, Some(&config), scale) {
+                        warn!("tray: {e}");
+                    }
+                }
+                Action::Resume => {
+                    info!("tray: resume video");
+                    control.resume_video();
+                }
+                Action::ResumeAfterStop(on) => {
+                    if let Err(e) = set_resume_after_stop_persisted(&*control, Some(&config), on) {
                         warn!("tray: {e}");
                     }
                 }

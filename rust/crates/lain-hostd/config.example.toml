@@ -14,6 +14,10 @@
 # where they were. 0 removes it at once.
 # keep_alive_seconds = 30
 
+# After "Stop sharing" in GNOME's top bar ends lain's display, bring video back by itself (the iPad reconnects).
+# Stop has no use for lain; turn this off if you want Stop to stick (then `lain resume` brings it back).
+# resume_after_stop = true
+
 # lain's display's scale, from 1 to 3, as in GNOME's display settings: 2 shows the iPad at its own size (as the Mac
 # host does); 1.75 or 1.5 give more room with smaller text. GNOME applies the closest scale it supports (fractional
 # ones need fractional scaling on, which Ubuntu's GNOME has by default). Unset: the iPad's own.

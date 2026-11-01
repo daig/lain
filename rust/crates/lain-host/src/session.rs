@@ -271,7 +271,18 @@ struct Inner<P: Platform> {
     run: Cancel,
     /// lain's display between sessions ([`HostConfig::display_keep_alive`]).
     keeper: Arc<DisplayKeeper<P::Display>>,
+    /// [`HostConfig::resume_after_stop`], changeable at run time.
+    resume_after_stop: std::sync::atomic::AtomicBool,
+    /// When video was last resumed by itself after a stop on the desktop.
+    last_auto_resume: Mutex<Option<Instant>>,
 }
+
+/// The video error after the owner stopped lain's display on the desktop.
+const STOPPED_ON_THE_DESKTOP: &str = "capture stopped on the desktop";
+
+/// The least time between two automatic resumes after a stop on the desktop ([`HostConfig::resume_after_stop`]):
+/// a second stop within it stays stopped (input only) until `resume_video`.
+pub const RESUME_AFTER_STOP_MIN_GAP: std::time::Duration = std::time::Duration::from_secs(10);
 
 /// The host runtime (Swift: `HostSession`, §5.7): watches usbmuxd, dials lain on an attached iPad, admits
 /// the network links the daemon hands in, and runs one session at a time: the virtual display and its video,
@@ -313,8 +324,11 @@ impl<P: Platform> HostSession<P> {
         let power = Arc::new(Power::new(platform.power().clone()));
         let (statuses, _) = broadcast::channel(256);
         let keeper = DisplayKeeper::new(platform.display().clone(), config.display_keep_alive);
+        let resume_after_stop = std::sync::atomic::AtomicBool::new(config.resume_after_stop);
         let inner = Arc::new(Inner {
             keeper,
+            resume_after_stop,
+            last_auto_resume: Mutex::new(None),
             platform: Arc::new(platform),
             config,
             usbmux,
@@ -364,6 +378,22 @@ impl<P: Platform> HostSession<P> {
     }
 
     /// Why the latest session streams no video, if it failed to start or the owner stopped it.
+    /// Video back after the owner stopped it on the desktop: closes the live session's link, and the iPad's
+    /// reconnect starts a fresh session with a new display. `false` if there is no session, or its video wasn't
+    /// stopped on the desktop. New in the port (the tray's and `lain resume`'s control).
+    pub fn resume_video(&self) -> bool {
+        self.inner.resume_video()
+    }
+
+    pub fn resume_after_stop(&self) -> bool {
+        self.inner.resume_after_stop.load(Ordering::Relaxed)
+    }
+
+    /// [`HostConfig::resume_after_stop`] at run time.
+    pub fn set_resume_after_stop(&self, on: bool) {
+        self.inner.resume_after_stop.store(on, Ordering::Relaxed);
+    }
+
     /// How long lain's display outlives a session whose link went away ([`HostConfig::display_keep_alive`]).
     pub fn display_keep_alive(&self) -> std::time::Duration {
         self.inner.keeper.keep_for()
@@ -465,6 +495,19 @@ impl<P: Platform> Inner<P> {
         debug!(status = %new.title(), "status");
         self.status.send_replace(new.clone());
         let _ = self.statuses.send(new);
+    }
+
+    fn resume_video(&self) -> bool {
+        let connection = {
+            let s = lock(&self.state);
+            match (&s.live, &s.video_error) {
+                (Some(live), Some(e)) if e == STOPPED_ON_THE_DESKTOP => live.connection.clone(),
+                _ => return false,
+            }
+        };
+        info!("resuming video: closing the link so that the iPad reconnects");
+        connection.close_link();
+        true
     }
 
     fn stop_now(&self) -> Vec<Arc<SessionVideo>> {
@@ -1107,10 +1150,32 @@ impl<P: Platform> Inner<P> {
                     {
                         let mut s = lock(&this.state);
                         if s.video.as_ref().is_some_and(|v| Arc::ptr_eq(v, &connection.video)) {
-                            s.video_error = Some("capture stopped on the desktop".into());
+                            s.video_error = Some(STOPPED_ON_THE_DESKTOP.into());
                         }
                     }
                     this.send_setup(&connection);
+                    if this.resume_after_stop.load(Ordering::Relaxed) {
+                        let due = {
+                            let mut last = lock(&this.last_auto_resume);
+                            let due = last.is_none_or(|t| t.elapsed() >= RESUME_AFTER_STOP_MIN_GAP);
+                            if due {
+                                *last = Some(Instant::now());
+                            }
+                            due
+                        };
+                        if due {
+                            // A moment for the desktop to settle (the Stop also ended input's session).
+                            let this = this.clone();
+                            tokio::spawn(async move {
+                                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                                this.resume_video();
+                            });
+                        } else {
+                            warn!(
+                                "stopped on the desktop again within {RESUME_AFTER_STOP_MIN_GAP:?}: staying input only"
+                            );
+                        }
+                    }
                 }
             }
             VideoEnd::Failed(e) => {

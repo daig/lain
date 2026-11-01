@@ -72,6 +72,9 @@ pub struct Config {
     /// applied); unset: the iPad's own (2, as the Mac host). New in the port: GNOME's interface is larger than
     /// macOS's at the same scale, so a smaller one (1.5, 1.75) gives more room.
     pub scale: Option<f64>,
+    /// After GNOME's sharing indicator stops lain's display, bring video back by itself
+    /// (`HostConfig::resume_after_stop`). On by default: Stop has no use for this app.
+    pub resume_after_stop: bool,
     /// The panel-barrier detour of pointer moves (`lain_gnome::Barrier`; no Swift counterpart).
     pub barrier: BarrierConfig,
     pub input: InputSection,
@@ -85,6 +88,7 @@ impl Default for Config {
             bitrate_mbps: PipelineOptions::default().average_bit_rate / 1_000_000,
             keep_alive_seconds: 30,
             scale: None,
+            resume_after_stop: true,
             barrier: BarrierConfig { detour: barrier.detour, band: barrier.band },
             input: InputSection::from(&InputConfig::default()),
         }
@@ -430,6 +434,7 @@ impl Config {
             video: self.pipeline_options(),
             input: self.input_config(),
             display_keep_alive: std::time::Duration::from_secs(u64::from(self.keep_alive_seconds)),
+            resume_after_stop: self.resume_after_stop,
             ..HostConfig::default()
         }
     }

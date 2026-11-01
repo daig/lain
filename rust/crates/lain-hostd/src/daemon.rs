@@ -113,6 +113,19 @@ impl<P: Platform> DaemonHandle<P> {
         answer.await.map_err(|_| WifiControlError::Stopped)?
     }
 
+    /// Video back after a stop on the desktop ([`lain_host::HostSession::resume_video`]).
+    pub fn resume_video(&self) -> bool {
+        self.session.resume_video()
+    }
+
+    pub fn resume_after_stop(&self) -> bool {
+        self.session.resume_after_stop()
+    }
+
+    pub fn set_resume_after_stop(&self, on: bool) {
+        self.session.set_resume_after_stop(on)
+    }
+
     /// How long lain's display outlives the iPad leaving ([`lain_host::HostSession::display_keep_alive`]).
     pub fn display_keep_alive(&self) -> Duration {
         self.session.display_keep_alive()

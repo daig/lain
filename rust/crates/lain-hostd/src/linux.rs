@@ -123,6 +123,15 @@ impl crate::Control for LinuxControl {
     fn set_keep_alive_seconds(&self, seconds: u32) {
         crate::Control::set_keep_alive_seconds(&self.handle, seconds)
     }
+    fn resume_video(&self) -> bool {
+        crate::Control::resume_video(&self.handle)
+    }
+    fn resume_after_stop(&self) -> bool {
+        crate::Control::resume_after_stop(&self.handle)
+    }
+    fn set_resume_after_stop(&self, on: bool) {
+        crate::Control::set_resume_after_stop(&self.handle, on)
+    }
     fn scale_setting(&self) -> Option<f64> {
         self.display.scale_setting()
     }
