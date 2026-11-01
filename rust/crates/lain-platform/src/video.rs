@@ -93,7 +93,9 @@ pub enum VideoEvent {
     Captured { capture: u64, capture_ns: u64 },
     /// The result of a request.
     Encoded(EncodedFrame),
-    /// The request produced nothing: the encoder dropped or failed it. The session goes on.
+    /// The request produced nothing: the encoder dropped or failed it, or produced an access unit the backend
+    /// found corrupt. The session goes on, and the core makes its next request a keyframe, since the
+    /// encoder's reference chain may now be broken.
     EncodeFailed { frame_id: u32 },
     /// Capture stopped on its own (the display went away, the compositor failed). Nothing follows.
     Failed(PlatformError),
@@ -122,9 +124,14 @@ pub trait VideoSession: Send + Sync + 'static {
     fn info(&self) -> StreamInfo;
 
     /// Encodes the newest frame captured so far, never an older one, so a request racing a new capture
-    /// shows the new content. Before the first capture there is nothing to encode: `EncodeFailed`. Never
-    /// blocks: the result is exactly one `Encoded` or `EncodeFailed` event with the request's
-    /// `frame_id`. The core keeps at most one request outstanding.
+    /// shows the new content. The newest capture stays available after it is encoded: a keyframe or a
+    /// refinement on an idle desktop re-encodes it. Before the first capture there is nothing to encode:
+    /// `EncodeFailed`.
+    ///
+    /// Never blocks: the result is exactly one `Encoded` or `EncodeFailed` event with the request's
+    /// `frame_id`, within a bounded time. If the encoder yields nothing well within a second, the backend
+    /// reports `EncodeFailed` itself, so the core never waits forever. The core keeps at most one request
+    /// outstanding.
     fn encode(&self, request: EncodeRequest);
 
     /// Stops capture and encoding; no event follows once it returns. Idempotent.

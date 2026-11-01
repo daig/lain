@@ -7,6 +7,8 @@ pub trait PowerBackend: Send + Sync + 'static {
     /// `PowerAssertionCount`) and calls this only when the count crosses zero.
     fn set_awake(&self, awake: bool);
 
-    /// Injected input counts as user activity: reset the idle timers. The core throttles the calls.
+    /// Injected input counts as user activity: reset the idle timers. The core throttles the calls. A
+    /// platform where injected input already resets them may do nothing here (GNOME: Mutter's idle monitor
+    /// resets on injected motion, scrolling and keys, observed 2026-10-31).
     fn user_activity(&self);
 }

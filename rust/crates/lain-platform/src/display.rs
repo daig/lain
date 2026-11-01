@@ -61,7 +61,9 @@ pub trait DisplayBackend: Send + Sync + 'static {
 
     /// Creates the display and returns once it is active in `spec`'s mode and listed by
     /// [`monitors`](Self::monitors). One display at a time: creating another before
-    /// [`destroy`](Self::destroy) fails.
+    /// [`destroy`](Self::destroy) fails. A platform whose display only takes a mode once it is captured
+    /// (GNOME's `RecordVirtual`: the PipeWire consumer's format sets the mode) settles that itself before
+    /// returning. It also places the display where the owner last arranged it, at the spec's scale.
     fn create(&self, spec: DisplaySpec) -> impl Future<Output = Result<(StreamedDisplay, Self::Source)>> + Send;
 
     /// Removes the display and returns once it has left the monitor list (Swift: `destroy` followed by
@@ -74,7 +76,8 @@ pub trait DisplayBackend: Send + Sync + 'static {
 
     /// The real cursor in global logical pixels, if the platform can tell (Swift:
     /// `DisplayProvider.cursorLocation`). Sampled about 60 times a second for warp detection; never
-    /// blocks.
+    /// blocks. GNOME can tell only while the pointer is on lain's display, from the stream's cursor
+    /// metadata, so warps elsewhere go undetected there: a documented difference from the Mac host.
     fn cursor_location(&self) -> Option<PointF>;
 }
 
