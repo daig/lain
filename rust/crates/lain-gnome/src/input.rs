@@ -390,7 +390,7 @@ mod tests {
         let m = |x| InputAction::MoveTo(PointF::new(x, 0.0));
         let down = InputAction::Button { code: 0x110, down: true };
         let up = InputAction::Button { code: 0x110, down: false };
-        let got = coalesce_moves(vec![m(1.0), m(2.0), m(3.0), down.clone(), m(4.0), m(5.0), up.clone(), m(6.0)]);
+        let got = coalesce_moves(vec![m(1.0), m(2.0), m(3.0), down, m(4.0), m(5.0), up, m(6.0)]);
         assert_eq!(got, vec![m(3.0), down, m(5.0), up, m(6.0)]);
     }
 }

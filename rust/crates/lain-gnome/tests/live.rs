@@ -2,8 +2,10 @@
 //! time, from `rust/`, with the developer told:
 //!
 //! ```text
-//! cargo test -p lain-gnome --test live -- --ignored --test-threads=1 <name>
+//! cargo test -p lain-gnome --test live -- --ignored --exact --test-threads=1 <name>
 //! ```
+//!
+//! (`--exact`: libtest matches names by substring, so without it `desktop_input` would run both pointer tests.)
 //!
 //! Names say what a test does to the desktop:
 //! - `read_only_*`: D-Bus reads (`GetCurrentState`, property reads) and `gsettings get`. Nothing changes.
@@ -64,9 +66,9 @@ async fn poll<T>(limit: Duration, mut f: impl FnMut() -> Option<T>) -> Option<T>
     }
 }
 
-/// A consumer of the primary monitor's `RecordMonitor` stream at 1 frame/s that only reads its cursor
-/// metadata: where the pointer is while it is on the primary monitor. (A monitor stream negotiates only its
-/// monitor's size, spike B §6.)
+/// A consumer of the primary monitor's `RecordMonitor` stream at the monitor's refresh rate that only reads its
+/// cursor metadata (it maps no buffers): where the pointer is while it is on the primary monitor, at most a
+/// frame old. (A monitor stream negotiates only its monitor's size, spike B §6.)
 struct HomeProbe {
     session: RemoteSession,
     consumer: Negotiation,
@@ -77,7 +79,8 @@ impl HomeProbe {
     async fn start(conn: &Connection, d: &DesktopHandle) -> HomeProbe {
         let primary =
             d.desktop.borrow().monitors.iter().find(|m| m.monitor.primary).cloned().expect("a primary monitor");
-        let (w, h, _) = primary.mode.expect("its mode");
+        let (w, h, hz) = primary.mode.expect("its mode");
+        let fps = (hz.round() as u32).max(1);
         let session = RemoteSession::create(conn).await.expect("a probe session");
         let path: OwnedObjectPath = session.record_monitor(&primary.spec.connector).await.expect("RecordMonitor");
         let stream = session.stream(path).await.unwrap();
@@ -86,7 +89,7 @@ impl HomeProbe {
         let node = tokio::time::timeout(Duration::from_secs(5), bus::next_node_id(&mut added)).await.unwrap().unwrap();
         let cursor = CursorState::new();
         cursor.set_geometry(Some(StreamGeometry { bounds: primary.monitor.bounds, scale: primary.scale }));
-        let (consumer, format) = negotiate::consume_cursor(node, w as u32, h as u32, 1, cursor.clone());
+        let (consumer, format) = negotiate::consume_cursor(node, w as u32, h as u32, fps, cursor.clone());
         let format = tokio::time::timeout(Duration::from_secs(5), format).await.unwrap().unwrap();
         eprintln!("home probe on {}: {format:?}", primary.spec.connector);
         HomeProbe { session, consumer, cursor }
@@ -102,12 +105,43 @@ impl HomeProbe {
     }
 }
 
-/// Moves the pointer back to `home` (on the primary monitor) and checks it got there, once more if not.
-async fn restore(input: &GnomeInput, home_probe: &HomeProbe, home: PointF) -> bool {
+/// Where the pointer is, as far as the probes see it: on the primary monitor, else from `elsewhere` (lain's
+/// display's cursor metadata).
+fn seen(home_probe: &HomeProbe, elsewhere: &dyn Fn() -> Option<PointF>) -> Option<PointF> {
+    home_probe.at().or_else(elsewhere)
+}
+
+/// The pointer is visible at `p` and stays there for half a second: nobody is moving the mouse.
+async fn still_at(home_probe: &HomeProbe, p: PointF) -> bool {
+    if !home_probe.at().is_some_and(|q| near(q, p)) {
+        return false;
+    }
+    tokio::time::sleep(Duration::from_millis(500)).await;
+    home_probe.at().is_some_and(|q| near(q, p))
+}
+
+/// Moves the pointer back to `home` (on the primary monitor), undoing the test's own move, and checks it got
+/// there. A second attempt is made only if the pointer is seen exactly where it was before the first one (so
+/// nobody moved it meanwhile); otherwise nothing more is injected and the failure is reported.
+async fn restore(
+    input: &GnomeInput,
+    home_probe: &HomeProbe,
+    elsewhere: &dyn Fn() -> Option<PointF>,
+    home: PointF,
+) -> bool {
+    let mut before = seen(home_probe, elsewhere);
     for attempt in 1..=2 {
+        if attempt == 2 {
+            let now = seen(home_probe, elsewhere);
+            if !(now.is_some() && before.is_some_and(|b| now.is_some_and(|n| near(n, b)))) {
+                eprintln!("restore_failed: pointer at {now:?} (was {before:?}): it moved meanwhile; not moved again");
+                return false;
+            }
+            before = now;
+        }
         input.apply(&[InputAction::MoveTo(home)]);
         let back = poll(Duration::from_secs(1), || home_probe.at().filter(|p| near(*p, home))).await;
-        eprintln!("restore attempt {attempt}: {:?}", home_probe.at());
+        eprintln!("restore attempt {attempt}: {:?} (from {before:?})", home_probe.at());
         if back.is_some() {
             return true;
         }
@@ -315,12 +349,13 @@ async fn desktop_monitors_on_every_change() {
 }
 
 /// A pointer move onto lain's display and back. On the desktop: lain's display as in `desktop_create_…`; a
-/// consumer of the primary monitor's stream at 1 frame/s and one of lain's stream read the cursor metadata
-/// only. The test waits up to 15 s for the pointer to be visible on the primary monitor and records that
-/// position as home; then, checking it is still at home, it moves the pointer to the centre of lain's display
-/// (one absolute motion, or three if the panel-barrier detour applies, none when no previous position is known),
-/// checks it arrived, and moves it back home whatever happened (once more if it didn't get there). No
-/// buttons, scrolls or keys. If the pointer isn't at home before the move, nothing is injected.
+/// consumer of the primary monitor's stream at its refresh rate and one of lain's stream read the cursor
+/// metadata only. The test waits up to 15 s for the pointer to be visible on the primary monitor and records
+/// that position as home; then, checking it has stayed at home for half a second, it moves the pointer to the
+/// centre of lain's display (one absolute motion, or three if the panel-barrier detour applies, none when no
+/// previous position is known), checks it arrived, and moves it back home whatever happened (once more only if
+/// it is seen unmoved since). No buttons, scrolls or keys. If the pointer isn't still at home before the move,
+/// nothing is injected.
 #[tokio::test]
 #[ignore = "moves the pointer onto a virtual monitor and back"]
 async fn desktop_input_pointer_onto_lains_display_and_back() {
@@ -339,14 +374,14 @@ async fn desktop_input_pointer_onto_lains_display_and_back() {
         eprintln!("home {home:?}");
         let lain = display.monitors().borrow().iter().find(|m| m.lain).cloned().ok_or("lain's display isn't listed")?;
         let centre = PointF::new(lain.bounds.x + lain.bounds.width / 2.0, lain.bounds.y + lain.bounds.height / 2.0);
-        if !home_probe.at().is_some_and(|p| near(p, home)) {
-            return Err("the pointer left home before the move; nothing injected".into());
+        if !still_at(&home_probe, home).await {
+            return Err("the pointer isn't still at home before the move; nothing injected".into());
         }
         input.apply(&[InputAction::MoveTo(centre)]);
         let arrived = poll(Duration::from_secs(2), || display.cursor_location().filter(|p| near(*p, centre))).await;
         eprintln!("moved to {centre:?}: on lain's display at {:?}", display.cursor_location());
         // Put back whatever happened: the test moved it.
-        let restored = restore(&input, &home_probe, home).await;
+        let restored = restore(&input, &home_probe, &|| display.cursor_location(), home).await;
         Ok((arrived.is_some(), restored))
     }
     .await;
@@ -361,9 +396,10 @@ async fn desktop_input_pointer_onto_lains_display_and_back() {
 /// Input after `destroy`: lain's display is created, the pointer is nudged 10 logical pixels left on the
 /// primary monitor and back, lain's display is destroyed, and the same nudge is repeated through the same
 /// `GnomeInput` (whose session is rebuilt for the new set of monitors). On the desktop: as
-/// `desktop_create_…`, plus a 1 frame/s consumer of the primary monitor's stream reading the cursor metadata.
-/// Each nudge starts from where the pointer is then (it must be visible on the primary monitor, else nothing
-/// more is injected) and is put back there. No buttons, scrolls or keys.
+/// `desktop_create_…`, plus a consumer of the primary monitor's stream at its refresh rate reading the cursor
+/// metadata. Each nudge starts from where the pointer is then (it must be visible on the primary monitor and
+/// still there half a second later, else nothing more is injected) and is put back there (once more only if it
+/// is seen unmoved since). No buttons, scrolls or keys.
 #[tokio::test]
 #[ignore = "nudges the pointer on the primary monitor before and after removing a virtual monitor"]
 async fn desktop_input_still_works_after_destroy() {
@@ -376,13 +412,16 @@ async fn desktop_input_still_works_after_destroy() {
     let home_probe = HomeProbe::start(&c, &d).await;
     let nudge = async |label: &str| -> Result<bool, String> {
         let home = home_probe.at().ok_or("the pointer isn't visible on the primary monitor; nothing injected")?;
+        if !still_at(&home_probe, home).await {
+            return Err("the pointer is moving; nothing injected".into());
+        }
         let primary = d.monitors.borrow().iter().find(|m| m.primary).cloned().unwrap();
         let x = if home.x - 10.0 >= primary.bounds.x { home.x - 10.0 } else { home.x + 10.0 };
         let to = PointF::new(x, home.y);
         input.apply(&[InputAction::MoveTo(to)]);
         let moved = poll(Duration::from_secs(2), || home_probe.at().filter(|p| near(*p, to))).await.is_some();
         eprintln!("{label}: nudged to {to:?}: {moved} (now {:?})", home_probe.at());
-        let back = restore(&input, &home_probe, home).await;
+        let back = restore(&input, &home_probe, &|| None, home).await;
         Ok(moved && back)
     };
     let outcome = async {
