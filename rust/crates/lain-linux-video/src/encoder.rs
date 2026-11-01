@@ -8,9 +8,13 @@
 //!   caps are variable-rate, spike A), and **bit stuffing off** (`rc_flags.disable_bit_stuffing`): Mesa pads every
 //!   picture below its budget with filler data otherwise.
 //! - lain's own VPS, SPS and PPS as packed headers on every IDR, and a packed slice header on every picture
-//!   (Mesa writes the parameter sets only with one; [`crate::bitstream`]).
-//! - Refinement re-encodes at a lower QP: the picture's `pic_init_qp` and its packed slice header's QP are
-//!   [`REFINEMENT_QP`] (as `vaenc --refine-qp` set `pic_init_qp`). Measured here: Mesa 26.0.8 ignores a per-picture
+//!   (Mesa writes the parameter sets only with one; [`crate::bitstream`]). Only the VPS reaches the stream as
+//!   written: radeonsi parses the packed SPS, PPS and slice header for their values and writes its own (its SPS
+//!   at VCN's 64 × 16 coded size, which is why [`SequenceHeaders::coded_size`] uses that alignment, with
+//!   transform depths 4/4; its PPS with dependent slice segments on; its slice headers with its own QP).
+//! - Refinement re-encodes at a lower QP: the picture's `pic_init_qp` is [`REFINEMENT_QP`] (as `vaenc
+//!   --refine-qp` set it). The packed slice header carries the same `slice_qp_delta`, but that has no effect on
+//!   the wire: Mesa writes the slice's QP itself. Measured here: Mesa 26.0.8 ignores a per-picture
 //!   change of the rate control's `max_qp` or of the HRD with packed headers (the output was byte-identical), and
 //!   follows the initial QP. Swift lets VideoToolbox spend the spare budget instead; libva gives a direct QP. A
 //!   refinement exceeds the two-frame HRD (it is meant to: an idle desktop has the budget to spare).
@@ -32,13 +36,21 @@ pub const REFINEMENT_QP: u32 = 22;
 /// The QP range of ordinary pictures (spike A's `vaenc`: the whole range).
 pub const MIN_QP: u32 = 1;
 pub const MAX_QP: u32 = 51;
+/// How long a rebuild waits for a picture still in flight before tearing the session down. Short: the engine
+/// rebuilds only after a hang (`EngineConfig::hung`) or after failed IDRs, so that picture is known to be late,
+/// and the video thread must not stop for a second (the watchdog, conversions and requests all wait on it).
+/// Tearing down early is safe for the GPU: the kernel keeps every buffer a submitted job uses alive until the
+/// job's fence signals (run on the GPU: `gpu_tests::rebuild_with_a_picture_in_flight`).
+pub const REBUILD_WAIT_NS: u64 = 20_000_000;
+/// How long dropping the encoder waits for a picture in flight.
+const DROP_WAIT_NS: u64 = 1_000_000_000;
 /// The POC restarts with a forced IDR before it could overflow the driver's `i32`.
 const POC_LIMIT: u32 = 1 << 30;
 
 /// What the encoder is set up for.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EncoderSettings {
-    /// The visible size (even); the coded size is it rounded up to 8 ([`SequenceHeaders::coded_size`]).
+    /// The visible size (even); the coded size is it rounded up to VCN's 64 × 16 ([`SequenceHeaders::coded_size`]).
     pub width: u32,
     pub height: u32,
     pub fps: u32,
@@ -199,10 +211,10 @@ impl HevcEncoder {
         Ok(())
     }
 
-    fn destroy(&mut self) {
+    fn destroy(&mut self, wait_ns: u64) {
         if let Some(f) = self.in_flight.take() {
             // Let the hardware finish with the buffers (bounded) before they go.
-            let _ = self.va.sync_buffer(self.coded, 1_000_000_000);
+            let _ = self.va.sync_buffer(self.coded, wait_ns);
             for b in f.buffers {
                 self.va.destroy_buffer(b);
             }
@@ -224,9 +236,10 @@ impl HevcEncoder {
     }
 
     /// Tears the session down and makes a new one (the escalation after failing IDRs: a fresh context resets the
-    /// rate control's buffer, so the first IDR is small, spike A). The next picture is an IDR.
+    /// rate control's buffer, so the first IDR is small, spike A). The next picture is an IDR. A picture still in
+    /// flight is waited for only [`REBUILD_WAIT_NS`].
     pub fn rebuild(&mut self) -> Result<(), VaError> {
-        self.destroy();
+        self.destroy(REBUILD_WAIT_NS);
         self.create()
     }
 
@@ -454,7 +467,7 @@ impl HevcEncoder {
 
 impl Drop for HevcEncoder {
     fn drop(&mut self) {
-        self.destroy();
+        self.destroy(DROP_WAIT_NS);
     }
 }
 

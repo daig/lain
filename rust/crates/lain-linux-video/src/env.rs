@@ -8,8 +8,13 @@
 //! `unsafe` in edition 2024, and threads are running): [`required_environment`] says what to set, so that
 //! `lain-hostd` can re-exec itself with it, and `rust/scripts/gpu-run.sh` sets it for tests.
 //!
-//! libva needs no pin: on an amdgpu fd it loads radeonsi. GBM picks its backend from the fd's driver too, unless
-//! `GBM_BACKEND` forces one, so a forced backend other than Mesa's is refused as well.
+//! libva and Mesa's loader pick their driver from the fd (amdgpu → radeonsi), **unless the environment overrides
+//! it**: `LIBVA_DRIVER_NAME` and `LIBVA_DRIVERS_PATH` make libva load whatever they name (`nvidia`, the
+//! nvidia-vaapi-driver, initialises CUDA), and `MESA_LOADER_DRIVER_OVERRIDE` or `GALLIUM_DRIVER` set to `zink`
+//! route GBM and EGL through the Vulkan loader, which enumerates NVIDIA's ICD. So those are refused unless they
+//! say radeonsi (`LIBVA_DRIVERS_PATH` whenever it is set: it can hold any driver), and `GBM_BACKEND` unless it
+//! is Mesa's. [`required_environment`] also pins `LIBVA_DRIVER_NAME=radeonsi`, as `gpu-run.sh` does, so that
+//! `lain-hostd`'s re-exec runs in the environment the GPU tests ran in.
 
 use std::ffi::OsStr;
 use std::path::{Path, PathBuf};
@@ -20,6 +25,14 @@ use lain_platform::PlatformError;
 pub const EGL_VENDOR_VAR: &str = "__EGL_VENDOR_LIBRARY_FILENAMES";
 /// Forces a GBM backend when set; only Mesa's (`dri`) is accepted.
 pub const GBM_BACKEND_VAR: &str = "GBM_BACKEND";
+/// Names the libva driver to load whatever the fd; only radeonsi is accepted.
+pub const LIBVA_DRIVER_VAR: &str = "LIBVA_DRIVER_NAME";
+/// Where libva looks for drivers; refused when set (it can hold any `*_drv_video.so`).
+pub const LIBVA_PATH_VAR: &str = "LIBVA_DRIVERS_PATH";
+/// Mesa's loader and Gallium driver overrides; only radeonsi is accepted.
+pub const MESA_OVERRIDE_VARS: &[&str] = &["MESA_LOADER_DRIVER_OVERRIDE", "GALLIUM_DRIVER"];
+/// The AMD iGPU's driver, for VA-API and Gallium alike.
+pub const RADEONSI: &str = "radeonsi";
 /// The library Mesa's vendor file names.
 pub const MESA_EGL_LIBRARY: &str = "libEGL_mesa.so.0";
 /// Where glvnd looks for vendor files, in its order (`/etc` first, then the data directory).
@@ -69,8 +82,8 @@ pub fn find_mesa_vendor_file(dirs: &[&Path]) -> Option<PathBuf> {
 }
 
 /// What the process environment must hold before video starts: `__EGL_VENDOR_LIBRARY_FILENAMES` set to
-/// Mesa's vendor file, found in the system's vendor directories. `lain-hostd` re-execs itself with these when
-/// [`check_environment`] fails.
+/// Mesa's vendor file, found in the system's vendor directories, and `LIBVA_DRIVER_NAME=radeonsi` (as
+/// `rust/scripts/gpu-run.sh` sets it). `lain-hostd` re-execs itself with these when [`check_environment`] fails.
 pub fn required_environment() -> Result<Vec<(String, String)>, PlatformError> {
     let dirs: Vec<&Path> = VENDOR_DIRS.iter().map(Path::new).collect();
     let file = find_mesa_vendor_file(&dirs).ok_or_else(|| {
@@ -78,25 +91,45 @@ pub fn required_environment() -> Result<Vec<(String, String)>, PlatformError> {
             "no glvnd EGL vendor file names {MESA_EGL_LIBRARY} (is Mesa's libEGL installed?)"
         ))
     })?;
-    Ok(vec![(EGL_VENDOR_VAR.to_string(), file.display().to_string())])
+    Ok(vec![
+        (EGL_VENDOR_VAR.to_string(), file.display().to_string()),
+        (LIBVA_DRIVER_VAR.to_string(), RADEONSI.to_string()),
+    ])
 }
 
 /// Checks the pins in `get(name)` (the environment, or a test's map): every file `__EGL_VENDOR_LIBRARY_FILENAMES`
-/// lists (colon-separated) is a vendor file naming Mesa's library, there is at least one, and `GBM_BACKEND`, if
-/// set, is Mesa's. Returns why not, worded for the owner (`HostSetup.videoProblem`).
+/// lists (colon-separated) is a vendor file naming Mesa's library, there is at least one, `GBM_BACKEND`, if set,
+/// is Mesa's, and no libva or Mesa loader override names anything but radeonsi (the module doc). Returns why
+/// not, worded for the owner (`HostSetup.videoProblem`).
 pub fn check_environment_with(get: impl Fn(&str) -> Option<String>) -> Result<(), PlatformError> {
-    let fix = "start lain-hostd normally (it sets this itself), or set __EGL_VENDOR_LIBRARY_FILENAMES to Mesa's \
-               vendor file, e.g. /usr/share/glvnd/egl_vendor.d/50_mesa.json";
-    let refuse = |why: String| Err(PlatformError::Unavailable(format!("video refused to load libEGL: {why}; {fix}")));
+    let fix = "start lain-hostd normally (it sets the pins itself), or set __EGL_VENDOR_LIBRARY_FILENAMES to \
+               Mesa's vendor file, e.g. /usr/share/glvnd/egl_vendor.d/50_mesa.json, and leave libva's and Mesa's \
+               driver overrides unset or at radeonsi";
+    let refuse =
+        |why: String| Err(PlatformError::Unavailable(format!("video refused to load the GPU libraries: {why}; {fix}")));
     if let Some(backend) = get(GBM_BACKEND_VAR).filter(|b| !b.is_empty())
         && backend != "dri"
     {
         return refuse(format!("{GBM_BACKEND_VAR}={backend} forces a GBM backend other than Mesa's"));
     }
+    for var in std::iter::once(LIBVA_DRIVER_VAR).chain(MESA_OVERRIDE_VARS.iter().copied()) {
+        if let Some(driver) = get(var).filter(|d| !d.is_empty())
+            && driver != RADEONSI
+        {
+            return refuse(format!("{var}={driver} would load a driver other than radeonsi"));
+        }
+    }
+    if let Some(path) = get(LIBVA_PATH_VAR).filter(|p| !p.is_empty()) {
+        return refuse(format!("{LIBVA_PATH_VAR}={path} could make libva load any driver"));
+    }
     let Some(list) = get(EGL_VENDOR_VAR).filter(|l| !l.trim().is_empty()) else {
         return refuse(format!("{EGL_VENDOR_VAR} isn't set, so glvnd would load every vendor, NVIDIA's included"));
     };
-    for file in list.split(':').filter(|f| !f.is_empty()) {
+    let files: Vec<&str> = list.split(':').filter(|f| !f.is_empty()).collect();
+    if files.is_empty() {
+        return refuse(format!("{EGL_VENDOR_VAR}={list} names no vendor file"));
+    }
+    for file in files {
         let library = match std::fs::read_to_string(file) {
             Ok(text) => vendor_library_path(&text),
             Err(e) => return refuse(format!("{EGL_VENDOR_VAR} names {file}, which can't be read ({e})")),
@@ -180,6 +213,8 @@ mod tests {
         };
         refused(vec![], "isn't set");
         refused(vec![(EGL_VENDOR_VAR, " ".into())], "isn't set");
+        refused(vec![(EGL_VENDOR_VAR, ":".into())], "names no vendor file");
+        refused(vec![(EGL_VENDOR_VAR, "::".into())], "names no vendor file");
         refused(vec![(EGL_VENDOR_VAR, path(&nv))], "libEGL_nvidia.so.0");
         refused(vec![(EGL_VENDOR_VAR, format!("{}:{}", path(&mesa), path(&nv)))], "not Mesa's");
         refused(vec![(EGL_VENDOR_VAR, "/nonexistent/50_mesa.json".into())], "can't be read");
@@ -187,5 +222,24 @@ mod tests {
         let junk = tempfile::NamedTempFile::new().unwrap();
         std::fs::write(junk.path(), "not json").unwrap();
         refused(vec![(EGL_VENDOR_VAR, junk.path().display().to_string())], "isn't an EGL vendor file");
+
+        // libva's and Mesa's driver overrides: radeonsi only.
+        let with = |k: &'static str, v: &str| vec![(EGL_VENDOR_VAR, path(&mesa)), (k, v.to_string())];
+        refused(with(LIBVA_DRIVER_VAR, "nvidia"), "LIBVA_DRIVER_NAME=nvidia");
+        refused(with(LIBVA_PATH_VAR, "/opt/x"), "LIBVA_DRIVERS_PATH");
+        refused(with("MESA_LOADER_DRIVER_OVERRIDE", "zink"), "MESA_LOADER_DRIVER_OVERRIDE=zink");
+        refused(with("GALLIUM_DRIVER", "zink"), "GALLIUM_DRIVER=zink");
+        for (k, v) in [(LIBVA_DRIVER_VAR, RADEONSI), ("MESA_LOADER_DRIVER_OVERRIDE", RADEONSI), (LIBVA_PATH_VAR, "")] {
+            assert_eq!(check_environment_with(env(&with(k, v))), Ok(()), "{k}={v}");
+        }
+    }
+
+    #[test]
+    fn the_required_environment_pins_libva_too() {
+        // Needs Mesa's vendor file on this machine (every machine video runs on has it).
+        let Ok(required) = required_environment() else { return };
+        assert!(required.iter().any(|(k, v)| k == LIBVA_DRIVER_VAR && v == RADEONSI), "{required:?}");
+        let get = |k: &str| required.iter().find(|(n, _)| n == k).map(|(_, v)| v.clone());
+        assert_eq!(check_environment_with(get), Ok(()), "the pins pass the check");
     }
 }

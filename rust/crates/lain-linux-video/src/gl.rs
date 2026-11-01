@@ -89,7 +89,7 @@ pub struct GlConverter {
     /// The pictures' size.
     width: u32,
     height: u32,
-    /// The target surfaces' size (the coded size: the picture's rounded up to 8; the rest is left unwritten and
+    /// The target surfaces' size (the coded size: the picture's rounded up to VCN's 64 × 16; the rest is left unwritten and
     /// cropped by the SPS's conformance window).
     surface_width: u32,
     surface_height: u32,
@@ -332,8 +332,14 @@ impl GlConverter {
             gl.query_counter(self.queries[1], glow::TIMESTAMP);
             let fence = gl.fence_sync(glow::SYNC_GPU_COMMANDS_COMPLETE, 0)?;
             gl.flush();
+            // The fence is kept only for a conversion that started: on an error the caller drops the picture and
+            // never polls, so a kept fence would refuse every later conversion ("already in flight").
+            if let Err(e) = gl_error(gl, "dispatching the conversion") {
+                gl.delete_sync(fence);
+                return Err(e);
+            }
             self.fence = Some(fence);
-            gl_error(gl, "dispatching the conversion")
+            Ok(())
         }
     }
 
@@ -359,6 +365,14 @@ impl GlConverter {
                 Err("glClientWaitSync failed".into())
             }
         }
+    }
+
+    /// Leaves a GL error pending (`GL_INVALID_ENUM`), as a failed call would: for the GPU test that a conversion
+    /// reporting one doesn't wedge the converter.
+    #[cfg(test)]
+    pub(crate) fn inject_gl_error(&self) {
+        // SAFETY: the context is current; glEnable with an unknown enum only records GL_INVALID_ENUM.
+        unsafe { self.gl.enable(0xFFFF) };
     }
 
     /// Gives up on the conversion in flight: its fence is deleted (GL keeps its own order for later work).

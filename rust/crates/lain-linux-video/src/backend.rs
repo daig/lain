@@ -175,6 +175,24 @@ impl VideoSession for LinuxVideoSession {
     }
 }
 
+/// Stops the video thread (and capture) if `start_session`'s future is dropped before the session exists: a
+/// `select!` or timeout in the caller may lose the race after the thread has reported ready, and then no
+/// [`Inner`] would ever stop it, and it would hold the GPU for good.
+struct StartGuard {
+    inbox: Arc<Inbox>,
+    capture_stop: Arc<AtomicBool>,
+    armed: bool,
+}
+
+impl Drop for StartGuard {
+    fn drop(&mut self) {
+        if self.armed {
+            self.inbox.stop();
+            self.capture_stop.store(true, Ordering::Release);
+        }
+    }
+}
+
 /// Starts a session: the video thread builds its GPU with `make_gpu` (so the GL context is current there), then
 /// runs the engine; once the GPU is ready, the PipeWire consumer starts (if `capture` is given; the tests feed
 /// the returned inbox themselves).
@@ -190,6 +208,7 @@ pub(crate) async fn start_session<G: Gpu + 'static>(
     let (events_tx, events) = mpsc::unbounded_channel();
     let (ready_tx, ready) = oneshot::channel::<Result<(), String>>();
     let (done_tx, engine_done) = watch::channel(false);
+    let mut guard = StartGuard { inbox: inbox.clone(), capture_stop: capture_stop.clone(), armed: true };
     let thread_inbox = inbox.clone();
     let stop = capture_stop.clone();
     std::thread::Builder::new()
@@ -219,16 +238,14 @@ pub(crate) async fn start_session<G: Gpu + 'static>(
     let capture = match capture {
         Some(c) => match Capture::start(c, inbox.clone(), capture_stop.clone()) {
             Ok(c) => Some(c),
-            Err(e) => {
-                inbox.stop();
-                return Err(PlatformError::Failed(e));
-            }
+            Err(e) => return Err(PlatformError::Failed(e)), // the guard stops the video thread
         },
         None => None,
     };
     let session = LinuxVideoSession {
         inner: Arc::new(Inner { info, inbox: inbox.clone(), capture_stop, capture: Mutex::new(capture), engine_done }),
     };
+    guard.armed = false; // the session's Inner stops it from now on
     Ok((session, events, inbox))
 }
 
@@ -316,6 +333,26 @@ mod tests {
         assert!(tokio::time::timeout(Duration::from_millis(100), events.recv()).await.is_err());
         session.stop().await;
         assert_eq!(events.recv().await, None);
+    }
+
+    #[tokio::test]
+    async fn a_cancelled_start_stops_the_engine() {
+        use std::future::Future;
+        let gpu = FakeGpu::default();
+        let probe = gpu.0.clone();
+        let (_tx, ended) = watch::channel(None);
+        let mut fut =
+            Box::pin(start_session(move || Ok(gpu), stream_info(&config(2752, 2064)), ended, fast_config(), None));
+        let waker = std::task::Waker::noop().clone();
+        let mut cx = std::task::Context::from_waker(&waker);
+        assert!(fut.as_mut().poll(&mut cx).is_pending());
+        std::thread::sleep(Duration::from_millis(50)); // the fake GPU is made and ready is sent
+        drop(fut);
+        let t = std::time::Instant::now();
+        while Arc::strong_count(&probe) > 1 && t.elapsed() < Duration::from_secs(2) {
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert_eq!(Arc::strong_count(&probe), 1, "the engine thread still holds the GPU");
     }
 
     #[tokio::test]
