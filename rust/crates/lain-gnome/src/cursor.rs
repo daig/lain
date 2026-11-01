@@ -134,7 +134,7 @@ impl CursorState {
             match format {
                 BitmapFormat::Bgra => pixels.extend_from_slice(src),
                 BitmapFormat::Rgba => {
-                    for px in src.chunks_exact(4) {
+                    for px in src.as_chunks::<4>().0 {
                         pixels.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
                     }
                 }
@@ -184,8 +184,10 @@ fn same_pixels(format: BitmapFormat, src: &[u8], dst: &[u8]) -> bool {
     match format {
         BitmapFormat::Bgra => src == dst,
         BitmapFormat::Rgba => src
-            .chunks_exact(4)
-            .zip(dst.chunks_exact(4))
+            .as_chunks::<4>()
+            .0
+            .iter()
+            .zip(dst.as_chunks::<4>().0)
             .all(|(s, d)| s[0] == d[2] && s[1] == d[1] && s[2] == d[0] && s[3] == d[3]),
     }
 }

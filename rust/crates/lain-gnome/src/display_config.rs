@@ -264,9 +264,16 @@ pub fn apply_args(serial: u32, config: &[LogicalConfig]) -> ApplyArgs<'static> {
     (serial, APPLY_METHOD, logical, HashMap::new())
 }
 
-/// The configuration that keeps every logical monitor as it is, except `connector`'s, which goes to `at`
-/// with `scale`. `None` if a monitor has no current mode (nothing to apply it with).
-pub fn config_with(state: &DisplayState, connector: &str, at: (i32, i32), scale: f64) -> Option<Vec<LogicalConfig>> {
+/// The configuration that keeps every logical monitor as it is (moved by `shift`, which keeps the layout's
+/// top-left at the origin), except `connector`'s, which goes to `at` with `scale`. Mode, transform and the
+/// primary flag stay as they are. `None` if a monitor has no current mode (nothing to apply it with).
+pub fn config_with(
+    state: &DisplayState,
+    connector: &str,
+    at: (i32, i32),
+    scale: f64,
+    shift: (i32, i32),
+) -> Option<Vec<LogicalConfig>> {
     state
         .logical
         .iter()
@@ -277,7 +284,7 @@ pub fn config_with(state: &DisplayState, connector: &str, at: (i32, i32), scale:
                 .map(|s| Some((s.connector.clone(), state.monitor(&s.connector)?.current_mode()?.id.clone())))
                 .collect::<Option<Vec<_>>>()?;
             let is_lain = l.monitors.iter().any(|s| s.connector == connector);
-            let (x, y, scale) = if is_lain { (at.0, at.1, scale) } else { (l.x, l.y, l.scale) };
+            let (x, y, scale) = if is_lain { (at.0, at.1, scale) } else { (l.x + shift.0, l.y + shift.1, l.scale) };
             Some(LogicalConfig { x, y, scale, transform: l.transform, primary: l.primary, monitors })
         })
         .collect()
@@ -316,7 +323,10 @@ pub(crate) mod tests {
             vec![
                 (
                     hdmi.clone(),
-                    vec![raw_mode("3840x2160@60.000", 3840, 2160, 60.0, true), raw_mode("1920x1080@60.000", 1920, 1080, 60.0, false)],
+                    vec![
+                        raw_mode("3840x2160@60.000", 3840, 2160, 60.0, true),
+                        raw_mode("1920x1080@60.000", 1920, 1080, 60.0, false),
+                    ],
                     HashMap::new(),
                 ),
                 (meta.clone(), vec![raw_mode("2752x2064@120.000", 2752, 2064, 120.0, true)], HashMap::new()),
@@ -365,7 +375,7 @@ pub(crate) mod tests {
     #[test]
     fn apply_args_have_mutters_signature_and_method_one() {
         let s = parse_state(reference_raw(1.0));
-        let config = config_with(&s, "Meta-0", (3840, 0), 2.0).unwrap();
+        let config = config_with(&s, "Meta-0", (3840, 0), 2.0, (0, 0)).unwrap();
         assert_eq!(
             config,
             vec![
@@ -397,10 +407,19 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn config_shifts_the_other_monitors() {
+        // The iPad to the left: HDMI-1 moves right by lain's width.
+        let s = parse_state(reference_raw(1.0));
+        let config = config_with(&s, "Meta-0", (0, 0), 2.0, (1376, 0)).unwrap();
+        assert_eq!((config[0].x, config[0].y, config[0].scale), (1376, 0, 1.0));
+        assert_eq!((config[1].x, config[1].y, config[1].scale), (0, 0, 2.0));
+    }
+
+    #[test]
     fn config_needs_a_current_mode_for_every_monitor() {
         let mut s = parse_state(reference_raw(1.0));
         s.monitors[0].modes.iter_mut().for_each(|m| m.current = false);
-        assert_eq!(config_with(&s, "Meta-0", (3840, 0), 2.0), None);
+        assert_eq!(config_with(&s, "Meta-0", (3840, 0), 2.0, (0, 0)), None);
     }
 
     #[test]

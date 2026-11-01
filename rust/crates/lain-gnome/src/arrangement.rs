@@ -131,11 +131,11 @@ pub fn normalize(others: &[Placed], lain: &IRect) -> (i32, i32) {
 /// physical monitor, top-aligned.
 pub fn fallback(others: &[Placed], lain: &IRect) -> Option<Arrangement> {
     derive(others, lain).or_else(|| {
-        others
-            .iter()
-            .filter(|p| p.physical)
-            .max_by_key(|p| p.rect.max_x())
-            .map(|p| Arrangement { anchor: p.spec.clone(), edge: Edge::Right, offset: 0 })
+        others.iter().filter(|p| p.physical).max_by_key(|p| p.rect.max_x()).map(|p| Arrangement {
+            anchor: p.spec.clone(),
+            edge: Edge::Right,
+            offset: 0,
+        })
     })
 }
 
@@ -153,8 +153,9 @@ pub struct Plan {
 /// the fallback.
 pub fn plan(stored: Option<&Arrangement>, others: &[Placed], lain_now: &IRect, size: (i32, i32)) -> Option<Plan> {
     let try_one = |a: &Arrangement| place(a, others, size).map(|r| (a.clone(), r));
-    let (arrangement, rect) =
-        stored.and_then(try_one).or_else(|| fallback(others, lain_now).as_ref().and_then(try_one))?;
+    let (wanted, rect) = stored.and_then(try_one).or_else(|| fallback(others, lain_now).as_ref().and_then(try_one))?;
+    // What the layout will show (the offset may have been clamped), so it isn't mistaken for the owner's.
+    let arrangement = derive(others, &rect).unwrap_or(wanted);
     let shift = normalize(others, &rect);
     Some(Plan { arrangement, lain_at: (rect.x + shift.0, rect.y + shift.1), shift })
 }
