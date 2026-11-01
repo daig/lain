@@ -5,6 +5,11 @@
 //! - `lain wifi on|off`: switches Wi-Fi now and in `config.toml`.
 //! - `lain autostart on|off`: installs and enables (or disables) the systemd user unit that starts
 //!   `lain-hostd` with the desktop session; works whether or not the daemon runs.
+//! - `lain scale [VALUE|own]`: lain's display's scale (the closest the desktop offers is applied), at once.
+//! - `lain keep-alive [SECONDS]`: how long lain keeps its display after the iPad leaves, at once.
+//! - `lain bitrate [MBPS]`: the video bitrate, from the next start of the daemon.
+//!
+//! Each setting is also written to `config.toml`, so it holds after a restart. Without a value, it is shown.
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -29,6 +34,12 @@ enum Command {
     Wifi { state: OnOff },
     /// Start lain-hostd with the desktop session, or not.
     Autostart { state: OnOff },
+    /// Show or set lain's display's scale: a number from 1 to 3, or `own` for the iPad's own (2).
+    Scale { value: Option<String> },
+    /// Show or set how long lain keeps its display after the iPad leaves (0 to 600 seconds).
+    KeepAlive { seconds: Option<u32> },
+    /// Show or set the video bitrate in Mb/s (1 to 200); applies when the daemon next starts.
+    Bitrate { mbps: Option<u32> },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -55,8 +66,16 @@ async fn host(conn: &zbus::Connection) -> Result<Option<zbus::Proxy<'static>>, S
     if !dbus.name_has_owner(name).await.map_err(|e| e.to_string())? {
         return Ok(None);
     }
-    let proxy =
-        zbus::Proxy::new_owned(conn.clone(), BUS_NAME, OBJECT_PATH, INTERFACE).await.map_err(|e| e.to_string())?;
+    // Uncached: values are read fresh, right after a change this program made.
+    let proxy = zbus::proxy::Builder::new(conn)
+        .destination(BUS_NAME)
+        .and_then(|b| b.path(OBJECT_PATH))
+        .and_then(|b| b.interface(INTERFACE))
+        .map_err(|e| e.to_string())?
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+        .map_err(|e| e.to_string())?;
     Ok(Some(proxy))
 }
 
@@ -109,6 +128,12 @@ async fn run(command: Command) -> Result<(), String> {
             if !note.is_empty() {
                 println!("{note}");
             }
+            let scale: f64 = host.get_property("AppliedScale").await.unwrap_or(0.0);
+            if scale > 0.0 {
+                println!("Scale: {}", (scale * 100.0).round() / 100.0);
+            }
+            let keep: u32 = host.get_property("KeepAliveSeconds").await.unwrap_or(0);
+            println!("Keep-alive: {keep} s");
             println!("Start at login: {login}");
             Ok(())
         }
@@ -117,6 +142,54 @@ async fn run(command: Command) -> Result<(), String> {
             let host = host(&conn).await?.ok_or("lain-hostd isn't running")?;
             host.call_method("SetWifi", &(on,)).await.map_err(|e| e.to_string())?;
             println!("Wi-Fi {}", if on { "on" } else { "off" });
+            Ok(())
+        }
+        Command::Scale { value } => {
+            let host = host(&conn).await?.ok_or("lain-hostd isn't running")?;
+            if let Some(value) = value {
+                let scale = if value == "own" {
+                    0.0
+                } else {
+                    value.parse::<f64>().map_err(|_| format!("not a scale: {value}"))?
+                };
+                host.call_method("SetScale", &(scale,)).await.map_err(|e| e.to_string())?;
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+            }
+            let setting: f64 = host.get_property("Scale").await.map_err(|e| e.to_string())?;
+            let applied: f64 = host.get_property("AppliedScale").await.unwrap_or(0.0);
+            let options: Vec<f64> = host.get_property("ScaleOptions").await.unwrap_or_default();
+            let setting = if setting > 0.0 { format!("{setting}") } else { "the iPad's own".into() };
+            println!("scale: {setting}");
+            if applied > 0.0 {
+                let opts: Vec<String> = options.iter().map(|s| format!("{}", (s * 100.0).round() / 100.0)).collect();
+                println!("applied now: {} (the desktop offers {})", (applied * 100.0).round() / 100.0, opts.join(", "));
+            }
+            Ok(())
+        }
+        Command::KeepAlive { seconds } => {
+            let host = host(&conn).await?.ok_or("lain-hostd isn't running")?;
+            if let Some(s) = seconds {
+                host.call_method("SetKeepAlive", &(s,)).await.map_err(|e| e.to_string())?;
+            }
+            let s: u32 = host.get_property("KeepAliveSeconds").await.map_err(|e| e.to_string())?;
+            println!("keep-alive: {s} s");
+            Ok(())
+        }
+        Command::Bitrate { mbps } => {
+            let path = lain_linux_system::paths::lain_dir(
+                &lain_linux_system::paths::config_home().map_err(|e| e.to_string())?,
+            )
+            .join(lain_hostd::CONFIG_FILE);
+            if let Some(m) = mbps {
+                match host(&conn).await? {
+                    Some(host) => host.call_method("SetBitrate", &(m,)).await.map(|_| ()).map_err(|e| e.to_string())?,
+                    None => lain_hostd::config::set_top_level(&path, "bitrate_mbps", Some(&m.to_string()))?,
+                }
+                println!("bitrate: {m} Mb/s from the next start (systemctl --user restart lain-hostd)");
+            } else {
+                let config = lain_hostd::Config::load(&path).map_err(|e| e.to_string())?;
+                println!("bitrate: {} Mb/s", config.bitrate_mbps);
+            }
             Ok(())
         }
         Command::Autostart { state } => {

@@ -113,6 +113,16 @@ impl<P: Platform> DaemonHandle<P> {
         answer.await.map_err(|_| WifiControlError::Stopped)?
     }
 
+    /// How long lain's display outlives the iPad leaving ([`lain_host::HostSession::display_keep_alive`]).
+    pub fn display_keep_alive(&self) -> Duration {
+        self.session.display_keep_alive()
+    }
+
+    /// Changes it at run time.
+    pub fn set_display_keep_alive(&self, keep_for: Duration) {
+        self.session.set_display_keep_alive(keep_for)
+    }
+
     /// The live session's video numbers.
     pub fn video_stats(&self) -> Option<HostVideoStats> {
         self.session.video_stats()

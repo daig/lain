@@ -9,18 +9,37 @@ use std::sync::Arc;
 use std::time::Duration;
 
 use ksni::TrayMethods;
-use ksni::menu::{CheckmarkItem, StandardItem};
+use ksni::menu::{CheckmarkItem, RadioGroup, RadioItem, StandardItem, SubMenu};
 use lain_linux_system::Autostart;
 use lain_linux_system::autostart::UnitFile;
 use lain_platform::RequirementState;
 use tokio::sync::mpsc;
 use tracing::{info, warn};
 
-use crate::service::{Control, set_wifi_persisted};
+use crate::service::{Control, set_keep_alive_persisted, set_scale_persisted, set_wifi_persisted};
 
 enum Action {
     Wifi(bool),
     StartAtLogin(bool),
+    Scale(Option<f64>),
+    KeepAlive(u32),
+}
+
+/// The keep-alive choices offered, in seconds.
+const KEEP_ALIVES: [u32; 6] = [0, 10, 30, 60, 300, 600];
+/// The scales offered before a display has said which it supports (an iPad Pro 13" at 2752×2064).
+const FALLBACK_SCALES: [f64; 4] = [1.0, 4.0 / 3.0, 2.0, 8.0 / 3.0];
+
+fn scale_label(s: f64) -> String {
+    format!("{}×", (s * 100.0).round() / 100.0)
+}
+
+fn keep_label(s: u32) -> String {
+    match s {
+        0 => "Off".into(),
+        s if s % 60 == 0 => format!("{} min", s / 60),
+        s => format!("{s} s"),
+    }
 }
 
 struct LainTray {
@@ -30,6 +49,9 @@ struct LainTray {
     video: Vec<String>,
     start_at_login: bool,
     connected: bool,
+    scale: Option<f64>,
+    scale_options: Vec<f64>,
+    keep_alive: u32,
     actions: mpsc::UnboundedSender<Action>,
 }
 
@@ -67,6 +89,61 @@ impl ksni::Tray for LainTray {
             }
             .into(),
         );
+        // Scale: the iPad's own, then what the desktop offers.
+        let options = self.scale_options.clone();
+        let selected = match self.scale {
+            None => 0,
+            Some(s) => {
+                let nearest = options.iter().enumerate().min_by(|a, b| (a.1 - s).abs().total_cmp(&(b.1 - s).abs()));
+                nearest.map_or(0, |(i, _)| i + 1)
+            }
+        };
+        let mut scale_items = vec![RadioItem { label: "The iPad's own".into(), ..Default::default() }];
+        scale_items.extend(options.iter().map(|s| RadioItem { label: scale_label(*s), ..Default::default() }));
+        items.push(
+            SubMenu {
+                label: "Scale".into(),
+                submenu: vec![
+                    RadioGroup {
+                        selected,
+                        select: Box::new(move |t: &mut Self, i| {
+                            let scale = if i == 0 { None } else { t.scale_options.get(i - 1).copied() };
+                            let _ = t.actions.send(Action::Scale(scale));
+                        }),
+                        options: scale_items,
+                    }
+                    .into(),
+                ],
+                ..Default::default()
+            }
+            .into(),
+        );
+        let mut keeps: Vec<u32> = KEEP_ALIVES.to_vec();
+        if !keeps.contains(&self.keep_alive) {
+            keeps.push(self.keep_alive);
+            keeps.sort_unstable();
+        }
+        let selected = keeps.iter().position(|k| *k == self.keep_alive).unwrap_or(0);
+        let keep_items = keeps.iter().map(|k| RadioItem { label: keep_label(*k), ..Default::default() }).collect();
+        items.push(
+            SubMenu {
+                label: "Keep display when the iPad leaves".into(),
+                submenu: vec![
+                    RadioGroup {
+                        selected,
+                        select: Box::new(move |t: &mut Self, i| {
+                            if let Some(k) = keeps.get(i) {
+                                let _ = t.actions.send(Action::KeepAlive(*k));
+                            }
+                        }),
+                        options: keep_items,
+                    }
+                    .into(),
+                ],
+                ..Default::default()
+            }
+            .into(),
+        );
         items.push(
             CheckmarkItem {
                 label: "Start at login".into(),
@@ -92,6 +169,9 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
         video: Vec::new(),
         start_at_login: false,
         connected: false,
+        scale: None,
+        scale_options: FALLBACK_SCALES.to_vec(),
+        keep_alive: 0,
         actions,
     };
     let handle = match tray.spawn().await {
@@ -111,6 +191,8 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
             control.video_lines(),
         );
         let login = autostart.start_at_login() == RequirementState::Granted;
+        let (scale, options, keep_alive) =
+            (control.scale_setting(), control.scale_options(), control.keep_alive_seconds());
         handle
             .update(|t| {
                 t.connected = s.is_connected();
@@ -119,6 +201,11 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
                 t.wifi_on = on;
                 t.video = video;
                 t.start_at_login = login;
+                t.scale = scale;
+                if !options.is_empty() {
+                    t.scale_options = options;
+                }
+                t.keep_alive = keep_alive;
             })
             .await;
         tokio::select! {
@@ -129,6 +216,18 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
             Some(action) = requests.recv() => match action {
                 Action::Wifi(on) => {
                     if let Err(e) = set_wifi_persisted(&*control, Some(&config), on).await {
+                        warn!("tray: {e}");
+                    }
+                }
+                Action::Scale(scale) => {
+                    info!(?scale, "tray: scale");
+                    if let Err(e) = set_scale_persisted(&*control, Some(&config), scale) {
+                        warn!("tray: {e}");
+                    }
+                }
+                Action::KeepAlive(seconds) => {
+                    info!(seconds, "tray: keep-alive");
+                    if let Err(e) = set_keep_alive_persisted(&*control, Some(&config), seconds) {
                         warn!("tray: {e}");
                     }
                 }

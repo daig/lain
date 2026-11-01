@@ -536,18 +536,28 @@ fn key_at(text: &str, span: std::ops::Range<usize>) -> Option<String> {
 /// included): its line is replaced, or the key goes before the first table. The file is created if missing, and
 /// the result must still parse, or nothing is written.
 pub fn set_top_level_bool(path: &Path, key: &str, value: bool) -> Result<(), String> {
+    set_top_level(path, key, Some(&value.to_string()))
+}
+
+/// Sets a top-level `key` to the TOML literal `value` in the config file at `path`, or removes its line for
+/// `None` (back to the default), keeping everything else as written. As [`set_top_level_bool`].
+pub fn set_top_level(path: &Path, key: &str, value: Option<&str>) -> Result<(), String> {
     let text = match std::fs::read_to_string(path) {
         Ok(text) => text,
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
         Err(e) => return Err(e.to_string()),
     };
-    let line = format!("{key} = {value}");
     let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
     let first_table = lines.iter().position(|l| l.trim_start().starts_with('[')).unwrap_or(lines.len());
     let is_key = |l: &str| l.trim_start().strip_prefix(key).is_some_and(|rest| rest.trim_start().starts_with('='));
-    match lines[..first_table].iter().position(|l| is_key(l)) {
-        Some(i) => lines[i] = line,
-        None => lines.insert(first_table, line),
+    let at = lines[..first_table].iter().position(|l| is_key(l));
+    match (at, value) {
+        (Some(i), Some(v)) => lines[i] = format!("{key} = {v}"),
+        (None, Some(v)) => lines.insert(first_table, format!("{key} = {v}")),
+        (Some(i), None) => {
+            lines.remove(i);
+        }
+        (None, None) => {}
     }
     let mut out = lines.join("\n");
     out.push('\n');

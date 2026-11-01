@@ -32,7 +32,8 @@ struct Kept<S> {
 
 pub(crate) struct DisplayKeeper<D: DisplayBackend> {
     display: D,
-    keep_for: Duration,
+    /// In milliseconds; changeable at run time (`HostSession::set_display_keep_alive`).
+    keep_for: AtomicU64,
     slot: Mutex<Option<Kept<D::Source>>>,
     /// Set when the host stops: nothing is kept from then on.
     closed: AtomicBool,
@@ -43,7 +44,7 @@ impl<D: DisplayBackend + Clone> DisplayKeeper<D> {
     pub(crate) fn new(display: D, keep_for: Duration) -> Arc<Self> {
         Arc::new(Self {
             display,
-            keep_for,
+            keep_for: AtomicU64::new(keep_for.as_millis().try_into().unwrap_or(u64::MAX)),
             slot: Mutex::new(None),
             closed: AtomicBool::new(false),
             generation: AtomicU64::new(0),
@@ -72,7 +73,8 @@ impl<D: DisplayBackend + Clone> DisplayKeeper<D> {
         streamed: StreamedDisplay,
         source: D::Source,
     ) -> bool {
-        if self.keep_for.is_zero() {
+        let keep_for = self.keep_for();
+        if keep_for.is_zero() {
             return false;
         }
         let mut slot = self.slot.lock().await;
@@ -88,7 +90,6 @@ impl<D: DisplayBackend + Clone> DisplayKeeper<D> {
         }
         let generation = self.generation.fetch_add(1, Ordering::Relaxed) + 1;
         let this = Arc::downgrade(self);
-        let keep_for = self.keep_for;
         let expiry = tokio::spawn(async move {
             tokio::time::sleep(keep_for).await;
             if let Some(this) = this.upgrade() {
@@ -107,6 +108,15 @@ impl<D: DisplayBackend + Clone> DisplayKeeper<D> {
             info!(display = kept.streamed.id, "the iPad didn't come back in time; removing lain's display");
             self.display.destroy().await;
         }
+    }
+
+    pub(crate) fn keep_for(&self) -> Duration {
+        Duration::from_millis(self.keep_for.load(Ordering::Relaxed))
+    }
+
+    /// A new keep-alive, for the next display kept (one kept now keeps its time).
+    pub(crate) fn set_keep_for(&self, keep_for: Duration) {
+        self.keep_for.store(keep_for.as_millis().try_into().unwrap_or(u64::MAX), Ordering::Relaxed);
     }
 
     /// The host is stopping: nothing is kept from now on (synchronous, for `stop` and `Drop`).

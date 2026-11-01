@@ -170,6 +170,7 @@ async fn run(args: Args) -> ExitCode {
     };
     let autostart = Autostart::new(conn.clone(), &user_unit_dir(&config_home), UNIT_NAME);
     let tray_autostart = autostart.clone();
+    let display = gnome.display.clone();
     let platform = LinuxPlatform::new(gnome, LinuxVideo::new(LinuxVideoConfig::default()), autostart, secrets);
 
     let host = config.host_config(identity, versions);
@@ -196,7 +197,7 @@ async fn run(args: Args) -> ExitCode {
     };
     let daemon = Daemon::start(platform, host, UsbMuxClient::default(), advertiser, config.daemon_options()).await;
     // The control interface (the `lain` CLI) and the tray, on the daemon's handle.
-    let control: Arc<dyn lain_hostd::Control> = Arc::new(daemon.handle());
+    let control: Arc<dyn lain_hostd::Control> = Arc::new(lain_hostd::LinuxControl { handle: daemon.handle(), display });
     if let Err(e) = lain_hostd::serve(&conn, control.clone(), Some(config_path.clone())).await {
         warn!("no control interface on {BUS_NAME}: {e}");
     }

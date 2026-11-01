@@ -364,6 +364,16 @@ impl<P: Platform> HostSession<P> {
     }
 
     /// Why the latest session streams no video, if it failed to start or the owner stopped it.
+    /// How long lain's display outlives a session whose link went away ([`HostConfig::display_keep_alive`]).
+    pub fn display_keep_alive(&self) -> std::time::Duration {
+        self.inner.keeper.keep_for()
+    }
+
+    /// Changes it at run time (the daemon's `lain keep-alive`); a display kept now keeps its time.
+    pub fn set_display_keep_alive(&self, keep_for: std::time::Duration) {
+        self.inner.keeper.set_keep_for(keep_for);
+    }
+
     pub fn video_error(&self) -> Option<String> {
         lock(&self.inner.state).video_error.clone()
     }

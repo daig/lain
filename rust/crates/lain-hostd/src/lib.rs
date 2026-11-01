@@ -27,7 +27,7 @@ mod wifi;
 pub use bus::{BUS_NAME, claim_bus_name, claim_name};
 pub use config::{CONFIG_FILE, Config, ConfigError};
 pub use daemon::{Daemon, DaemonHandle, DaemonOptions};
-pub use linux::LinuxPlatform;
+pub use linux::{LinuxControl, LinuxPlatform};
 pub use service::{Control, INTERFACE, OBJECT_PATH, serve};
 pub use setup::{DaemonSetup, LoginItem, SetupRefresh};
 pub use status::video_lines;
