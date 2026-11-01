@@ -13,6 +13,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 lain-platform = { workspace = true, features = ["fake"] }
+proptest.workspace = true
 
 [lints]
 workspace = true
