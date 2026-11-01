@@ -92,6 +92,19 @@ import Testing
         #expect(c.target == 20_000_000)
     }
 
+    /// Seen on the device after the first fix: at rest, ~14 tiny frames a second, a stall once a second that
+    /// holds one frame back, and round trips jumping between 8 and 25 ms. Not saturated either.
+    @Test func restWithAStallHoldingAFrameBackIsntSaturated() {
+        var c = BitrateController(start: 20_000_000)
+        for i in 0..<140 {   // 10 s
+            let at = UInt64(i) * 71 * Self.ms
+            if i % 14 == 0 { c.heldBack(at: at) }
+            let rtt: UInt64 = i % 14 == 1 ? 240 : [8, 25, 12, 21, 9][i % 5]
+            c.acked(bytes: 1_500, rttNs: rtt * Self.ms, at: at + rtt * Self.ms)
+        }
+        #expect(c.target == 20_000_000)
+    }
+
     @Test func itNeverLeavesTheFloorAndCeiling() {
         var c = BitrateController(start: 1)
         #expect(c.target == c.config.floor)
