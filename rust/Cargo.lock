@@ -550,7 +550,6 @@ dependencies = [
  "pipewire",
  "serde",
  "tempfile",
- "thiserror",
  "tokio",
  "toml",
  "tracing",
