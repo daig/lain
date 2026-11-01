@@ -18,6 +18,24 @@ lain-host.workspace = true
 lain-gnome.workspace = true
 lain-linux-video.workspace = true
 lain-linux-system.workspace = true
+anyhow.workspace = true
+clap.workspace = true
+# The open-file limit (getrlimit/setrlimit) without unsafe.
+rustix = { workspace = true, features = ["process"] }
+serde.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros", "signal"] }
+toml.workspace = true
+tracing.workspace = true
+tracing-journald.workspace = true
+tracing-subscriber = { workspace = true, features = ["env-filter"] }
+zbus.workspace = true
+
+[dev-dependencies]
+lain-platform = { workspace = true, features = ["fake"] }
+lain-usbmux = { workspace = true, features = ["fake"] }
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros", "signal", "net", "io-util", "process"] }
 
 [lints]
 workspace = true
