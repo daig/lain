@@ -1,0 +1,13 @@
+[package]
+name = "lain-linux-system"
+description = "Secret Service secrets, Avahi advertising, host identity, systemd autostart."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+lain-platform.workspace = true
+
+[lints]
+workspace = true

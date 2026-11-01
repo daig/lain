@@ -1,0 +1,69 @@
+# lain's Linux host: a Rust port of the host side, wire-compatible with the iPad client in this tree.
+# The crates and their dependency graph are described in each crate's documentation (src/lib.rs).
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.98"
+publish = false
+
+[workspace.dependencies]
+# Internal crates.
+lain-platform = { path = "crates/lain-platform" }
+lain-proto = { path = "crates/lain-proto" }
+lain-usbmux = { path = "crates/lain-usbmux" }
+lain-link = { path = "crates/lain-link" }
+lain-input = { path = "crates/lain-input" }
+lain-media = { path = "crates/lain-media" }
+lain-wifi = { path = "crates/lain-wifi" }
+lain-host = { path = "crates/lain-host" }
+lain-gnome = { path = "crates/lain-gnome" }
+lain-linux-video = { path = "crates/lain-linux-video" }
+lain-linux-system = { path = "crates/lain-linux-system" }
+
+# External dependencies: one version each across the workspace. Crates add the features they need.
+anyhow = "1.0.104"
+bytes = "1.12"
+clap = { version = "4.6", features = ["derive"] }
+futures = "0.3.34"
+gstreamer = "0.25"
+gstreamer-app = "0.25"
+gstreamer-video = "0.25"
+hex = "0.4.3"
+hkdf = "0.13"
+hmac = "0.13"
+ksni = "0.3.7"
+libc = "0.2.191"
+oo7 = "0.6"
+openssl = "0.10.81"
+pipewire = "0.10"
+plist = "1.10"
+proptest = "1.12"
+rand = "0.10"
+rustix = "1.1"
+serde = { version = "1.0", features = ["derive"] }
+sha2 = "0.11"
+socket2 = "0.6"
+tempfile = "3.27"
+thiserror = "2.0"
+tokio = { version = "1.54", default-features = false }
+tokio-openssl = "0.6.5"
+toml = "1.1"
+tracing = "0.1.44"
+tracing-journald = "0.3.2"
+tracing-subscriber = "0.3.23"
+uuid = "1.29"
+# zbus 5, not 6: oo7 0.6 and ksni 0.3 are built on zbus 5, and one copy of zbus serves every crate.
+zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+
+[workspace.lints.rust]
+# FFI code opts in per module with #[allow(unsafe_code)], one module per C API.
+unsafe_code = "deny"
+rust_2018_idioms = { level = "warn", priority = -1 }
+
+[workspace.lints.clippy]
+all = { level = "warn", priority = -1 }
+dbg_macro = "warn"

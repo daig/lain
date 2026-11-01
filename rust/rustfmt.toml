@@ -1,0 +1,3 @@
+# The Swift tree's line length; short literals and calls stay on one line.
+max_width = 120
+use_small_heuristics = "Max"
