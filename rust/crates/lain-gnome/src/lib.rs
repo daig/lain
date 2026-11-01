@@ -22,6 +22,8 @@ pub mod cursor;
 pub mod desktop;
 pub mod display;
 pub mod display_config;
+#[cfg(test)]
+mod fake_mutter;
 pub mod input;
 pub mod input_map;
 pub mod monitors;
