@@ -80,8 +80,11 @@ pub struct GnomeDisplay {
     desktop: DesktopHandle,
     cursor: Arc<CursorState>,
     active: Arc<Mutex<Option<Active>>>,
-    /// The owner's scale for lain's display; `None`: the iPad's own.
-    scale: Option<f64>,
+    /// The owner's scale for lain's display; `None`: the iPad's own. Shared by clones, so a change reaches the
+    /// display wherever it is made.
+    scale: Arc<std::sync::Mutex<Option<f64>>>,
+    /// The iPad's own scale, from the last `create`'s spec (what `None` means).
+    own_scale: Arc<std::sync::Mutex<u32>>,
 }
 
 fn failed(what: &str, e: impl std::fmt::Display) -> PlatformError {
@@ -91,14 +94,49 @@ fn failed(what: &str, e: impl std::fmt::Display) -> PlatformError {
 impl GnomeDisplay {
     /// The display backend on `conn`, with the desktop task `monitors::spawn` started and the run's cursor state.
     pub fn new(conn: Connection, desktop: DesktopHandle, cursor: Arc<CursorState>) -> Self {
-        Self { conn, desktop, cursor, active: Arc::new(Mutex::new(None)), scale: None }
+        Self {
+            conn,
+            desktop,
+            cursor,
+            active: Arc::new(Mutex::new(None)),
+            scale: Arc::default(),
+            own_scale: Arc::new(std::sync::Mutex::new(2)),
+        }
     }
 
     /// Makes lain's display at `scale` (the closest Mutter supports) instead of the iPad's own. New in the port:
     /// GNOME's interface is larger than macOS's at the same scale, so the owner may want more room than 2×.
-    pub fn with_scale(mut self, scale: Option<f64>) -> Self {
-        self.scale = scale;
+    pub fn with_scale(self, scale: Option<f64>) -> Self {
+        *self.scale.lock().unwrap_or_else(|e| e.into_inner()) = scale;
         self
+    }
+
+    /// The owner's scale setting (`None`: the iPad's own).
+    pub fn scale_setting(&self) -> Option<f64> {
+        *self.scale.lock().unwrap_or_else(|e| e.into_inner())
+    }
+
+    /// Changes the scale setting, and applies it to lain's display now if there is one (the closest scale Mutter
+    /// supports, as at `create`).
+    pub fn set_scale(&self, scale: Option<f64>) {
+        *self.scale.lock().unwrap_or_else(|e| e.into_inner()) = scale;
+        let connector = self.desktop.desktop.borrow().lain().map(|m| m.spec.connector.clone());
+        if let Some(connector) = connector {
+            let own = *self.own_scale.lock().unwrap_or_else(|e| e.into_inner());
+            let wanted = scale.unwrap_or_else(|| f64::from(own.max(1)));
+            tracing::info!(wanted, "lain's display: new scale");
+            self.desktop.send(Command::SetLain { connector, scale: wanted });
+        }
+    }
+
+    /// lain's display's scale now, if it exists.
+    pub fn applied_scale(&self) -> Option<f64> {
+        self.desktop.desktop.borrow().lain().map(|m| m.scale)
+    }
+
+    /// The scales Mutter supports for lain's display's mode (empty without a display).
+    pub fn scale_options(&self) -> Vec<f64> {
+        self.desktop.desktop.borrow().lain().map(|m| m.supported_scales.clone()).unwrap_or_default()
     }
 
     /// `create`'s body, on a task of its own (review L1). Its result goes to `reply`; if nobody waits for it any
@@ -258,7 +296,8 @@ impl GnomeDisplay {
 
         self.cursor.reset();
         // Scale 0 counts as 1, as in `DisplaySpec::logical_size` (review A4).
-        let wanted = self.scale.unwrap_or_else(|| f64::from(spec.scale.max(1)));
+        *self.own_scale.lock().unwrap_or_else(|e| e.into_inner()) = spec.scale.max(1);
+        let wanted = self.scale_setting().unwrap_or_else(|| f64::from(spec.scale.max(1)));
         self.desktop.send(Command::SetLain { connector: connector.clone(), scale: wanted });
         let reached = |m: &crate::desktop::DesktopMonitor| {
             (m.scale - crate::display_config::nearest_scale(&m.supported_scales, wanted)).abs() < 1e-3

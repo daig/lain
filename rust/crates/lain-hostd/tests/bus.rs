@@ -109,6 +109,8 @@ struct FakeControl {
     status: tokio::sync::watch::Sender<lain_host::HostStatus>,
     wifi: tokio::sync::watch::Sender<lain_wifi::WiFiStatus>,
     enabled: tokio::sync::watch::Sender<bool>,
+    keep_alive: std::sync::atomic::AtomicU32,
+    scale: std::sync::Mutex<Option<f64>>,
 }
 
 impl lain_hostd::Control for FakeControl {
@@ -146,6 +148,24 @@ impl lain_hostd::Control for FakeControl {
     fn refresh_setup(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
         Box::pin(async {})
     }
+    fn keep_alive_seconds(&self) -> u32 {
+        self.keep_alive.load(std::sync::atomic::Ordering::Relaxed)
+    }
+    fn set_keep_alive_seconds(&self, seconds: u32) {
+        self.keep_alive.store(seconds, std::sync::atomic::Ordering::Relaxed)
+    }
+    fn scale_setting(&self) -> Option<f64> {
+        *self.scale.lock().unwrap()
+    }
+    fn applied_scale(&self) -> Option<f64> {
+        Some(self.scale_setting().map_or(2.0, |_| 4.0 / 3.0))
+    }
+    fn scale_options(&self) -> Vec<f64> {
+        vec![1.0, 4.0 / 3.0, 2.0, 8.0 / 3.0]
+    }
+    fn set_scale(&self, scale: Option<f64>) {
+        *self.scale.lock().unwrap() = scale;
+    }
 }
 
 /// The control interface the `lain` CLI uses: properties read the daemon, `SetWifi` switches it and writes
@@ -159,6 +179,8 @@ async fn the_control_interface_reads_switches_and_announces() {
         status: tokio::sync::watch::Sender::new(lain_host::HostStatus::WaitingForIPad),
         wifi: tokio::sync::watch::Sender::new(lain_wifi::WiFiStatus::Off("no paired iPad yet".into())),
         enabled: tokio::sync::watch::Sender::new(true),
+        keep_alive: std::sync::atomic::AtomicU32::new(30),
+        scale: std::sync::Mutex::new(None),
     });
     let dir = tempfile::tempdir().unwrap();
     let config = dir.path().join("config.toml");
@@ -166,7 +188,17 @@ async fn the_control_interface_reads_switches_and_announces() {
     lain_hostd::serve(&daemon, control.clone(), Some(config.clone())).await.unwrap();
 
     let cli = bus.connect().await;
-    let host = zbus::Proxy::new(&cli, BUS_NAME, lain_hostd::OBJECT_PATH, lain_hostd::INTERFACE).await.unwrap();
+    let host: zbus::Proxy<'_> = zbus::proxy::Builder::new(&cli)
+        .destination(BUS_NAME)
+        .unwrap()
+        .path(lain_hostd::OBJECT_PATH)
+        .unwrap()
+        .interface(lain_hostd::INTERFACE)
+        .unwrap()
+        .cache_properties(zbus::proxy::CacheProperties::No)
+        .build()
+        .await
+        .unwrap();
     assert_eq!(host.get_property::<String>("Status").await.unwrap(), "Waiting for iPad");
     assert_eq!(host.get_property::<String>("WifiStatus").await.unwrap(), "Wi-Fi: off: no paired iPad yet");
     assert_eq!(host.get_property::<Vec<String>>("VideoLines").await.unwrap(), ["Video 2752×2064 4:2:0"]);
@@ -175,7 +207,27 @@ async fn the_control_interface_reads_switches_and_announces() {
     assert!(!*control.enabled.borrow());
     assert_eq!(std::fs::read_to_string(&config).unwrap(), "# mine\nscale = 1.5\nwifi = false\n");
 
-    let mut changes = host.receive_property_changed::<String>("Status").await;
+    // Scale and keep-alive: applied, written, refused out of bounds, and back to the iPad's own.
+    assert_eq!(host.get_property::<f64>("Scale").await.unwrap(), 0.0);
+    host.call_method("SetScale", &(1.5f64,)).await.unwrap();
+    assert_eq!(*control.scale.lock().unwrap(), Some(1.5));
+    assert_eq!(host.get_property::<f64>("AppliedScale").await.unwrap(), 4.0 / 3.0);
+    assert!(host.call_method("SetScale", &(4.0f64,)).await.is_err(), "out of bounds");
+    host.call_method("SetKeepAlive", &(60u32,)).await.unwrap();
+    assert_eq!(host.get_property::<u32>("KeepAliveSeconds").await.unwrap(), 60);
+    assert!(host.call_method("SetKeepAlive", &(601u32,)).await.is_err());
+    assert_eq!(
+        std::fs::read_to_string(&config).unwrap(),
+        "# mine\nscale = 1.5\nwifi = false\nkeep_alive_seconds = 60\n"
+    );
+    host.call_method("SetScale", &(0.0f64,)).await.unwrap();
+    assert_eq!(*control.scale.lock().unwrap(), None);
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), "# mine\nwifi = false\nkeep_alive_seconds = 60\n");
+    host.call_method("SetBitrate", &(40u32,)).await.unwrap();
+    assert!(std::fs::read_to_string(&config).unwrap().contains("bitrate_mbps = 40\n"));
+
+    let watcher = zbus::Proxy::new(&cli, BUS_NAME, lain_hostd::OBJECT_PATH, lain_hostd::INTERFACE).await.unwrap();
+    let mut changes = watcher.receive_property_changed::<String>("Status").await;
     control.status.send_replace(lain_host::HostStatus::WaitingForIPad); // same value: no news
     control.status.send_replace(lain_host::HostStatus::connected_usb("iPad16,6"));
     let seen = tokio::time::timeout(Duration::from_secs(5), async {

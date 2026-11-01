@@ -82,3 +82,57 @@ impl Platform for LinuxPlatform {
         &self.clock
     }
 }
+
+/// The daemon's control on GNOME: [`crate::DaemonHandle`]'s, plus lain's display's scale, which `lain-gnome` owns.
+pub struct LinuxControl {
+    pub handle: crate::DaemonHandle<LinuxPlatform>,
+    pub display: GnomeDisplay,
+}
+
+impl crate::Control for LinuxControl {
+    fn status_watch(&self) -> tokio::sync::watch::Receiver<lain_host::HostStatus> {
+        self.handle.status_watch()
+    }
+    fn wifi_status(&self) -> tokio::sync::watch::Receiver<lain_wifi::WiFiStatus> {
+        self.handle.wifi_status()
+    }
+    fn wifi_enabled(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.handle.wifi_enabled()
+    }
+    fn video_lines(&self) -> Vec<String> {
+        crate::Control::video_lines(&self.handle)
+    }
+    fn video_problem(&self) -> String {
+        crate::Control::video_problem(&self.handle)
+    }
+    fn peer_version_note(&self) -> String {
+        crate::Control::peer_version_note(&self.handle)
+    }
+    fn set_wifi(
+        &self,
+        on: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), crate::WifiControlError>> + Send + '_>> {
+        crate::Control::set_wifi(&self.handle, on)
+    }
+    fn refresh_setup(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        crate::Control::refresh_setup(&self.handle)
+    }
+    fn keep_alive_seconds(&self) -> u32 {
+        crate::Control::keep_alive_seconds(&self.handle)
+    }
+    fn set_keep_alive_seconds(&self, seconds: u32) {
+        crate::Control::set_keep_alive_seconds(&self.handle, seconds)
+    }
+    fn scale_setting(&self) -> Option<f64> {
+        self.display.scale_setting()
+    }
+    fn applied_scale(&self) -> Option<f64> {
+        self.display.applied_scale()
+    }
+    fn scale_options(&self) -> Vec<f64> {
+        self.display.scale_options()
+    }
+    fn set_scale(&self, scale: Option<f64>) {
+        self.display.set_scale(scale)
+    }
+}
