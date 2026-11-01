@@ -1,0 +1,4 @@
+# hevcfix 192x128, 3 frames, CBR 3000 kbps, bit stuffing off; requested keyframes:
+au-00.h265 size=2574 keyframe=1 nal=32,4,23,4 nal=33,31,44,4 nal=34,79,6,4 nal=19,89,2485,4
+au-01.h265 size=3184 keyframe=0 nal=1,4,3180,4
+au-02.h265 size=2360 keyframe=0 nal=1,4,2356,4
