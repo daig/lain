@@ -1,0 +1,15 @@
+[package]
+name = "lain-wifi"
+description = "Wi-Fi transport: TLS-PSK as the iPad expects it, the listener, TXT records."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+lain-proto.workspace = true
+lain-platform.workspace = true
+lain-link.workspace = true
+
+[lints]
+workspace = true

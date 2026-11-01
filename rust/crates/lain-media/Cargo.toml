@@ -1,0 +1,14 @@
+[package]
+name = "lain-media"
+description = "Video and cursor stream logic: frame gate, idle refinement, the encode pipeline, HEVC bitstream utilities, cursor shapes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+lain-proto.workspace = true
+lain-platform.workspace = true
+
+[lints]
+workspace = true

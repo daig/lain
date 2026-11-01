@@ -1,0 +1,22 @@
+[package]
+name = "lain-platform"
+description = "The bridge contract between lain's platform-free core and a platform: traits, the data they carry, the clock, and fakes."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[features]
+# Recording fakes of every contract, for other crates' tests (`fake` module).
+fake = []
+
+[dependencies]
+rustix = { workspace = true, features = ["time"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
+
+[lints]
+workspace = true

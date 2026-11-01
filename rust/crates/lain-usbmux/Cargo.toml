@@ -1,0 +1,12 @@
+[package]
+name = "lain-usbmux"
+description = "A usbmuxd client (list, listen, connect) and a fake usbmuxd for tests."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+
+[lints]
+workspace = true

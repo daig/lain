@@ -1,0 +1,23 @@
+[package]
+name = "lain-hostd"
+description = "The lain host daemon: configuration, wiring, control interface, CLI and tray."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+lain-proto.workspace = true
+lain-platform.workspace = true
+lain-link.workspace = true
+lain-usbmux.workspace = true
+lain-input.workspace = true
+lain-media.workspace = true
+lain-wifi.workspace = true
+lain-host.workspace = true
+lain-gnome.workspace = true
+lain-linux-video.workspace = true
+lain-linux-system.workspace = true
+
+[lints]
+workspace = true

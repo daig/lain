@@ -18,3 +18,5 @@ build/
 .claude/worktrees/
 # Planning docs: kept local, not published
 /docs/
+# Rust workspace build output
+/rust/target/
