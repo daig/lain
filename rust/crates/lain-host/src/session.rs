@@ -280,8 +280,8 @@ struct Inner<P: Platform> {
 /// - The virtual display is made for the client's `Hello` ([`display_spec`](crate::display_spec)).
 /// - The status is a watch ([`status_watch`](Self::status_watch)) plus every change in order
 ///   ([`status_changes`](Self::status_changes)), for Swift's `onStatus`.
-/// - `stop` is async: it does Swift's synchronous part (input released, power dropped) before its first
-///   await, then waits until the session's display is gone.
+/// - `stop` does Swift's synchronous part (input released, power dropped) when called, and returns a future
+///   that waits until the session's display is gone.
 pub struct HostSession<P: Platform> {
     inner: Arc<Inner<P>>,
 }
@@ -381,12 +381,15 @@ impl<P: Platform> HostSession<P> {
         lock(&self.inner.state).wifi.is_some()
     }
 
-    /// Ends everything: releases all input (invariant 4) and the power assertion before its first await, stops
-    /// admitting network links, then waits until the session's display is gone. Idempotent.
-    pub async fn stop(&self) {
+    /// Ends everything: releases all input (invariant 4) and the power assertion, and stops admitting network
+    /// links, before it returns (as Swift's synchronous `stop()`); the future it returns waits until the
+    /// session's display is gone. Idempotent.
+    pub fn stop(&self) -> impl Future<Output = ()> + Send + 'static {
         let videos = self.inner.stop_now();
-        for video in videos {
-            video.wait_until_stopped().await;
+        async move {
+            for video in videos {
+                video.wait_until_stopped().await;
+            }
         }
     }
 }
