@@ -40,6 +40,10 @@ enum Command {
     KeepAlive { seconds: Option<u32> },
     /// Show or set the video bitrate in Mb/s (1 to 200); applies when the daemon next starts.
     Bitrate { mbps: Option<u32> },
+    /// Bring video back after "Stop sharing" in GNOME's top bar (the iPad reconnects).
+    Resume,
+    /// Show or set whether video comes back by itself after "Stop sharing".
+    AutoResume { state: Option<OnOff> },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -158,12 +162,34 @@ async fn run(command: Command) -> Result<(), String> {
             let setting: f64 = host.get_property("Scale").await.map_err(|e| e.to_string())?;
             let applied: f64 = host.get_property("AppliedScale").await.unwrap_or(0.0);
             let options: Vec<f64> = host.get_property("ScaleOptions").await.unwrap_or_default();
-            let setting = if setting > 0.0 { format!("{setting}") } else { "the iPad's own".into() };
+            let setting =
+                if setting > 0.0 { format!("{}", (setting * 100.0).round() / 100.0) } else { "the iPad's own".into() };
             println!("scale: {setting}");
             if applied > 0.0 {
                 let opts: Vec<String> = options.iter().map(|s| format!("{}", (s * 100.0).round() / 100.0)).collect();
                 println!("applied now: {} (the desktop offers {})", (applied * 100.0).round() / 100.0, opts.join(", "));
             }
+            Ok(())
+        }
+        Command::Resume => {
+            let host = host(&conn).await?.ok_or("lain-hostd isn't running")?;
+            let reply = host.call_method("ResumeVideo", &()).await.map_err(|e| e.to_string())?;
+            let resumed: bool = reply.body().deserialize().map_err(|e| e.to_string())?;
+            println!(
+                "{}",
+                if resumed { "resuming: the iPad reconnects" } else { "nothing to resume: video isn't stopped" }
+            );
+            Ok(())
+        }
+        Command::AutoResume { state } => {
+            let host = host(&conn).await?.ok_or("lain-hostd isn't running")?;
+            if let Some(state) = state {
+                host.call_method("SetResumeAfterStop", &(matches!(state, OnOff::On),))
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
+            let on: bool = host.get_property("ResumeAfterStop").await.map_err(|e| e.to_string())?;
+            println!("resume after Stop sharing: {}", if on { "on" } else { "off" });
             Ok(())
         }
         Command::KeepAlive { seconds } => {

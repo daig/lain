@@ -44,6 +44,10 @@ pub trait Control: Send + Sync + 'static {
     fn refresh_setup(&self) -> BoxFuture<'_, ()>;
     fn keep_alive_seconds(&self) -> u32;
     fn set_keep_alive_seconds(&self, seconds: u32);
+    /// Video back after a stop on the desktop; `false` if there was nothing to resume.
+    fn resume_video(&self) -> bool;
+    fn resume_after_stop(&self) -> bool;
+    fn set_resume_after_stop(&self, on: bool);
     /// The scale setting (`None`: the iPad's own). Platforms without one say `None` and ignore changes.
     fn scale_setting(&self) -> Option<f64> {
         None
@@ -93,6 +97,25 @@ where
     fn set_keep_alive_seconds(&self, seconds: u32) {
         self.set_display_keep_alive(Duration::from_secs(u64::from(seconds)))
     }
+    fn resume_video(&self) -> bool {
+        DaemonHandle::resume_video(self)
+    }
+    fn resume_after_stop(&self) -> bool {
+        DaemonHandle::resume_after_stop(self)
+    }
+    fn set_resume_after_stop(&self, on: bool) {
+        DaemonHandle::set_resume_after_stop(self, on)
+    }
+}
+
+/// Sets resuming after a stop on the desktop, now and in `config.toml`.
+pub fn set_resume_after_stop_persisted(
+    control: &dyn Control,
+    config: Option<&PathBuf>,
+    on: bool,
+) -> Result<(), String> {
+    control.set_resume_after_stop(on);
+    persist(config, "resume_after_stop", Some(on.to_string()))
 }
 
 fn persist(config: Option<&PathBuf>, key: &str, value: Option<String>) -> Result<(), String> {
@@ -238,6 +261,28 @@ impl HostService {
         info!(seconds, "keep-alive set over D-Bus");
         set_keep_alive_persisted(&*self.control, self.config.as_ref(), seconds).map_err(zbus::fdo::Error::Failed)?;
         let _ = self.keep_alive_seconds_changed(&emitter).await;
+        Ok(())
+    }
+
+    #[zbus(property)]
+    fn resume_after_stop(&self) -> bool {
+        self.control.resume_after_stop()
+    }
+
+    /// Video back after the owner stopped lain's display on the desktop: the iPad reconnects. `false` if there
+    /// was nothing to resume.
+    async fn resume_video(&self) -> bool {
+        self.control.resume_video()
+    }
+
+    /// Sets resuming by itself after a stop on the desktop, now and in `config.toml`.
+    async fn set_resume_after_stop(
+        &self,
+        on: bool,
+        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<()> {
+        set_resume_after_stop_persisted(&*self.control, self.config.as_ref(), on).map_err(zbus::fdo::Error::Failed)?;
+        let _ = self.resume_after_stop_changed(&emitter).await;
         Ok(())
     }
 

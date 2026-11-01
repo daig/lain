@@ -35,7 +35,7 @@ mod video;
 mod warp;
 
 pub use config::{Hook, HostConfig, Tuning, WifiAdmission};
-pub use session::{HostSession, WifiStreams};
+pub use session::{HostSession, RESUME_AFTER_STOP_MIN_GAP, WifiStreams};
 pub use status::{HostStatus, menu_name};
 pub use util::PowerCount;
 pub use video::display_spec;

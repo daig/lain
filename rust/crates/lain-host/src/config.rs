@@ -38,6 +38,12 @@ pub struct HostConfig {
     /// cable came out), so that the iPad's next session of the same size takes it back ([`crate::keeper`]).
     /// Zero, the default here as in Swift, removes it at once; `lain-hostd` keeps it 30 s by default.
     pub display_keep_alive: Duration,
+    /// After the owner stops lain's display on the desktop (GNOME's sharing indicator), bring video back by
+    /// itself: the session's link is closed, and the iPad's reconnect starts a fresh one. Off, as in Swift, here;
+    /// on in `lain-hostd` (the developer: Stop has no use for this app). At most once per
+    /// [`RESUME_AFTER_STOP_MIN_GAP`](crate::RESUME_AFTER_STOP_MIN_GAP), so a desktop that keeps stopping it
+    /// doesn't loop.
+    pub resume_after_stop: bool,
 }
 
 impl Default for HostConfig {
@@ -50,6 +56,7 @@ impl Default for HostConfig {
             wifi: WifiAdmission::default(),
             tuning: Tuning::default(),
             display_keep_alive: Duration::ZERO,
+            resume_after_stop: false,
         }
     }
 }

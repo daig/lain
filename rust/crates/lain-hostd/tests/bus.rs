@@ -154,6 +154,13 @@ impl lain_hostd::Control for FakeControl {
     fn set_keep_alive_seconds(&self, seconds: u32) {
         self.keep_alive.store(seconds, std::sync::atomic::Ordering::Relaxed)
     }
+    fn resume_video(&self) -> bool {
+        false
+    }
+    fn resume_after_stop(&self) -> bool {
+        true
+    }
+    fn set_resume_after_stop(&self, _on: bool) {}
     fn scale_setting(&self) -> Option<f64> {
         *self.scale.lock().unwrap()
     }
