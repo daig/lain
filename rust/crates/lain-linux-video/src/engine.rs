@@ -178,8 +178,15 @@ impl Inbox {
         drop(old);
     }
 
+    /// A request; ignored once the inbox is stopped (nobody would answer it: the event channel is closed).
     pub fn push_request(&self, request: EncodeRequest) {
-        lock(&self.state).requests.push_back((request, lain_platform::clock::now_ns()));
+        {
+            let mut s = lock(&self.state);
+            if s.stop {
+                return;
+            }
+            s.requests.push_back((request, lain_platform::clock::now_ns()));
+        }
         self.wake.notify_one();
     }
 
@@ -321,6 +328,10 @@ impl<G: Gpu> Engine<G> {
             self.gpu.cancel_conversion();
             drop(c);
         }
+        // Also when the session ended by itself (StoppedByUser, Failed): a picture capture pushed after the last
+        // turn goes back to PipeWire now, not when the owner stops or drops the session, and later pictures and
+        // requests are refused.
+        self.inbox.stop();
         tracing::debug!(stats = ?self.stats, "video thread ends");
     }
 
@@ -404,6 +415,8 @@ impl<G: Gpu> Engine<G> {
         match self.gpu.start_conversion(&frame.picture, surface) {
             Ok(()) => self.converting = Some(Converting { frame, surface, started_ns: now }),
             Err(e) => {
+                // Whatever the failed start left behind is given up, so the next conversion can start.
+                self.gpu.cancel_conversion();
                 drop(frame);
                 return self.conversion_failed(e);
             }
@@ -484,7 +497,13 @@ impl<G: Gpu> Engine<G> {
                     && now.saturating_sub(job.submit_ns) >= ms(self.cfg.hung)
                 {
                     tracing::warn!("the encoder hung; rebuilding it");
-                    self.encoding = None;
+                    let job = self.encoding.take().expect("encoding");
+                    if !job.timed_out {
+                        // Only if `hung` ≤ `watchdog` (EngineConfig is public): the request still gets its one
+                        // result.
+                        self.emit(VideoEvent::EncodeFailed { frame_id: job.request.frame_id });
+                        self.stats.failed += 1;
+                    }
                     if let Flow::Exit = self.rebuild("the encoder hung".into()) {
                         return Flow::Exit;
                     }
@@ -655,6 +674,9 @@ pub(crate) mod tests {
         pub(crate) converting: Option<(u8, usize)>,
         pub(crate) conversion_pending: bool,
         pub(crate) fail_conversions: bool,
+        /// A failed start leaves its conversion behind, as `GlConverter::convert` once kept its fence after a
+        /// GL error: only `cancel_conversion` clears it.
+        pub(crate) failed_start_lingers: bool,
         pub(crate) submits: Vec<(usize, PictureKind, u8)>,
         pub(crate) outcomes: VecDeque<Outcome>,
         pub(crate) in_flight: Option<(PictureKind, u8, Outcome)>,
@@ -694,6 +716,9 @@ pub(crate) mod tests {
             let mut s = self.state();
             assert!(s.converting.is_none(), "one conversion at a time");
             if s.fail_conversions {
+                if s.failed_start_lingers {
+                    s.converting = Some((data_marker(picture), surface));
+                }
                 return Err("import refused".into());
             }
             let Pixels::Memory { data, .. } = &picture.pixels else { panic!("fake pictures are in memory") };
@@ -757,6 +782,11 @@ pub(crate) mod tests {
             s.in_flight = None;
             if s.fail_rebuild { Err("vaCreateContext: allocation failed".into()) } else { Ok(()) }
         }
+    }
+
+    fn data_marker(picture: &Picture) -> u8 {
+        let Pixels::Memory { data, .. } = &picture.pixels else { panic!("fake pictures are in memory") };
+        data[0]
     }
 
     pub(crate) fn picture(marker: u8) -> Picture {
@@ -1137,6 +1167,55 @@ pub(crate) mod tests {
         }
         assert!(matches!(h.next(), Some(VideoEvent::Failed(e)) if e.to_string().contains("can't be converted")));
         assert_eq!(h.next(), None);
+    }
+
+    #[test]
+    fn a_failed_conversion_start_doesn_t_wedge_the_next() {
+        let mut h = Harness::new(fast_config());
+        {
+            let mut s = h.gpu.state();
+            s.fail_conversions = true;
+            s.failed_start_lingers = true;
+        }
+        let back = h.frame(1);
+        std::thread::sleep(Duration::from_millis(20));
+        assert!(*lock(&back));
+        h.gpu.state().fail_conversions = false;
+        h.frame(2);
+        assert_eq!(h.captured(), 1, "the next picture converts");
+        h.request(1, true, false);
+        assert_eq!(marker_of(&h.encoded()), 2);
+    }
+
+    #[test]
+    fn a_hung_encode_is_answered_whatever_the_bounds() {
+        // `hung` below `watchdog`: the rebuild comes first, and still answers the request.
+        let cfg =
+            EngineConfig { watchdog: Duration::from_millis(400), hung: Duration::from_millis(100), ..fast_config() };
+        let mut h = Harness::new(cfg);
+        h.frame(1);
+        h.captured();
+        h.gpu.state().outcomes.push_back(Outcome::Hang);
+        h.request(1, true, false);
+        assert_eq!(h.failed(), 1);
+        assert_eq!(h.gpu.state().rebuilds, 1);
+        h.quiet(500);
+        h.request(2, false, false);
+        assert!(h.encoded().keyframe, "the rebuilt encoder starts with an IDR");
+    }
+
+    #[test]
+    fn a_self_ended_engine_returns_late_pictures_and_refuses_requests() {
+        let mut h = Harness::new(fast_config());
+        h.ended.send_replace(Some(DisplayEnd::StoppedByUser));
+        assert_eq!(h.next(), Some(VideoEvent::StoppedByUser));
+        assert_eq!(h.next(), None);
+        h.thread.take().unwrap().join().unwrap(); // the engine has ended by itself; nobody called stop
+        let back = h.frame(9);
+        assert!(*lock(&back), "a picture pushed after the end goes straight back");
+        h.request(1, false, false);
+        assert!(lock(&h.inbox.state).requests.is_empty(), "nobody would answer it");
+        assert_eq!(h.inbox.stats().delivered, 0);
     }
 
     #[test]

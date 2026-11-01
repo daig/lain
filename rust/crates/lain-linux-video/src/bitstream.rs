@@ -3,15 +3,27 @@
 //! `build_pps`, `build_slice`), which made `lain-media`'s fixtures (`fixture/hevcfix.c`). No Swift counterpart:
 //! VideoToolbox writes its own.
 //!
+//! **What reaches the wire** (measured on radeonsi, Mesa 26.0.8, in the GPU tests and `lain-media`'s fixtures):
+//! only the VPS goes out as written here. Mesa parses the packed SPS, PPS and slice header for their values and
+//! writes its own: the SPS with `pic_width/height_in_luma_samples` at VCN's alignment ([`CODED_ALIGN`]) and
+//! `max_transform_hierarchy_depth_inter/intra` 4/4 (3/3 here), the PPS with `dependent_slice_segments_enabled_flag`
+//! 1, and slice headers with its rate control's `slice_qp_delta`. It keeps the level, the conformance window, the
+//! VUI colour, range and timing (asserted on its output by `gpu_tests::the_stream_is_the_display_size`). So the
+//! bit-exact and round-trip tests below cover the values Mesa reads, not the bytes the client receives.
+//!
 //! Intended differences from the spike's writer, all parameters of [`SequenceHeaders`]:
-//! - the level is computed from the picture size, frame rate and bitrate ([`level_idc`]): 5.2 for 2752×2064 at
-//!   120 Hz and 60 Mbps, where the spike always wrote 5.1, which is too low for that sample rate;
+//! - the level is computed from the coded picture size, frame rate and bitrate ([`level_idc`]): 5.2 for
+//!   2752×2064 at 120 Hz and 60 Mbps, where the spike always wrote 5.1, which is too low for that sample rate;
 //! - the VUI's transfer characteristics are 13 (sRGB), matching `StreamInfo`'s `ColorTags::SRGB_FULL_RANGE`;
 //!   the spike wrote 1. The client reads colour from `VideoConfig`, not the VUI (spike A, Colour);
-//! - a conformance window crops a size that isn't a multiple of 8 (the minimum coding block); the spike only
-//!   ever encoded multiples of 8.
+//! - the coded size is the visible size rounded up to VCN's HEVC alignment, 64 wide and 16 high
+//!   ([`CODED_ALIGN`]), with a conformance window cropping it to the visible size. The spike rounded to 8 (the
+//!   minimum coding block) and only ever encoded multiples of 64×16: Mesa rewrites the SPS at its aligned size
+//!   but keeps the packed SPS's window, so a window computed against an 8-aligned size decodes too large (seen
+//!   2026-11-01: 1366×770 decoded at 1406×778, 1920×1080 at 1920×1088).
 //!
-//! With the spike's values ([`SequenceHeaders::spike`]) the output is bit-exact with the C writer's (tested).
+//! With the spike's values ([`SequenceHeaders::spike`], 8-aligned) the output is bit-exact with the C writer's
+//! (tested).
 
 /// Writes bits MSB first, with Exp-Golomb codes (H.265 §9.2).
 #[derive(Debug, Default, Clone)]
@@ -126,19 +138,35 @@ pub struct SequenceHeaders {
     pub primaries: u8,
     pub transfer: u8,
     pub matrix: u8,
+    /// What the coded size is rounded up to, (width, height): [`CODED_ALIGN`] for lain's stream, [`MIN_CB`] for
+    /// the spike's.
+    pub coded_align: (u32, u32),
 }
 
-/// The minimum coding block size: the coded picture size is a multiple of it.
+/// The minimum coding block size (the SPS's `log2_min_luma_coding_block_size`): the coded picture size is a
+/// multiple of it.
 pub const MIN_CB: u32 = 8;
+
+/// The coded-size alignment of VCN's HEVC encoder, (width, height): radeonsi codes a picture of the context's
+/// size rounded up to 64 × 16 and writes that size into its SPS (Mesa's `radeon_vcn_enc`, measured 2026-11-01:
+/// 1366×770 is coded at 1408×784, 1920×1080 at 1920×1088). The packed SPS says the same size, so the conformance
+/// window it carries (which Mesa copies) crops exactly to the visible size.
+pub const CODED_ALIGN: (u32, u32) = (64, 16);
 
 /// `v` rounded up to a multiple of [`MIN_CB`].
 pub fn align_cb(v: u32) -> u32 {
     v.div_ceil(MIN_CB) * MIN_CB
 }
 
+/// `(width, height)` rounded up to `align`.
+pub fn align_size((width, height): (u32, u32), align: (u32, u32)) -> (u32, u32) {
+    (width.div_ceil(align.0) * align.0, height.div_ceil(align.1) * align.1)
+}
+
 /// The lowest Main-tier level (H.265 Table A.8: `MaxLumaPs`, `MaxLumaSr`, `MaxBR` with `CpbVclFactor` 1000, and
-/// the picture-dimension bound `sqrt(MaxLumaPs × 8)`) that holds `width × height` at `fps` and `bitrate`, as
-/// `general_level_idc`. 186 (level 6.2) if none does.
+/// the picture-dimension bound `sqrt(MaxLumaPs × 8)`) that holds a coded `width × height` at `fps` and
+/// `bitrate`, as `general_level_idc`. 186 (level 6.2) if none does. The size is rounded up to [`MIN_CB`] here;
+/// callers pass the coded size.
 pub fn level_idc(width: u32, height: u32, fps: u32, bitrate: u32) -> u8 {
     // (level_idc, MaxLumaPs, MaxLumaSr, MaxBR in kbit/s).
     const LEVELS: &[(u8, u64, u64, u64)] = &[
@@ -174,26 +202,40 @@ impl SequenceHeaders {
     /// (the colour `ColorTags::SRGB_FULL_RANGE` describes).
     pub fn new(width: u32, height: u32, fps: u32, bitrate: u32) -> Self {
         let color = lain_platform::ColorTags::SRGB_FULL_RANGE;
+        let (cw, ch) = align_size((width, height), CODED_ALIGN);
         Self {
             width,
             height,
             fps,
-            level_idc: level_idc(width, height, fps, bitrate),
+            level_idc: level_idc(cw, ch, fps, bitrate),
             full_range: color.full_range,
             primaries: color.primaries,
             transfer: color.transfer,
             matrix: color.matrix,
+            coded_align: CODED_ALIGN,
         }
     }
 
-    /// The spike's values (`e2e.c`): level 5.1 and transfer 1, for the bit-exact comparison.
+    /// The spike's values (`e2e.c`): level 5.1, transfer 1 and the coded size rounded to 8, for the bit-exact
+    /// comparison.
     pub fn spike(width: u32, height: u32, fps: u32) -> Self {
-        Self { width, height, fps, level_idc: 153, full_range: true, primaries: 1, transfer: 1, matrix: 1 }
+        Self {
+            width,
+            height,
+            fps,
+            level_idc: 153,
+            full_range: true,
+            primaries: 1,
+            transfer: 1,
+            matrix: 1,
+            coded_align: (MIN_CB, MIN_CB),
+        }
     }
 
-    /// The coded size: the visible size rounded up to [`MIN_CB`].
+    /// The coded size: the visible size rounded up to [`Self::coded_align`] (VCN's 64 × 16 for lain's stream).
+    /// The encode context, its surfaces and the SPS are at this size.
     pub fn coded_size(&self) -> (u32, u32) {
-        (align_cb(self.width), align_cb(self.height))
+        align_size((self.width, self.height), self.coded_align)
     }
 
     /// `profile_tier_level(1, 0)`: Main profile, Main tier, compatible with Main and Main 10, progressive frames.
@@ -475,7 +517,15 @@ pub(crate) mod tests {
         let h = SequenceHeaders::new(2752, 2064, 120, 60_000_000);
         assert_eq!((h.level_idc, h.full_range, h.primaries, h.transfer, h.matrix), (156, true, 1, 13, 1));
         assert_eq!(h.coded_size(), (2752, 2064));
-        assert_eq!(SequenceHeaders::new(1366, 1026, 60, 1).coded_size(), (1368, 1032));
+        // VCN's 64 × 16: every iPad size but 2752×2064 needs a window (2732×2048 → 2752×2048, 2420×1668 →
+        // 2432×1680), and so do D1's fallback and 1080p.
+        assert_eq!(SequenceHeaders::new(1366, 1026, 60, 1).coded_size(), (1408, 1040));
+        assert_eq!(SequenceHeaders::new(2732, 2048, 120, 1).coded_size(), (2752, 2048));
+        assert_eq!(SequenceHeaders::new(2420, 1668, 120, 1).coded_size(), (2432, 1680));
+        assert_eq!(SequenceHeaders::new(2064, 1548, 120, 1).coded_size(), (2112, 1552));
+        assert_eq!(SequenceHeaders::new(1920, 1080, 60, 1).coded_size(), (1920, 1088));
+        // The spike's writer rounds to 8, as e2e.c did.
+        assert_eq!(SequenceHeaders::spike(1366, 1026, 60).coded_size(), (1368, 1032));
     }
 
     // ---- a reader for the round trip: the inverse of the writer, removing emulation prevention
@@ -567,9 +617,19 @@ pub(crate) mod tests {
         pub(crate) coded: (u32, u32),
         pub(crate) crop: Option<(u32, u32, u32, u32)>,
         pub(crate) bit_depth: (u32, u32),
+        /// `max_transform_hierarchy_depth_inter/intra`: 3/3 here, 4/4 in Mesa's SPS.
+        pub(crate) depths: (u32, u32),
         pub(crate) full_range: bool,
         pub(crate) colour: (u32, u32, u32),
         pub(crate) timing: (u32, u32),
+    }
+
+    impl ParsedSps {
+        /// The visible size: the coded size less the conformance window (in chroma samples, 4:2:0).
+        pub(crate) fn visible(&self) -> (u32, u32) {
+            let (l, r, t, b) = self.crop.unwrap_or_default();
+            (self.coded.0 - 2 * (l + r), self.coded.1 - 2 * (t + b))
+        }
     }
 
     pub(crate) fn parse_sps(nal: &[u8]) -> ParsedSps {
@@ -585,7 +645,8 @@ pub(crate) mod tests {
         assert_eq!(r.ue(), 4);
         assert!(r.flag());
         assert_eq!((r.ue(), r.ue(), r.ue()), (1, 0, 0));
-        assert_eq!((r.ue(), r.ue(), r.ue(), r.ue(), r.ue(), r.ue()), (0, 3, 0, 3, 3, 3));
+        assert_eq!((r.ue(), r.ue(), r.ue(), r.ue()), (0, 3, 0, 3));
+        let depths = (r.ue(), r.ue());
         assert_eq!((r.flag(), r.flag(), r.flag(), r.flag()), (false, true, false, false));
         assert_eq!(r.ue(), 0);
         assert_eq!((r.flag(), r.flag(), r.flag()), (false, false, false));
@@ -600,7 +661,7 @@ pub(crate) mod tests {
         let timing = (r.u(32), r.u(32));
         assert_eq!((r.flag(), r.flag(), r.flag(), r.flag()), (false, false, false, false));
         assert!(r.trailing());
-        ParsedSps { profile, level, chroma_format_idc, coded, crop, bit_depth, full_range, colour, timing }
+        ParsedSps { profile, level, chroma_format_idc, coded, crop, bit_depth, depths, full_range, colour, timing }
     }
 
     #[test]
@@ -615,13 +676,19 @@ pub(crate) mod tests {
                 coded: (2752, 2064),
                 crop: None,
                 bit_depth: (8, 8),
+                depths: (3, 3),
                 full_range: true,
                 colour: (1, 13, 1),
                 timing: (1, 120),
             }
         );
         let odd = parse_sps(&SequenceHeaders::new(1366, 1026, 60, 20_000_000).sps());
-        assert_eq!((odd.coded, odd.crop), ((1368, 1032), Some((0, 1, 0, 3))));
+        assert_eq!((odd.coded, odd.crop, odd.visible()), ((1408, 1040), Some((0, 21, 0, 7)), (1366, 1026)));
+        for (w, h) in [(1366, 770), (1920, 1080), (2732, 2048), (2420, 1668), (2388, 1668), (2064, 1548)] {
+            let sps = parse_sps(&SequenceHeaders::new(w, h, 120, 60_000_000).sps());
+            assert_eq!(sps.visible(), (w, h));
+            assert!(sps.coded.0.is_multiple_of(64) && sps.coded.1.is_multiple_of(16), "{w}×{h}: {:?}", sps.coded);
+        }
     }
 
     #[test]

@@ -523,3 +523,128 @@ async fn engine_end_to_end_synthetic() {
     assert_eq!(failed, 0);
     assert!(stats.encoded as f64 / 5.0 > 100.0, "about 120 encodes a second");
 }
+
+/// The SPS the driver wrote into an IDR's access unit, parsed (Mesa writes its own: `crate::bitstream`'s doc).
+fn output_sps(au: &[u8]) -> crate::bitstream::tests::ParsedSps {
+    let sets = lain_media::hevc::parameter_sets(au).expect("the IDR's parameter sets");
+    let sps = sets.iter().find(|n| (n[0] >> 1) & 0x3F == 33).expect("an SPS");
+    crate::bitstream::tests::parse_sps(&[&[0, 0, 0, 1], sps.as_slice()].concat())
+}
+
+/// Mesa's SPS describes exactly the visible size at every size (it codes at VCN's 64 × 16 and keeps the packed
+/// SPS's conformance window), and keeps the level, the VUI colour, range and timing. The 2420×1668 stream is
+/// dumped for the decode check.
+#[test]
+#[ignore = "GPU: run through rust/scripts/gpu-run.sh"]
+fn the_stream_is_the_display_size() {
+    for (w, h) in [(1366, 770), (1920, 1080), (2732, 2048), (2420, 1668), (W, H)] {
+        let mut pipe = pipeline(w, h);
+        let pictures = fill_surfaces(&pipe, w, h, Content::Gradient);
+        let aus = encode_run(&mut pipe, 8, |i| PictureKind { idr: i == 0, refinement: false });
+        let sps = output_sps(&aus[0].au);
+        let ours = settings(w, h).encoder.headers();
+        println!(
+            "{w}×{h}: Mesa's SPS coded {:?}, window {:?}, visible {:?}, level {}, depths {:?}, colour {:?}, full \
+             range {}, timing {:?} (ours coded {:?})",
+            sps.coded,
+            sps.crop,
+            sps.visible(),
+            sps.level,
+            sps.depths,
+            sps.colour,
+            sps.full_range,
+            sps.timing,
+            ours.coded_size()
+        );
+        assert_eq!(sps.visible(), (w, h), "{w}×{h}");
+        assert_eq!(sps.coded, ours.coded_size(), "Mesa codes at the size the packed SPS says");
+        assert_eq!(sps.level, u32::from(ours.level_idc));
+        assert_eq!((sps.colour, sps.full_range, sps.timing), ((1, 13, 1), true, (1, 120)));
+        if (w, h) == (2420, 1668) {
+            let all: Vec<&[u8]> = aus.iter().map(|c| c.au.as_slice()).collect();
+            let (stream, nv12) = dump("size-2420x1668", &all, &pictures[aus[7].surface]);
+            println!("decode check: decode-check.py {} {} {w} {h} 7", stream.display(), nv12.display());
+        }
+    }
+}
+
+/// A refinement that is also an IDR (a keyframe asked for on an idle desktop, or the engine's IDR after a
+/// failure), then ordinary P-frames: the stream must decode on, whatever init QP Mesa's PPS took.
+#[test]
+#[ignore = "GPU: run through rust/scripts/gpu-run.sh"]
+fn refinement_idr_then_p_frames() {
+    let mut pipe = pipeline(W, H);
+    let pictures = fill_surfaces(&pipe, W, H, Content::Gradient);
+    let aus = encode_run(&mut pipe, 20, |i| PictureKind { idr: i == 0 || i == 10, refinement: i == 10 });
+    for (i, c) in aus.iter().enumerate().skip(8).take(5) {
+        println!("  picture {i}: {} bytes, average QP {}, NAL types {:?}", c.au.len(), c.qp, nal_types(&c.au));
+    }
+    let pps = |au: &[u8]| {
+        let sets = lain_media::hevc::parameter_sets(au).unwrap();
+        sets.iter().find(|n| (n[0] >> 1) & 0x3F == 34).unwrap().clone()
+    };
+    println!("PPS after the plain IDR {:02x?}, after the refinement IDR {:02x?}", pps(&aus[0].au), pps(&aus[10].au));
+    let all: Vec<&[u8]> = aus.iter().map(|c| c.au.as_slice()).collect();
+    let (stream, nv12) = dump("refinement-idr", &all, &pictures[aus[19].surface]);
+    println!("decode check: decode-check.py {} {} {W} {H} 19", stream.display(), nv12.display());
+    let (stream, nv12) = dump("refinement-idr-at-10", &all, &pictures[aus[10].surface]);
+    println!("decode check: decode-check.py {} {} {W} {H} 10", stream.display(), nv12.display());
+}
+
+/// A conversion that reports a GL error leaves no fence behind: the next one starts (the converter used to keep
+/// it, and refuse every later conversion as "already in flight").
+#[test]
+#[ignore = "GPU: run through rust/scripts/gpu-run.sh"]
+fn a_gl_error_does_not_wedge_the_converter() {
+    let (w, h) = (256, 144);
+    let mut pipe = pipeline(w, h);
+    let gbm = pipe.gbm().clone();
+    let bo = gbm.create_bo(w, h, DRM_FORMAT_XRGB8888, MUTTER_MODIFIER).expect("a GBM buffer");
+    let size = rustix::fs::seek(bo.fd().unwrap(), rustix::fs::SeekFrom::End(0)).unwrap();
+    let plane = || DmaBufPlane {
+        fd: bo.fd().unwrap(),
+        fourcc: DRM_FORMAT_XRGB8888,
+        modifier: bo.modifier(),
+        offset: bo.offset(),
+        stride: bo.stride(),
+        size,
+    };
+    pipe.converter().fill_dmabuf(&plane(), &synthetic_bgrx(w as usize, h as usize, 0, false)).unwrap();
+    let picture = Picture { width: w, height: h, pixels: Pixels::DmaBuf(plane()) };
+    pipe.start_conversion(&picture, 0).unwrap();
+    while !pipe.poll_conversion(1_000_000).unwrap() {}
+    // The import is cached now, so the pending error is first seen after the dispatch.
+    pipe.converter().inject_gl_error();
+    let err = pipe.start_conversion(&picture, 1).unwrap_err();
+    println!("with a GL error pending: {err}");
+    assert!(err.contains("dispatching"), "{err}");
+    pipe.start_conversion(&picture, 2).expect("the next conversion starts");
+    while !pipe.poll_conversion(1_000_000).unwrap() {}
+}
+
+/// A rebuild with a picture still in flight tears the session down without waiting it out (the engine's video
+/// thread can't stop for long), and the rebuilt session's IDR decodes.
+#[test]
+#[ignore = "GPU: run through rust/scripts/gpu-run.sh"]
+fn rebuild_with_a_picture_in_flight() {
+    let mut pipe = pipeline(W, H);
+    let pictures = fill_surfaces(&pipe, W, H, Content::Terminal);
+    let mut aus = encode_run(&mut pipe, 5, |i| PictureKind { idr: i == 0, refinement: false });
+    let mut worst = Duration::ZERO;
+    for round in 0..5 {
+        pipe.submit_encode(round % 4, PictureKind { idr: false, refinement: false }).expect("submit");
+        let t = Instant::now();
+        pipe.rebuild_encoder().expect("rebuild");
+        let took = t.elapsed();
+        worst = worst.max(took);
+        println!("  rebuild {round} with a picture in flight: {:.2} ms", took.as_secs_f64() * 1e3);
+    }
+    assert!(worst < Duration::from_millis(200), "a rebuild waits at most REBUILD_WAIT_NS for the picture: {worst:?}");
+    // A fresh session: an IDR and P-frames, decodable on their own.
+    let start = aus.len();
+    aus.extend(encode_run(&mut pipe, 6, |i| PictureKind { idr: i == 0, refinement: false }));
+    assert!(nal_types(&aus[start].au).contains(&19));
+    let tail: Vec<&[u8]> = aus[start..].iter().map(|c| c.au.as_slice()).collect();
+    let (stream, nv12) = dump("rebuild-in-flight", &tail, &pictures[aus[start + 5].surface]);
+    println!("decode check: decode-check.py {} {} {W} {H} 5", stream.display(), nv12.display());
+}
