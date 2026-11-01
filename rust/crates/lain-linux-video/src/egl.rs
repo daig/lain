@@ -136,14 +136,15 @@ impl EglContext {
         // for the call.
         let (no_context, no_buffer) =
             unsafe { (egl::Context::from_ptr(egl::NO_CONTEXT), egl::ClientBuffer::from_ptr(std::ptr::null_mut())) };
-        let image = self.egl.create_image(self.display, no_context, LINUX_DMA_BUF_EXT, no_buffer, &attribs).map_err(|e| {
-            format!(
-                "eglCreateImage({:?} {width}×{height}, modifier {:#x}, pitch {}): {e}",
-                plane.fourcc.to_le_bytes().map(char::from),
-                plane.modifier,
-                plane.stride
-            )
-        })?;
+        let image =
+            self.egl.create_image(self.display, no_context, LINUX_DMA_BUF_EXT, no_buffer, &attribs).map_err(|e| {
+                format!(
+                    "eglCreateImage({:?} {width}×{height}, modifier {:#x}, pitch {}): {e}",
+                    plane.fourcc.to_le_bytes().map(char::from),
+                    plane.modifier,
+                    plane.stride
+                )
+            })?;
         Ok(EglImage { image, ctx: self.clone() })
     }
 }

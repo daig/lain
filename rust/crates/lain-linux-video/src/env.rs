@@ -52,8 +52,10 @@ fn is_mesa_library(path: &str) -> bool {
 pub fn find_mesa_vendor_file(dirs: &[&Path]) -> Option<PathBuf> {
     for dir in dirs {
         let Ok(entries) = std::fs::read_dir(dir) else { continue };
-        let mut files: Vec<PathBuf> =
-            entries.filter_map(|e| e.ok().map(|e| e.path())).filter(|p| p.extension() == Some(OsStr::new("json"))).collect();
+        let mut files: Vec<PathBuf> = entries
+            .filter_map(|e| e.ok().map(|e| e.path()))
+            .filter(|p| p.extension() == Some(OsStr::new("json")))
+            .collect();
         files.sort();
         for file in files {
             if let Ok(text) = std::fs::read_to_string(&file)
@@ -72,7 +74,9 @@ pub fn find_mesa_vendor_file(dirs: &[&Path]) -> Option<PathBuf> {
 pub fn required_environment() -> Result<Vec<(String, String)>, PlatformError> {
     let dirs: Vec<&Path> = VENDOR_DIRS.iter().map(Path::new).collect();
     let file = find_mesa_vendor_file(&dirs).ok_or_else(|| {
-        PlatformError::Unavailable(format!("no glvnd EGL vendor file names {MESA_EGL_LIBRARY} (is Mesa's libEGL installed?)"))
+        PlatformError::Unavailable(format!(
+            "no glvnd EGL vendor file names {MESA_EGL_LIBRARY} (is Mesa's libEGL installed?)"
+        ))
     })?;
     Ok(vec![(EGL_VENDOR_VAR.to_string(), file.display().to_string())])
 }
@@ -159,11 +163,19 @@ mod tests {
         let path = |p: &PathBuf| p.display().to_string();
         assert_eq!(check_environment_with(env(&[(EGL_VENDOR_VAR, path(&mesa))])), Ok(()));
         // Mesa listed twice is still only Mesa.
-        assert_eq!(check_environment_with(env(&[(EGL_VENDOR_VAR, format!("{}:{}", path(&mesa), path(&mesa)))])), Ok(()));
-        assert_eq!(check_environment_with(env(&[(EGL_VENDOR_VAR, path(&mesa)), (GBM_BACKEND_VAR, "dri".into())])), Ok(()));
+        assert_eq!(
+            check_environment_with(env(&[(EGL_VENDOR_VAR, format!("{}:{}", path(&mesa), path(&mesa)))])),
+            Ok(())
+        );
+        assert_eq!(
+            check_environment_with(env(&[(EGL_VENDOR_VAR, path(&mesa)), (GBM_BACKEND_VAR, "dri".into())])),
+            Ok(())
+        );
 
         let refused = |e: Vec<(&str, String)>, want: &str| {
-            let Err(PlatformError::Unavailable(why)) = check_environment_with(env(&e)) else { panic!("accepted {e:?}") };
+            let Err(PlatformError::Unavailable(why)) = check_environment_with(env(&e)) else {
+                panic!("accepted {e:?}")
+            };
             assert!(why.contains(want), "{why}");
         };
         refused(vec![], "isn't set");

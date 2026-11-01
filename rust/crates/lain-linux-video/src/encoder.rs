@@ -134,7 +134,8 @@ pub fn check_support(va: &Display) -> Result<(), String> {
             &[sys::VAConfigAttribRTFormat, sys::VAConfigAttribRateControl, sys::VAConfigAttribEncPackedHeaders],
         )
         .map_err(|e| e.to_string())?;
-    let packed = sys::VA_ENC_PACKED_HEADER_SEQUENCE | sys::VA_ENC_PACKED_HEADER_PICTURE | sys::VA_ENC_PACKED_HEADER_SLICE;
+    let packed =
+        sys::VA_ENC_PACKED_HEADER_SEQUENCE | sys::VA_ENC_PACKED_HEADER_PICTURE | sys::VA_ENC_PACKED_HEADER_SLICE;
     let unsupported = sys::VA_ATTRIB_NOT_SUPPORTED;
     if values[0] == unsupported || values[0] & sys::VA_RT_FORMAT_YUV420 == 0 {
         return Err("the HEVC encoder takes no 4:2:0 input".into());
@@ -173,7 +174,8 @@ impl HevcEncoder {
 
     fn create(&mut self) -> Result<(), VaError> {
         let (w, h) = self.headers.coded_size();
-        let packed = sys::VA_ENC_PACKED_HEADER_SEQUENCE | sys::VA_ENC_PACKED_HEADER_PICTURE | sys::VA_ENC_PACKED_HEADER_SLICE;
+        let packed =
+            sys::VA_ENC_PACKED_HEADER_SEQUENCE | sys::VA_ENC_PACKED_HEADER_PICTURE | sys::VA_ENC_PACKED_HEADER_SLICE;
         self.config = self.va.create_config(
             sys::VAProfileHEVCMain,
             sys::VAEntrypointEncSlice,
@@ -264,7 +266,13 @@ impl HevcEncoder {
         }
     }
 
-    fn render(&self, input: VASurfaceID, idr: bool, refinement: bool, bufs: &mut Vec<VABufferID>) -> Result<(), VaError> {
+    fn render(
+        &self,
+        input: VASurfaceID,
+        idr: bool,
+        refinement: bool,
+        bufs: &mut Vec<VABufferID>,
+    ) -> Result<(), VaError> {
         let s = self.settings;
         let h = self.headers;
         let (cw, ch) = h.coded_size();
@@ -317,7 +325,8 @@ impl HevcEncoder {
         let fr = sys::VAEncMiscParameterFrameRate { framerate: s.fps, ..Default::default() };
         bufs.push(va.create_misc_buffer(ctx, sys::VAEncMiscParameterTypeFrameRate, &fr)?);
         let (fullness, size) = s.hrd();
-        let hrd = sys::VAEncMiscParameterHRD { initial_buffer_fullness: fullness, buffer_size: size, ..Default::default() };
+        let hrd =
+            sys::VAEncMiscParameterHRD { initial_buffer_fullness: fullness, buffer_size: size, ..Default::default() };
         bufs.push(va.create_misc_buffer(ctx, sys::VAEncMiscParameterTypeHRD, &hrd)?);
 
         let invalid = sys::VAPictureHEVC {

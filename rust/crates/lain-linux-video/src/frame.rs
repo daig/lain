@@ -77,7 +77,7 @@ pub fn reference_nv12(bgrx: &[u8], width: usize, height: usize) -> Vec<u8> {
     assert_eq!(bgrx.len(), width * height * 4);
     let mut out = vec![0u8; width * height * 3 / 2];
     let (y_plane, uv_plane) = out.split_at_mut(width * height);
-    for (p, y) in bgrx.chunks_exact(4).zip(y_plane.iter_mut()) {
+    for (p, y) in bgrx.as_chunks::<4>().0.iter().zip(y_plane.iter_mut()) {
         *y = q8(0.2126 * f64::from(p[2]) + 0.7152 * f64::from(p[1]) + 0.0722 * f64::from(p[0]));
     }
     for by in 0..height / 2 {
@@ -130,7 +130,7 @@ pub fn synthetic_bgrx(width: usize, height: usize, frame: u32, all_colours: bool
     const PALETTE: [[u8; 3]; 5] = [[230, 230, 230], [120, 220, 120], [250, 200, 80], [110, 170, 250], [240, 110, 140]];
     let mut out = vec![0u8; width * height * 4];
     if all_colours {
-        for (p, px) in out.chunks_exact_mut(4).enumerate() {
+        for (p, px) in out.as_chunks_mut::<4>().0.iter_mut().enumerate() {
             let mut c = u64::from(frame) * (width * height) as u64 + p as u64;
             if frame >= 3 || c >= 1 << 24 {
                 c = u64::from(hash3(p as u32, frame, 11) & 0xFF_FFFF);
