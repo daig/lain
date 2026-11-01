@@ -104,7 +104,8 @@ impl SessionVideo {
         }
     }
 
-    /// Stops video; nothing is sent once this returns. Idempotent.
+    /// Stops video: no new output starts once this returns (one message already past the check may still go
+    /// out). Idempotent.
     pub(crate) fn stop(&self) {
         self.sending.store(false, Ordering::SeqCst);
         self.stop.cancel();
@@ -137,10 +138,13 @@ impl SessionVideo {
         video: ChannelSender,
         on_end: impl FnOnce(VideoEnd) + Send + 'static,
     ) -> Result<Streaming, StartError> {
+        // Marked started before the stop check: a waiter that saw `done` had the stop come first, and the check
+        // then sees it, so no display is made after `wait_until_stopped` returned.
+        self.done.send_replace(false);
         if self.stop.is_cancelled() {
+            self.done.send_replace(true);
             return Err(StartError::Stopped);
         }
-        self.done.send_replace(false);
         let result = self.start_inner(platform, hello, options, realtime, video, on_end).await;
         if result.is_err() {
             self.done.send_replace(true);
@@ -161,6 +165,7 @@ impl SessionVideo {
         let spec = display_spec(hello);
         // `create` is cancel-safe: a stop meanwhile drops it, and the backend removes what it made.
         let created = tokio::select! {
+            biased;
             () = self.stop.cancelled() => return Err(StartError::Stopped),
             created = display.create(spec) => created,
         };

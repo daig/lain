@@ -89,7 +89,8 @@ struct State<P: Platform> {
     capture_failed_peer: Option<String>,
     /// The USB connect loop (its generation) waiting out the capture backoff.
     backing_off: Option<u64>,
-    /// usbmuxd failed (other than not running, which is normal on Linux); cleared by the next attach.
+    /// usbmuxd failed (other than not running or going away, which is normal on Linux); cleared by the next
+    /// attach.
     usbmux_down: bool,
     /// lain on the iPad shares no protocol version with this one.
     peer_gap: Option<VersionGap>,
@@ -240,6 +241,21 @@ impl<P: Platform> State<P> {
     }
 }
 
+/// usbmuxd isn't running, or closed the connection under us (exiting after the last unplug, or starting):
+/// on Linux that means no iOS device is attached (SL4), not that usbmuxd is broken. Intended difference from
+/// Swift, which reports every usbmuxd failure as an error (the Mac's daemon never exits). Protocol errors, a
+/// non-zero `Result`, a timeout and other socket errors still are.
+fn daemon_went_away(e: &UsbMuxError) -> bool {
+    match e {
+        UsbMuxError::Unavailable { .. } | UsbMuxError::Closed => true,
+        UsbMuxError::Io { source, .. } => matches!(
+            source.kind(),
+            std::io::ErrorKind::ConnectionReset | std::io::ErrorKind::BrokenPipe | std::io::ErrorKind::UnexpectedEof
+        ),
+        _ => false,
+    }
+}
+
 struct Inner<P: Platform> {
     platform: Arc<P>,
     config: HostConfig,
@@ -274,8 +290,9 @@ struct Inner<P: Platform> {
 ///   daemon, owns TLS, its PSKs and their refresh. This engine owns the one [`LinkAcceptor`] (as Swift's
 ///   `HostSession` does) and signals [`secrets_changed`](Self::secrets_changed) where Swift calls
 ///   `wifiListener.refresh()`.
-/// - usbmuxd not running ([`UsbMuxError::Unavailable`]) and its event stream ending are "no iPad", not an
-///   error: on Linux the daemon exits after the last iOS device is unplugged (SL4). It is polled for every
+/// - usbmuxd not running ([`UsbMuxError::Unavailable`]), closing the connection under us and its event
+///   stream ending are "no iPad", not an error: on Linux the daemon exits after the last iOS device is
+///   unplugged (SL4). It is polled for every
 ///   [`Tuning::usbmux_retry_interval`](crate::Tuning::usbmux_retry_interval).
 /// - The virtual display is made for the client's `Hello` ([`display_spec`](crate::display_spec)).
 /// - The status is a watch ([`status_watch`](Self::status_watch)) plus every change in order
@@ -327,8 +344,9 @@ impl<P: Platform> HostSession<P> {
         self.inner.statuses.subscribe()
     }
 
-    /// A counter bumped after every USB link-up (which may have paired, here or in another process): the
-    /// daemon re-reads the Wi-Fi listener's PSKs then (Swift: `wifiListener.refresh()`).
+    /// A counter bumped after every USB link-up (which may have paired, here or in another process) and every
+    /// pairing, even one whose loop was cancelled as it completed: the daemon re-reads the Wi-Fi listener's
+    /// PSKs then (Swift: `wifiListener.refresh()`).
     pub fn secrets_changed(&self) -> watch::Receiver<u64> {
         self.inner.secrets_changed.subscribe()
     }
@@ -376,9 +394,12 @@ impl<P: Platform> HostSession<P> {
         lock(&self.inner.state).device.as_ref().map(|d| d.generation)
     }
 
-    /// Diagnostics: an accepted network link is waiting for its `Hello` or running a session.
+    /// Diagnostics: an accepted network link is waiting for its `Hello` or running a session. The live
+    /// network session counts even once a newer link has taken the network slot and ended (refused busy,
+    /// timed out before its `Hello`, closed).
     pub fn has_wifi_link(&self) -> bool {
-        lock(&self.inner.state).wifi.is_some()
+        let s = lock(&self.inner.state);
+        s.wifi.is_some() || matches!(s.live.as_ref().map(|l| l.owner), Some(Owner::Wifi(_)))
     }
 
     /// Ends everything: releases all input (invariant 4) and the power assertion, and stops admitting network
@@ -475,6 +496,10 @@ impl<P: Platform> Inner<P> {
                         Ok(Some(UsbMuxEvent::Detached { device_id })) => self.detached(device_id),
                         // The daemon closed the stream: it restarted, or (Linux) exited after the last unplug.
                         Ok(None) => break,
+                        Err(e) if daemon_went_away(&e) => {
+                            debug!("usbmuxd went away: {e}");
+                            break;
+                        }
                         Err(e) => {
                             error!("usbmuxd events failed: {e}");
                             self.update_status(|s| s.usbmux_down = true);
@@ -482,8 +507,12 @@ impl<P: Platform> Inner<P> {
                         }
                     }
                 },
-                // Linux: no daemon running means no iOS device attached (SL4). Not an error.
-                Err(UsbMuxError::Unavailable { .. }) => self.update_status(|s| s.usbmux_down = false),
+                // Linux: no daemon running means no iOS device attached (SL4), and one exiting or starting may
+                // close the connection before it answers. Neither is an error.
+                Err(e) if daemon_went_away(&e) => {
+                    debug!("usbmuxd not there: {e}");
+                    self.update_status(|s| s.usbmux_down = false);
+                }
                 Err(e) => {
                     if self.run.is_cancelled() {
                         return;
@@ -646,8 +675,9 @@ impl<P: Platform> Inner<P> {
             }
             let dialer = UsbMuxDialer { client: self.usbmux.clone(), device_id: device.device_id };
             let host_id = self.config.identity.as_ref().map(|i| i.id.as_str()).unwrap_or("");
+            // Biased towards the link: a pairing that completes as the loop is cancelled still signals below.
             let opened = tokio::select! {
-                () = cancel.cancelled() => return,
+                biased;
                 opened = HostLink::open(
                     dialer,
                     self.platform.secrets(),
@@ -656,9 +686,15 @@ impl<P: Platform> Inner<P> {
                     host_id,
                     &self.config.versions,
                 ) => opened,
+                () = cancel.cancelled() => return,
             };
             match opened {
                 Ok((link, hello, paired)) => {
+                    // A pairing stored a new secret on both sides: the Wi-Fi listener hears about it even if
+                    // the loop was cancelled meanwhile (Swift checks the cancel first and so misses it).
+                    if paired {
+                        self.secrets_changed.send_modify(|n| *n = n.wrapping_add(1));
+                    }
                     if cancel.is_cancelled() {
                         link.close();
                         return;
@@ -667,9 +703,12 @@ impl<P: Platform> Inner<P> {
                     closed_in_a_row = 0;
                     info!(model = %hello.device_model, "link up ({})", if paired { "paired" } else { "authenticated" });
                     self.update_status(|s| s.peer_gap = None);
-                    // A pairing (this one, or one by another process) may have changed the stored secrets: the
-                    // Wi-Fi listener re-reads them after every USB link-up (§7.7 D29 decision 9).
-                    self.secrets_changed.send_modify(|n| *n = n.wrapping_add(1));
+                    // A pairing by another process may have changed the stored secrets: the Wi-Fi listener
+                    // re-reads them after every USB link-up (§7.7 D29 decision 9); this loop's own pairing
+                    // signalled above.
+                    if !paired {
+                        self.secrets_changed.send_modify(|n| *n = n.wrapping_add(1));
+                    }
                     let served = self.run_usb(link, hello, generation, &device.serial_number, &cancel).await;
                     // USB answered: the preference window restarts. A session restarted it as it ended; a link
                     // turned away before serving restarts it here.
@@ -985,6 +1024,8 @@ impl<P: Platform> Inner<P> {
             let ack = self.hello_ack(&connection, &hello, streaming);
             let _ = connection.realtime.send(&Message::HelloAck(ack));
             connection.send_layout_if_changed(); // the first one always goes
+            // Only now may HostSetup go out (a change before this was held back; this one carries it).
+            connection.open_setup();
             self.send_setup(&connection);
             let missing = connection.older_peer_misses();
             if !missing.is_empty() {

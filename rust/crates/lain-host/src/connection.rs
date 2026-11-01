@@ -43,6 +43,14 @@ struct Realtime {
     actions: Vec<InputAction>,
 }
 
+/// The `HostSetup` side of a connection: whether it may go out yet, and the last one sent.
+#[derive(Default)]
+struct SetupSent {
+    /// `HelloAck` and the first `DisplayLayout` have gone out.
+    open: bool,
+    last: Option<HostSetup>,
+}
+
 /// One live link (Swift: `HostConnection`).
 ///
 /// Invariants 3 and 4: input is handled synchronously in the realtime reader's task (no awaits, one
@@ -68,7 +76,7 @@ pub(crate) struct HostConnection<P: Platform> {
     /// The sampler and the layout watcher, cancelled by `finish`.
     tasks: Mutex<Vec<AbortHandle>>,
     last_layout: Mutex<Option<DisplayLayout>>,
-    last_setup: Mutex<Option<HostSetup>>,
+    last_setup: Mutex<SetupSent>,
     /// Told when the layout may have changed: the streamed display came or went.
     layout_changed: Arc<Notify>,
     /// Set once realtime has closed or the connection was finished.
@@ -104,7 +112,7 @@ impl<P: Platform> HostConnection<P> {
             cursor_sample_hz: config.tuning.cursor_sample_hz,
             tasks: Mutex::new(Vec::new()),
             last_layout: Mutex::new(None),
-            last_setup: Mutex::new(None),
+            last_setup: Mutex::new(SetupSent::default()),
             layout_changed,
             ended: watch::Sender::new(false),
         })
@@ -409,15 +417,25 @@ impl<P: Platform> HostConnection<P> {
         }
     }
 
+    /// Lets `HostSetup` go out from now on: called once `HelloAck` and the first layout have.
+    pub(crate) fn open_setup(&self) {
+        lock(&self.last_setup).open = true;
+    }
+
     /// Sends `setup` if it differs from the last one sent (the first always goes). The caller checked that
     /// the link's version has `HostSetup`.
+    ///
+    /// Intended difference from Swift (`sendSetupIfChanged`, which checks only that the link hasn't ended):
+    /// nothing goes before [`open_setup`](Self::open_setup), so a setup change (or the owner stopping capture)
+    /// while the session waits for an earlier display can't put `HostSetup` ahead of `HelloAck`; the
+    /// session's own `HostSetup` after the first layout carries the current setup.
     pub(crate) fn send_setup_if_changed(&self, setup: HostSetup) {
-        let mut last = lock(&self.last_setup);
-        if last.as_ref() == Some(&setup) || *self.ended.borrow() {
+        let mut sent = lock(&self.last_setup);
+        if !sent.open || sent.last.as_ref() == Some(&setup) || *self.ended.borrow() {
             return;
         }
         let _ = self.realtime.send(&Message::HostSetup(setup.clone()));
-        *last = Some(setup);
+        sent.last = Some(setup);
     }
 }
 
