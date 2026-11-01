@@ -104,7 +104,7 @@ queries or timestamps around the dispatch; VPP exposes none, so its column is CP
 | gl 16×8 | loaded, paced 120 Hz | 2.972 / 3.319 / 4.927 | 3.900 / 4.376 / 6.141 | 120.1/s | 0.87 | 60% |
 | vk vk-tiled 16×8 | loaded, back to back | 0.689 / 3.283 / 4.600 | 0.732 / 3.330 / 4.658 | 897.0/s | 0.45 | 90% |
 | vk vk-tiled 16×8 | loaded, paced 120 Hz | 3.745 / 4.121 / 5.219 | 4.634 / 5.170 / 6.198 | 120.1/s | 0.53 | 57% |
-| vpp (bt709 in) | loaded, back to back (3 s, 1020 conversions) | n/a | 2.083 / 4.537 / 5.824 | 339.8/s | 0.76 | 96% |
+| vpp (bt709 in) | loaded, back to back (4 s, 1315 conversions; `load-vpp-full-4s.txt`) | n/a | 2.226 / 4.618 / 6.629 | 328.7/s | 0.63 | 97% |
 | vpp (bt709 in) | loaded, paced 120 Hz | n/a | 2.855 / 3.752 / 5.398 | 120.0/s | 0.98 | 70% |
 
 Conditions:
@@ -118,7 +118,8 @@ Conditions:
 The first loaded runs of gl and vk (`results/stalled-stream-load-*.txt`) are not in the table. In them the
 `pwprobe` pipe was never drained: it fills in about 4 s, after which pwprobe blocks and the stream stalls, so
 Mutter stopped its per-frame copy into the stream for most of the run. The harness was fixed and the runs
-redone. The stalled runs are kept because they are instructive: with the stream stalled, paced gl and vk took
+redone. The 3 s loaded vpp back-to-back run in `load-vpp.txt` (1020 conversions, p50 2.083 ms, 339.8/s)
+fell short of 1200 conversions and was redone for 4 s. The stalled runs are kept because they are instructive: with the stream stalled, paced gl and vk took
 GPU p50 0.95 and 0.86 ms, against 2.97 and 3.75 ms with the stream flowing.
 
 ## End to end (measured)
