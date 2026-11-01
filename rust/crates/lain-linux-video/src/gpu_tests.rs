@@ -467,10 +467,11 @@ async fn engine_end_to_end_synthetic() {
         i
     });
     // The core: one request outstanding, for the newest capture; a keyframe every 120 frames.
-    let (mut outstanding, mut next_id, mut newest_seen) = (false, 1u32, 0u64);
+    let (mut outstanding, mut next_id, mut newest_seen, mut requested) = (false, 1u32, 0u64, 0u64);
     let (mut latency, mut encode, mut sizes, mut keyframes, mut failed) = (Vec::new(), Vec::new(), Vec::new(), 0, 0);
     let t0 = Instant::now();
     let mut captured = 0u64;
+    let mut encoded_captures = std::collections::HashSet::new();
     while t0.elapsed() < Duration::from_millis(5200) {
         let Ok(Some(event)) = tokio::time::timeout(Duration::from_millis(200), events.recv()).await else { break };
         match event {
@@ -480,6 +481,7 @@ async fn engine_end_to_end_synthetic() {
             }
             VideoEvent::Encoded(f) => {
                 outstanding = false;
+                encoded_captures.insert(f.capture);
                 if t0.elapsed() > Duration::from_millis(500) {
                     latency.push(f.encode_done_ns - f.capture_ns);
                     encode.push(f.encode_done_ns - f.submit_ns);
@@ -493,7 +495,8 @@ async fn engine_end_to_end_synthetic() {
             }
             other => panic!("{other:?}"),
         }
-        if !outstanding && newest_seen > 0 {
+        if !outstanding && newest_seen > requested {
+            requested = newest_seen;
             session.encode(EncodeRequest { frame_id: next_id, keyframe: next_id % 120 == 0, refinement: false });
             next_id += 1;
             outstanding = true;
@@ -508,6 +511,11 @@ async fn engine_end_to_end_synthetic() {
         stats.replaced,
         stats.encoded,
         stats.encoded as f64 / 5.0
+    );
+    println!(
+        "  captures never encoded (newest wins): {} ({:.1}/s)",
+        captured - encoded_captures.len() as u64,
+        (captured - encoded_captures.len() as u64) as f64 / 5.0
     );
     summary("capture → AU", &mut latency);
     summary("submit → AU", &mut encode);
