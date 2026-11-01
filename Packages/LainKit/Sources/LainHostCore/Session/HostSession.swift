@@ -929,6 +929,8 @@ final class HostConnection: Sendable {
     private let rt: Mutex<Realtime>
     /// The warp sampler (realtime queue) and the layout check (`layoutQueue`).
     private let timers: Mutex<[any DispatchSourceTimer]> = Mutex([])
+    /// `HostStats` while the iPad asks for them (`StatsRequest`, v5), on `layoutQueue`.
+    private let statsTimer = Mutex<(any DispatchSourceTimer)?>(nil)
     private let layoutQueue = DispatchQueue(label: "lain.host.layout", qos: .utility)
     /// The last `DisplayLayout` sent; taken only by the handshake and the layout check.
     private let lastLayout = Mutex<DisplayLayout?>(nil)
@@ -1004,6 +1006,10 @@ final class HostConnection: Sendable {
             for timer in t { timer.cancel() }
             t = []
         }
+        statsTimer.withLock { t in
+            t?.cancel()
+            t = nil
+        }
         link.close()
         let endPower = rt.withLock { s -> Bool in
             guard !s.finished else { return false }
@@ -1035,6 +1041,9 @@ final class HostConnection: Sendable {
             // D22: loss recovery (and the client coming back to the foreground) is a keyframe.
             video?.requestKeyframe(reason: r.reason)
             return
+        case .statsRequest(let r):
+            setStatsInterval(ms: r.intervalMs)
+            return
         default:
             break
         }
@@ -1042,7 +1051,7 @@ final class HostConnection: Sendable {
         let (declare, tap) = rt.withLock { s -> (Bool, UInt64?) in
             guard !s.finished else { return (false, nil) }
             let before = s.router.pendingSystemKeyTap
-            switch s.router.handle(message) {
+            switch s.router.handle(message, nowNs: now) {
             case .notInput, .ignored:
                 return (false, nil)
             case .injected(let pointer):
@@ -1101,6 +1110,30 @@ final class HostConnection: Sendable {
             return s.warp.sample(global, atNs: now)
         }
         if let warp { link.realtime.send(.cursorWarp(CursorWarp(x: warp.x, y: warp.y))) }
+    }
+
+    // MARK: Stats (v5)
+
+    /// Sends `HostStats` every `ms` (clamped to `HostStats.intervalRange`), the first at once; 0 stops them.
+    func setStatsInterval(ms: UInt32) {
+        let started = statsTimer.withLock { t -> (any DispatchSourceTimer)? in
+            t?.cancel()
+            t = nil
+            guard ms > 0, link.supports(.hostStats), !ended.withLock({ $0.done }) else { return nil }
+            let interval = Double(min(max(ms, HostStats.intervalRange.lowerBound), HostStats.intervalRange.upperBound)) / 1000
+            let timer = DispatchSource.makeTimerSource(queue: layoutQueue)
+            timer.schedule(deadline: .now(), repeating: interval, leeway: .milliseconds(10))
+            timer.setEventHandler { [weak self] in self?.sendStats() }
+            t = timer
+            return timer
+        }
+        started?.resume()
+    }
+
+    private func sendStats() {
+        guard !ended.withLock({ $0.done }) else { return }
+        let stats = video.flatMap { $0.isRunning ? $0.stats : nil }.map(HostStats.init) ?? HostStats()
+        link.realtime.send(.hostStats(stats))
     }
 
     // MARK: Setup

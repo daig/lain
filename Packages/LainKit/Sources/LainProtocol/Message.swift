@@ -8,6 +8,7 @@ public enum Message: Sendable, Equatable {
     case pair(Pair)
     case displayLayout(DisplayLayout)
     case hostSetup(HostSetup)
+    case statsRequest(StatsRequest), hostStats(HostStats)
     case videoConfig(VideoConfig), videoFrame(VideoFrame), frameAck(FrameAck)
     case cursorShape(CursorShape), cursorSelect(CursorSelect), cursorWarp(CursorWarp)
     case keyEvent(KeyEvent), pointerMove(PointerMove), pointerButton(PointerButton), scroll(Scroll), gesture(Gesture)
@@ -26,6 +27,8 @@ public enum Message: Sendable, Equatable {
         case .pair(let m): m
         case .displayLayout(let m): m
         case .hostSetup(let m): m
+        case .statsRequest(let m): m
+        case .hostStats(let m): m
         case .videoConfig(let m): m
         case .videoFrame(let m): m
         case .frameAck(let m): m
@@ -69,6 +72,8 @@ public enum Message: Sendable, Equatable {
         case .pair: m = .pair(try Pair(from: &r))
         case .displayLayout: m = .displayLayout(try DisplayLayout(from: &r))
         case .hostSetup: m = .hostSetup(try HostSetup(from: &r))
+        case .statsRequest: m = .statsRequest(try StatsRequest(from: &r))
+        case .hostStats: m = .hostStats(try HostStats(from: &r))
         case .videoConfig: m = .videoConfig(try VideoConfig(from: &r))
         case .videoFrame: m = .videoFrame(try VideoFrame(from: &r))
         case .frameAck: m = .frameAck(try FrameAck(from: &r))

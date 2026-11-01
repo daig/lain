@@ -44,11 +44,12 @@ public struct HostInputRouter: Sendable {
 
     public mutating func handle(_ envelope: Envelope) -> Outcome { handle(envelope.message) }
 
-    public mutating func handle(_ message: Message) -> Outcome {
+    /// `nowNs` (monotonic): when it arrived, for the system key's tap limit.
+    public mutating func handle(_ message: Message, nowNs: UInt64? = nil) -> Outcome {
         switch message {
         case .keyEvent(let e):
             modifiers = e.modifiers
-            for k in systemKey.key(e) { sink.key(k) }
+            for k in systemKey.key(e, nowNs: nowNs) { sink.key(k) }
             return .injected(pointer: nil)
         case .pointerMove(let m):
             sink.move(m)

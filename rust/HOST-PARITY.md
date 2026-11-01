@@ -9,7 +9,14 @@ for while using it. This note lists them, and the client changes they depend on,
 - Both hosts and the client must run **protocol v3–v4** (negotiated versions, `HostSetup`): `main` since
   `protocol-versioning` (`58aec59`) was merged. A v2 (pre-negotiation) client or host is refused by design ("update
   it"). Rebuild the Mac host *and* the iPad client from `main` together.
-- Nothing below changes the wire format.
+- Sections 1–4 change nothing on the wire. **Protocol v5** (2026-11-01, `host-parity`) adds `StatsRequest`
+  (0x10, iPad → host: send `HostStats` every N ms, 0 stops) and `HostStats` (0x11, host → iPad: encode p50/p95,
+  ack RTT, frames captured/encoded/sent, dropped before encode, in flight and peak, keyframes, refinements,
+  bits per second), behind `ProtocolFeature.hostStats`, for the iPad's system-key overlay (§6). The Swift
+  window is now **v4–v5** (the floor rose to 4; v3's golden bytes are gone). **Linux:** `lain-proto`'s
+  conformance tests read `GoldenBytes.swift` and fail until the crate has the two messages and the [4, 5]
+  window (or keeps [3, 4] and only skips v5 in the golden check). The host doesn't have to send stats: an
+  iPad on v5 just shows "waiting for the Mac…" for a v4 host, and nothing breaks.
 
 ## 1. Display keep-alive (Linux: done; Mac host: done, not yet on hardware)
 
@@ -77,10 +84,12 @@ shortcuts in apps, terminal habits in terminals) and Option is Alt.
 
 What is where today:
 
-- **Client (`LainInput/RemapTable.swift`, `KeyboardProcessor`):** the remap turns *either* Option + Tab, Space, H, Q
-  or ` into Command + that key. **To do:** match Right Option (usage `0xE6`) only, so Left Option keeps typing
-  accents and Opt-Space, Opt-H… reach the host as themselves. Nothing else is needed from the client: the host sees
-  Right Option itself (as `0xE6`) for the arrows and the tap.
+- **Client (`LainInput/RemapTable.swift`, `KeyboardProcessor`): done** (`host-parity`): the remap matches Right
+  Option only (`RemapEntry.sourceKeys`), so Left Option keeps typing accents and Opt-Space, Opt-H… reach the host
+  as themselves. The host sees Right Option itself (as `0xE6`) for the arrows and the tap.
+- **Tap length:** a release is a tap only within 300 ms of the press (Mac: `SystemKey.tapMaxNs`). The iPad shows
+  its overlay after 350 ms held alone (§6), so a hold that showed it never opens Mission Control / the overview
+  on release. **Linux should do the same.**
 - **Linux host (`lain-input`, `InputConfig::system_key`, on):** does the right-hand column, telling Right from Left
   Option by their own key events. The Cmd+Space and Cmd+H rows also work from the client's remap today.
   Code: `rust/crates/lain-input/src/router.rs`, `tests/router.rs` ("the system key").
@@ -96,6 +105,13 @@ What is where today:
 
 Not yet checked on the iPad: whether Ctrl + arrows, fn + arrows, Globe combos and the function-row keys arrive (a
 key log in the client's HUD would settle it in minutes).
+
+## 6. The system-key overlay (client: done, v5)
+
+Right Option held alone for 350 ms shows an overlay on the iPad: the link, the iPad's video numbers, the host's
+(`HostStats`, asked for at 4 Hz only while it shows), and the settings in effect. Every key still goes to the host
+unchanged; another key or a click hides it. Code: `ClientInputPipeline` (`overlayHoldNs`, `LocalShortcut.overlay`),
+`ClientOverlay`, `StreamViewController`.
 
 ## 5. Client: choosing a host (planned, client only)
 

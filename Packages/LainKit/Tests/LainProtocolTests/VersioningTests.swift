@@ -104,13 +104,15 @@ private let frameVersions: [UInt8] = [LainProtocol.handshakeVersion] + LainProto
         #expect(MessageType.error.isHandshake && MessageType.error.isSession)
     }
 
-    @Test func hostSetupIsAVersionFourMessage() throws {
-        let setup = Samples.all.first { $0.type == .hostSetup }!
-        #expect(MessageCodec.lower(setup, to: 3, sequence: 0, timestampNs: 0) == .unrepresentable("hostSetup doesn't exist in v3"))
-        #expect(MessageCodec.lower(setup, to: 4, sequence: 0, timestampNs: 0).bytes != nil)
-        var v3 = MessageCodec.encode(setup, sequence: 0, timestampNs: 0, version: 4)
-        v3[2] = 3   // a v3 peer never sends it, and a v3 frame can't carry it
-        #expect(throws: ProtocolError.unknownType(MessageType.hostSetup.rawValue)) { try MessageCodec.decode(v3) }
+    @Test func statsAreVersionFiveMessages() throws {
+        for type in [MessageType.statsRequest, .hostStats] {
+            let sample = Samples.all.first { $0.type == type }!
+            #expect(MessageCodec.lower(sample, to: 4, sequence: 0, timestampNs: 0) == .unrepresentable("\(type) doesn't exist in v4"))
+            #expect(MessageCodec.lower(sample, to: 5, sequence: 0, timestampNs: 0).bytes != nil)
+            var v4 = MessageCodec.encode(sample, sequence: 0, timestampNs: 0, version: 5)
+            v4[2] = 4   // a v4 peer never sends it, and a v4 frame can't carry it
+            #expect(throws: ProtocolError.unknownType(type.rawValue)) { try MessageCodec.decode(v4) }
+        }
     }
 
     @Test func sessionMessagesCantBeHandshakeFramedAndViceVersa() {
@@ -119,7 +121,7 @@ private let frameVersions: [UInt8] = [LainProtocol.handshakeVersion] + LainProto
         #expect(throws: ProtocolError.unknownType(MessageType.ping.rawValue)) { try MessageCodec.decode(ping) }
         let hello = Samples.all.first { $0.type == .channelHello }!
         var framed = MessageCodec.encode(hello, sequence: 0, timestampNs: 0)
-        framed[2] = 3
+        framed[2] = 4
         #expect(throws: ProtocolError.unknownType(MessageType.channelHello.rawValue)) { try MessageCodec.decode(framed) }
     }
 }
@@ -220,9 +222,10 @@ struct Widget: WireMessage, Equatable {
 
 @Suite struct Features {
     @Test func featuresFollowTheirVersions() {
-        #expect(!ProtocolFeature.hostSetup.isSupported(at: 3))
         #expect(ProtocolFeature.hostSetup.isSupported(at: 4))
-        #expect(ProtocolFeature.missing(at: 3) == [.hostSetup])
+        #expect(!ProtocolFeature.hostStats.isSupported(at: 4))
+        #expect(ProtocolFeature.hostStats.isSupported(at: 5))
+        #expect(ProtocolFeature.missing(at: 4) == [.hostStats])
         #expect(ProtocolFeature.missing(at: LainProtocol.newestVersion).isEmpty)
     }
 

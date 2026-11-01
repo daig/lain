@@ -9,7 +9,8 @@ import LainProtocol
 ///   Option does, so Tab again cycles the app switcher).
 /// - Right Option + Up / Down: Ctrl-Up / Ctrl-Down (Mission Control, App Exposé); + Left / Right: Ctrl-Left /
 ///   Ctrl-Right (the previous / next Space). Each is sent as a chord of its own; the arrow's release sends nothing.
-/// - Right Option tapped alone: Mission Control.
+/// - Right Option tapped alone (released within `tapMaxNs`): Mission Control. A longer hold is not a tap:
+///   the iPad shows its overlay while Right Option is held alone (v5).
 /// - Right Option + a click: a Command-click.
 ///
 /// Right Option itself never reaches the Mac while it is the system key (so a tap presses nothing). With
@@ -26,6 +27,9 @@ public struct SystemKey: Sendable {
 
     /// How long a release waits for the client's own Command press before it counts as a tap.
     public static let tapDelayNs: UInt64 = 60_000_000
+    /// The longest press that is still a tap. The iPad shows its overlay after a longer hold (350 ms), so a
+    /// hold that showed it is never a tap.
+    public static let tapMaxNs: UInt64 = 300_000_000
 
     static let leftControl: UInt16 = 0xE0
     static let leftOption: UInt16 = 0xE2
@@ -49,14 +53,17 @@ public struct SystemKey: Sendable {
     /// Right Option was released as a possible tap; the number tells a stale timer from a newer tap.
     public private(set) var pendingTap: UInt64?
     private var tapCount: UInt64 = 0
+    /// When Right Option went down (the caller's clock; nil: no time given).
+    private var downAtNs: UInt64?
 
     public init(isEnabled: Bool = true) { self.isEnabled = isEnabled }
 
     /// The system key is held: Right Option without Left Option.
     public var isHeld: Bool { isEnabled && held && !leftOptionDown }
 
-    /// One key event from the client: what to post instead.
-    public mutating func key(_ e: KeyEvent) -> [KeyEvent] {
+    /// One key event from the client: what to post instead. `nowNs` (monotonic) limits taps to `tapMaxNs`;
+    /// nil: any length.
+    public mutating func key(_ e: KeyEvent, nowNs: UInt64? = nil) -> [KeyEvent] {
         var out = resolvePendingTap(before: e)
         guard isEnabled else { return out + [e] }
         let keyboard = e.usagePage == PhysicalKey.keyboardPage
@@ -65,11 +72,13 @@ public struct SystemKey: Sendable {
                 guard !leftOptionDown else { return out + [e] }   // both Options: plain Option
                 held = true
                 tapArmed = true
+                downAtNs = nowNs
                 return out
             }
             guard held else { return out + [e] }   // went down as a plain Option
             held = false
             out += releaseCommand(modifiers: e.modifiers)
+            if let down = downAtNs, let now = nowNs, now &- down > Self.tapMaxNs { tapArmed = false }
             if tapArmed {
                 tapArmed = false
                 tapCount &+= 1
@@ -138,6 +147,7 @@ public struct SystemKey: Sendable {
         commandDown = false
         chorded = nil
         pendingTap = nil
+        downAtNs = nil
     }
 
     // MARK: Private

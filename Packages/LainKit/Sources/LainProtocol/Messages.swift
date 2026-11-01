@@ -381,6 +381,73 @@ public struct HostSetup: WireMessage {
     }
 }
 
+/// v5: the iPad asks for `HostStats` every `intervalMs` (0: stop), while it shows them. Only to peers with
+/// `ProtocolFeature.hostStats`.
+public struct StatsRequest: WireMessage {
+    public static let type = MessageType.statsRequest
+    /// Clamped by the host to `HostStats.intervalRange`; 0 stops them.
+    public var intervalMs: UInt32
+    public init(intervalMs: UInt32) { self.intervalMs = intervalMs }
+    public func encode(into w: inout ByteWriter) { w.u32(intervalMs) }
+    public init(from r: inout ByteReader) throws(ProtocolError) { intervalMs = try r.u32() }
+}
+
+/// v5: what only the host knows about the video path (encode times, frames held back before the encoder,
+/// frames in flight), sent every `StatsRequest.intervalMs` while the iPad asks. Counters run from the
+/// start of the session's video; a time not measured yet is `HostStats.none`.
+public struct HostStats: WireMessage {
+    public static let type = MessageType.hostStats
+    /// A time not measured yet.
+    public static let none = UInt32.max
+    /// The intervals the host honours.
+    public static let intervalRange: ClosedRange<UInt32> = 100...5000
+
+    /// Submit → encoded, in microseconds.
+    public var encodeP50Us: UInt32
+    public var encodeP95Us: UInt32
+    /// Frame sent → `FrameAck` received, on the host's clock, in microseconds.
+    public var ackRttP50Us: UInt32
+    public var ackRttP95Us: UInt32
+    public var captured: UInt32
+    public var encoded: UInt32
+    public var sent: UInt32
+    /// Replaced in the host's latest-wins slot before the encoder took them (backpressure).
+    public var droppedBeforeEncode: UInt32
+    public var encodeFailures: UInt32
+    public var keyframes: UInt32
+    public var refinements: UInt32
+    /// Sent and not yet acknowledged, now and at most.
+    public var inFlight: UInt8
+    public var peakInFlight: UInt8
+    /// Over the last second.
+    public var bitsPerSecond: UInt32
+
+    public init(encodeP50Us: UInt32 = none, encodeP95Us: UInt32 = none, ackRttP50Us: UInt32 = none, ackRttP95Us: UInt32 = none,
+                captured: UInt32 = 0, encoded: UInt32 = 0, sent: UInt32 = 0, droppedBeforeEncode: UInt32 = 0,
+                encodeFailures: UInt32 = 0, keyframes: UInt32 = 0, refinements: UInt32 = 0, inFlight: UInt8 = 0,
+                peakInFlight: UInt8 = 0, bitsPerSecond: UInt32 = 0) {
+        self.encodeP50Us = encodeP50Us; self.encodeP95Us = encodeP95Us
+        self.ackRttP50Us = ackRttP50Us; self.ackRttP95Us = ackRttP95Us
+        self.captured = captured; self.encoded = encoded; self.sent = sent
+        self.droppedBeforeEncode = droppedBeforeEncode; self.encodeFailures = encodeFailures
+        self.keyframes = keyframes; self.refinements = refinements
+        self.inFlight = inFlight; self.peakInFlight = peakInFlight; self.bitsPerSecond = bitsPerSecond
+    }
+
+    public func encode(into w: inout ByteWriter) {
+        w.u32(encodeP50Us); w.u32(encodeP95Us); w.u32(ackRttP50Us); w.u32(ackRttP95Us)
+        w.u32(captured); w.u32(encoded); w.u32(sent); w.u32(droppedBeforeEncode); w.u32(encodeFailures)
+        w.u32(keyframes); w.u32(refinements); w.u8(inFlight); w.u8(peakInFlight); w.u32(bitsPerSecond)
+    }
+
+    public init(from r: inout ByteReader) throws(ProtocolError) {
+        encodeP50Us = try r.u32(); encodeP95Us = try r.u32(); ackRttP50Us = try r.u32(); ackRttP95Us = try r.u32()
+        captured = try r.u32(); encoded = try r.u32(); sent = try r.u32(); droppedBeforeEncode = try r.u32()
+        encodeFailures = try r.u32(); keyframes = try r.u32(); refinements = try r.u32()
+        inFlight = try r.u8(); peakInFlight = try r.u8(); bitsPerSecond = try r.u32()
+    }
+}
+
 // MARK: - Video
 
 /// Color tags use ITU-T H.273 code points: P3-D65 primaries = 12, sRGB/IEC 61966-2-1 transfer = 13,

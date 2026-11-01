@@ -9,8 +9,8 @@ import Testing
 
 @Test func versionsAndBonjourService() {
     // PROTOCOL-VERSIONING §2.3: the newest and the previous version until a public release.
-    #expect(LainProtocol.supportedVersions == [3, 4])
-    #expect(LainProtocol.newestVersion == 4)
+    #expect(LainProtocol.supportedVersions == [4, 5])
+    #expect(LainProtocol.newestVersion == 5)
     #expect(LainProtocol.handshakeVersion == 0xFF)
     #expect(LainProtocol.legacyVersions.upperBound < LainProtocol.supportedVersions[0])
     #expect(LainProtocol.bonjourServiceType == "_lain._tcp")   // the client's NSBonjourServices must list it

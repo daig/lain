@@ -113,6 +113,16 @@ public final class ClientSession: Sendable {
         core.stop()
     }
 
+    /// The Mac's latest `HostStats` (v5) on the current link, while they're asked for
+    /// (`setHostStatsInterval`); nil before the first, and with a Mac on an older version.
+    public var hostStats: HostStats? { core.hostStats.withLock { $0.stats } }
+
+    /// Asks the Mac for `HostStats` every `ms` (0: stop), now and on every link that comes up meanwhile;
+    /// a Mac without `ProtocolFeature.hostStats` isn't asked.
+    public func setHostStatsInterval(ms: UInt32) {
+        core.queue.async { [core] in core.setStatsInterval(ms) }
+    }
+
     /// The scene is in front again: a discovery that may have died while the app was suspended is
     /// recreated (§7.7 D29).
     public func sceneDidBecomeActive() {
@@ -145,6 +155,12 @@ struct LinkOutcome: Sendable, Equatable {
     var error: ErrorMessage.Code?
     /// Over Wi-Fi, `HelloAck` named another host than the one dialed.
     var wrongHost = false
+}
+
+/// The latest `HostStats`, tagged with its link's generation: written by the link's handler, read by the UI.
+final class HostStatsSlot: Sendable {
+    private let state = Mutex<(generation: UInt64, stats: HostStats?)>((0, nil))
+    func withLock<R>(_ body: (inout (generation: UInt64, stats: HostStats?)) -> R) -> R { state.withLock { body(&$0) } }
 }
 
 /// What one link's channel handlers share.
@@ -203,6 +219,10 @@ final class SessionCore: @unchecked Sendable {
     /// cleared by the next link.
     var usbGap: VersionGap?
     private var published: ClientSession.Status?
+    /// How often the overlay wants `HostStats` (0: not shown).
+    var statsInterval: UInt32 = 0
+    /// The latest `HostStats`, tagged with its link's generation (read from any thread).
+    let hostStats = HostStatsSlot()
 
     init(secrets: some SecretStore, hello: Hello, input: ClientInput, video: ClientVideoPipeline?,
          wifi: ClientWiFiConfig?, versions: VersionList, onStatus: @escaping @Sendable (ClientSession.Status) -> Void) {
@@ -277,6 +297,7 @@ final class SessionCore: @unchecked Sendable {
         epoch &+= 1
         usbGap = nil
         let g = generation
+        hostStats.withLock { $0 = (g, nil) }
         var info = ClientSession.ConnectionInfo()
         info.transport = link.transport
         info.protocolVersion = link.version
@@ -300,7 +321,7 @@ final class SessionCore: @unchecked Sendable {
 
     /// Handlers first, then `Hello` (the client always speaks first, §7.1).
     private func wire(_ link: Link, generation g: UInt64, via: Via, state: LinkState) {
-        let input = input, video = video, log = log, queue = queue
+        let input = input, video = video, log = log, queue = queue, hostStats = hostStats
         let realtime = link.realtime, videoChannel = link.video
         // Hops to the session queue; enqueued under the info lock (`LinkState.update`), so in order.
         let publishInfo: @Sendable (ClientSession.ConnectionInfo) -> Void = { [weak self] info in
@@ -357,6 +378,8 @@ final class SessionCore: @unchecked Sendable {
                 input.warp(x: w.x, y: w.y, generation: g)
             case .cursorShape, .cursorSelect:
                 video?.cursor.apply(env.message, generation: g)
+            case .hostStats(let stats):
+                hostStats.withLock { if $0.generation == g { $0.stats = stats } }
             case .hostSetup(let setup):
                 log.notice("HostSetup: missing \(setup.missing.map { "\($0)" }.joined(separator: ", "), privacy: .public); video problem: \(setup.videoProblem.isEmpty ? "none" : setup.videoProblem, privacy: .public)")
                 state.update({ $0.setup = setup }, publish: publishInfo)
@@ -426,6 +449,20 @@ final class SessionCore: @unchecked Sendable {
             wifiSessionStarted(host)   // no secret is written: Wi-Fi never pairs (D13)
         }
         publish(info, generation: g)
+        if statsInterval > 0 { sendStatsRequest() }   // the overlay is showing: the new Mac too
+    }
+
+    func setStatsInterval(_ ms: UInt32) {
+        guard statsInterval != ms else { return }
+        statsInterval = ms
+        if ms == 0 { hostStats.withLock { $0.stats = nil } }
+        sendStatsRequest()
+    }
+
+    /// Tells the current link's Mac the interval, once its `HelloAck` is in and if its version has stats.
+    private func sendStatsRequest() {
+        guard let c = current, c.link.supports(.hostStats), c.state.outcome.withLock({ $0.gotHelloAck }) else { return }
+        c.link.realtime.send(.statsRequest(StatsRequest(intervalMs: statsInterval)))
     }
 
     /// Over USB only (§7.7 D29): the link's secret becomes usable over Wi-Fi under `mac:<hostId>`, if the

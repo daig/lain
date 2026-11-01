@@ -57,9 +57,9 @@ private let grave = PhysicalKey.key(0x35)
 @Suite struct Remaps {
     @Test func optTabHoldsCmdWhileOptIsDown() {
         var k = KeyboardProcessor()
-        #expect(fmt(k.process(.leftOption, isDown: true)) == ["+E2 ⌥"])
+        #expect(fmt(k.process(.rightOption, isDown: true)) == ["+E6 ⌥"])
         // Opt-Tab: the Mac sees Opt released, Cmd pressed, then Tab with Cmd.
-        #expect(fmt(k.process(.tab, isDown: true)) == ["-E2", "+E3 ⌘", "+2B ⌘"])
+        #expect(fmt(k.process(.tab, isDown: true)) == ["-E6", "+E3 ⌘", "+2B ⌘"])
         #expect(fmt(k.process(.tab, isDown: false)) == ["-2B ⌘"])
         // Tab again while Opt is still held cycles the switcher.
         #expect(fmt(k.process(.tab, isDown: true)) == ["+2B ⌘"])
@@ -70,7 +70,7 @@ private let grave = PhysicalKey.key(0x35)
         #expect(fmt(k.process(.tab, isDown: false)) == ["-2B ⇧⌘"])
         #expect(fmt(k.process(.leftShift, isDown: false)) == ["-E1 ⌘"])
         // Releasing Opt releases Cmd: the switcher commits.
-        #expect(fmt(k.process(.leftOption, isDown: false)) == ["-E3"])
+        #expect(fmt(k.process(.rightOption, isDown: false)) == ["-E3"])
         #expect(k.macHeldKeys.isEmpty)
         #expect(!k.isHoldingRemap)
     }
@@ -78,8 +78,8 @@ private let grave = PhysicalKey.key(0x35)
     @Test func optShiftTabStartsReversed() {
         var k = KeyboardProcessor()
         _ = k.process(.leftShift, isDown: true)
-        _ = k.process(.leftOption, isDown: true)
-        #expect(fmt(k.process(.tab, isDown: true)) == ["-E2 ⇧", "+E3 ⇧⌘", "+2B ⇧⌘"])
+        _ = k.process(.rightOption, isDown: true)
+        #expect(fmt(k.process(.tab, isDown: true)) == ["-E6 ⇧", "+E3 ⇧⌘", "+2B ⇧⌘"])
     }
 
     @Test(arguments: [(PhysicalKey.space, "2C"), (keyH, "B"), (keyQ, "14"), (grave, "35")])
@@ -99,9 +99,19 @@ private let grave = PhysicalKey.key(0x35)
         var enabled = RemapTable.default
         for i in enabled.entries.indices { enabled.entries[i].isEnabled = true }
         var k2 = KeyboardProcessor(table: enabled)
-        _ = k2.process(.leftOption, isDown: true)
+        _ = k2.process(.rightOption, isDown: true)
         _ = k2.process(.leftShift, isDown: true)
-        #expect(fmt(k2.process(key3, isDown: true)) == ["-E2 ⇧", "+E3 ⇧⌘", "+20 ⇧⌘"])
+        #expect(fmt(k2.process(key3, isDown: true)) == ["-E6 ⇧", "+E3 ⇧⌘", "+20 ⇧⌘"])
+    }
+
+    /// Left Option is a plain Option key (rust/HOST-PARITY.md §4): only Right Option, the system key, remaps.
+    @Test func leftOptionIsNeverRemapped() {
+        var k = KeyboardProcessor()
+        #expect(fmt(k.process(.leftOption, isDown: true)) == ["+E2 ⌥"])
+        #expect(fmt(k.process(.tab, isDown: true)) == ["+2B ⌥"])
+        _ = k.process(.tab, isDown: false)
+        #expect(fmt(k.process(.space, isDown: true)) == ["+2C ⌥"])
+        #expect(!k.isHoldingRemap)
     }
 
     @Test func extraModifiersPreventAMatch() {
@@ -113,12 +123,12 @@ private let grave = PhysicalKey.key(0x35)
 
     @Test func secondOptionKeyDuringHoldStaysHidden() {
         var k = KeyboardProcessor()
-        _ = k.process(.leftOption, isDown: true)
+        _ = k.process(.rightOption, isDown: true)
         _ = k.process(.tab, isDown: true)
-        #expect(k.process(.rightOption, isDown: true).isEmpty)
-        #expect(k.process(.leftOption, isDown: false).isEmpty)          // right Opt still holds Cmd
+        #expect(k.process(.leftOption, isDown: true).isEmpty)
+        #expect(k.process(.rightOption, isDown: false).isEmpty)          // right Opt still holds Cmd
         _ = k.process(.tab, isDown: false)
-        #expect(fmt(k.process(.rightOption, isDown: false)) == ["-E3"])
+        #expect(fmt(k.process(.leftOption, isDown: false)) == ["-E3"])
     }
 }
 
@@ -136,19 +146,19 @@ private let grave = PhysicalKey.key(0x35)
     @Test func remapsMatchTheTypedCharacterNotThePosition() {
         let table = RemapTable(entries: [RemapEntry(name: "Location bar", character: "l", modifiers: .option)])
         var k = KeyboardProcessor(table: table, layout: Self.colemak())
-        _ = k.process(.leftOption, isDown: true)
+        _ = k.process(.rightOption, isDown: true)
         // The key labelled L types "i" in Colemak: no match, forwarded as Opt-(physical L).
         #expect(fmt(k.process(keyL, isDown: true)) == ["+F ⌥"])
         _ = k.process(keyL, isDown: false)
         // The key labelled U types "l": match. The output keeps the physical U key; the Mac, also set to
         // Colemak, turns it into Cmd-L.
-        #expect(fmt(k.process(keyU, isDown: true)) == ["-E2", "+E3 ⌘", "+18 ⌘"])
+        #expect(fmt(k.process(keyU, isDown: true)) == ["-E6", "+E3 ⌘", "+18 ⌘"])
     }
 
     @Test func defaultsStillWorkUnderColemak() {
         var k = KeyboardProcessor(layout: Self.colemak())
-        _ = k.process(.leftOption, isDown: true)
-        #expect(fmt(k.process(keyQ, isDown: true)) == ["-E2", "+E3 ⌘", "+14 ⌘"])
+        _ = k.process(.rightOption, isDown: true)
+        #expect(fmt(k.process(keyQ, isDown: true)) == ["-E6", "+E3 ⌘", "+14 ⌘"])
     }
 
     @Test func unlearnedKeysFallBackToQWERTY() {
@@ -174,7 +184,7 @@ private let grave = PhysicalKey.key(0x35)
 
     @Test func releaseDuringHoldReleasesSynthesizedCmd() {
         var k = KeyboardProcessor()
-        _ = k.process(.leftOption, isDown: true)
+        _ = k.process(.rightOption, isDown: true)
         _ = k.process(.tab, isDown: true)          // Cmd-Tab held, app switcher open
         #expect(fmt(k.releaseAll()) == ["-2B ⌘", "-E3"])
         #expect(!k.isHoldingRemap)
