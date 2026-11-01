@@ -1,0 +1,38 @@
+=== vk-allcolors: vk/target/release/vkconvert --out vk-tiled --wx 16 --wy 8 --ring 8 --check 8 --frames 120 --fps 0 --content allcolors (22:52:54)
+loadavg before: 0.13 0.39 0.40 1/1662 61887; gpu_busy before: 0%
+device: AMD Ryzen 9 9950X 16-Core Processor (RADV RAPHAEL_MENDOCINO) (RADV Mesa 26.0.8-1ubuntu0.3), render 226:130, queue family 1 (compute-only), timestamp period 10 ns
+shader: storage images, workgroup 16x8, one 2x2 block per invocation, 931 SPIR-V words
+input: GBM XRGB8888 modifier 0x200000000401b03, stride 11264, offset 0, 24510464 bytes
+filled 8 input frames in 84.098624ms
+libva info: VA-API version 1.23.0
+libva info: User environment variable requested driver 'radeonsi'
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/radeonsi_drv_video.so
+libva info: Found init function __vaDriverInit_1_23
+libva info: va_openDriver() returns 0
+libva: Mesa Gallium driver 26.0.8-1ubuntu0.3 for AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic)
+Vulkan tiled NV12: Y SubresourceLayout { offset: 0, size: 6488064, row_pitch: 2816, array_pitch: 0, depth_pitch: 0 }, CbCr SubresourceLayout { offset: 6488064, size: 3538944, row_pitch: 3072, array_pitch: 0, depth_pitch: 0 }, 10027008 bytes; vaCreateSurfaces status 0
+dispatch: 86x129 workgroups for 2752x2064
+check frame 0 (read back via libva, 0.975 ms GPU): Y: max 1 mean 0.00006 (off by 1: 318, >1: 0) CbCr: max 1 mean 0.00001 (off by 1: 19, >1: 0)
+check frame 0 (read back via vulkan, 0.975 ms GPU): Y: max 1 mean 0.00006 (off by 1: 318, >1: 0) CbCr: max 1 mean 0.00001 (off by 1: 19, >1: 0)
+check frame 1 (read back via libva, 1.335 ms GPU): Y: max 1 mean 0.00005 (off by 1: 256, >1: 0) CbCr: max 1 mean 0.00001 (off by 1: 27, >1: 0)
+check frame 1 (read back via vulkan, 1.335 ms GPU): Y: max 1 mean 0.00005 (off by 1: 256, >1: 0) CbCr: max 1 mean 0.00001 (off by 1: 27, >1: 0)
+check frame 2 (read back via libva, 0.919 ms GPU): Y: max 1 mean 0.00004 (off by 1: 213, >1: 0) CbCr: max 1 mean 0.00001 (off by 1: 33, >1: 0)
+check frame 2 (read back via vulkan, 0.919 ms GPU): Y: max 1 mean 0.00004 (off by 1: 213, >1: 0) CbCr: max 1 mean 0.00001 (off by 1: 33, >1: 0)
+check frame 3 (read back via libva, 1.187 ms GPU): Y: max 1 mean 0.00005 (off by 1: 285, >1: 0) CbCr: max 1 mean 0.00004 (off by 1: 104, >1: 0)
+check frame 3 (read back via vulkan, 1.187 ms GPU): Y: max 1 mean 0.00005 (off by 1: 285, >1: 0) CbCr: max 1 mean 0.00004 (off by 1: 104, >1: 0)
+check frame 4 (read back via libva, 0.981 ms GPU): Y: max 1 mean 0.00004 (off by 1: 250, >1: 0) CbCr: max 1 mean 0.00004 (off by 1: 103, >1: 0)
+check frame 4 (read back via vulkan, 0.981 ms GPU): Y: max 1 mean 0.00004 (off by 1: 250, >1: 0) CbCr: max 1 mean 0.00004 (off by 1: 103, >1: 0)
+check frame 5 (read back via libva, 0.983 ms GPU): Y: max 1 mean 0.00005 (off by 1: 280, >1: 0) CbCr: max 1 mean 0.00004 (off by 1: 119, >1: 0)
+check frame 5 (read back via vulkan, 0.983 ms GPU): Y: max 1 mean 0.00005 (off by 1: 280, >1: 0) CbCr: max 1 mean 0.00004 (off by 1: 119, >1: 0)
+check frame 6 (read back via libva, 0.996 ms GPU): Y: max 1 mean 0.00004 (off by 1: 233, >1: 0) CbCr: max 1 mean 0.00003 (off by 1: 96, >1: 0)
+check frame 6 (read back via vulkan, 0.996 ms GPU): Y: max 1 mean 0.00004 (off by 1: 233, >1: 0) CbCr: max 1 mean 0.00003 (off by 1: 96, >1: 0)
+check frame 7 (read back via libva, 1.337 ms GPU): Y: max 1 mean 0.00005 (off by 1: 283, >1: 0) CbCr: max 1 mean 0.00004 (off by 1: 126, >1: 0)
+check frame 7 (read back via vulkan, 1.337 ms GPU): Y: max 1 mean 0.00005 (off by 1: 283, >1: 0) CbCr: max 1 mean 0.00004 (off by 1: 126, >1: 0)
+correctness: worst max abs error Y 1 CbCr 1 -> PASS
+timed: 120 frames in 0.09 s (1368.5 fps), pacing none
+GPU (timestamps): n 120 mean 0.673 p50 0.668 p95 0.709 p99 0.750 max 0.889 ms
+submit -> fence: n 120 mean 0.717 p50 0.708 p95 0.762 p99 0.836 max 0.949 ms
+effective bandwidth at GPU p50: 46.8 GB/s (31.2 MB per frame)
+nvidia-guard: no non-AMD GPU node was opened
+gpu_busy during: mean 29%, max 100%, 7 samples
+loadavg after: 0.28 0.41 0.41 1/1664 61956; gpu_busy after: 0%; exit 0
