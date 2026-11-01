@@ -13,7 +13,7 @@ use std::path::Path;
 use lain_platform::{PlatformError, Result, SecretStore};
 use tracing::{info, warn};
 
-pub use file::{FileSecretStore, SECRETS_FILE};
+pub use file::{FileSecretStore, SECRETS_FILE, SECRETS_LOCK_FILE};
 pub use service::{ACCOUNT_ATTRIBUTE, SERVICE_ATTRIBUTE, SecretServiceStore};
 
 /// The `service` attribute of lain's pairing items: Swift's `KeychainSecretStore` default service.
@@ -47,7 +47,7 @@ impl SystemSecretStore {
                     Err(why) => warn!(%why, "pairing secrets: Secret Service, locked for now"),
                     Ok(()) => info!("pairing secrets: Secret Service"),
                 }
-                if file.has_secrets() {
+                if file.has_secrets().await {
                     warn!(path = %file.path().display(),
                         "pairing secrets in the fallback file are not used while the Secret Service is available");
                 }
