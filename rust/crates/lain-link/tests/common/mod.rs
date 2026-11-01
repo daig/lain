@@ -86,7 +86,7 @@ pub struct ScriptedSecrets {
     pub inner: MemorySecretStore,
     pub fails_secret_read: bool,
     pub fails_listing: bool,
-    writes: Arc<AtomicUsize>,
+    pub writes: Arc<AtomicUsize>,
 }
 
 impl ScriptedSecrets {
