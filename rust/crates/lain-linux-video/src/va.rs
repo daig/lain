@@ -344,7 +344,15 @@ impl Display {
         let mut id = sys::VA_INVALID_ID;
         // SAFETY: a NULL data pointer asks libva for an uninitialised buffer of `size` bytes.
         check("vaCreateBuffer", unsafe {
-            sys::vaCreateBuffer(self.dpy, ctx, sys::VAEncMiscParameterBufferType, size as u32, 1, ptr::null_mut(), &mut id)
+            sys::vaCreateBuffer(
+                self.dpy,
+                ctx,
+                sys::VAEncMiscParameterBufferType,
+                size as u32,
+                1,
+                ptr::null_mut(),
+                &mut id,
+            )
         })?;
         let mut p: *mut std::ffi::c_void = ptr::null_mut();
         // SAFETY: id is the buffer just made; p a valid out-pointer.
@@ -381,17 +389,15 @@ impl Display {
     }
 
     /// `vaBeginPicture`, `vaRenderPicture(buffers)`, `vaEndPicture`: submits one picture of `ctx` into `target`.
-    pub fn submit_picture(
-        &self,
-        ctx: VAContextID,
-        target: VASurfaceID,
-        buffers: &[VABufferID],
-    ) -> Result<(), VaError> {
+    pub fn submit_picture(&self, ctx: VAContextID, target: VASurfaceID, buffers: &[VABufferID]) -> Result<(), VaError> {
         let mut buffers = buffers.to_vec();
         // SAFETY: ids only; buffers is a valid array of buffers.len() ids.
         unsafe {
             check("vaBeginPicture", sys::vaBeginPicture(self.dpy, ctx, target))?;
-            let render = check("vaRenderPicture", sys::vaRenderPicture(self.dpy, ctx, buffers.as_mut_ptr(), buffers.len() as i32));
+            let render = check(
+                "vaRenderPicture",
+                sys::vaRenderPicture(self.dpy, ctx, buffers.as_mut_ptr(), buffers.len() as i32),
+            );
             // End the picture whatever the render said, so the context isn't left mid-picture.
             let end = check("vaEndPicture", sys::vaEndPicture(self.dpy, ctx));
             render.and(end)
@@ -519,7 +525,11 @@ impl Display {
             for (plane, rows) in rows.iter().enumerate() {
                 let end = u64::from(image.offsets[plane]) + u64::from(image.pitches[plane]) * rows;
                 if image.num_planes != 2 || image.pitches[plane] < width || end > u64::from(image.data_size) {
-                    return Err(VaError { call: "vaCreateImage", status: -1, message: "unexpected NV12 layout".into() });
+                    return Err(VaError {
+                        call: "vaCreateImage",
+                        status: -1,
+                        message: "unexpected NV12 layout".into(),
+                    });
                 }
             }
             before(&image)?;

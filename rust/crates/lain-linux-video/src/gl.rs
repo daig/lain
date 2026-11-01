@@ -86,8 +86,13 @@ pub struct GlConverter {
     staging: Option<glow::NativeTexture>,
     fence: Option<glow::NativeFence>,
     queries: [glow::NativeQuery; 2],
+    /// The pictures' size.
     width: u32,
     height: u32,
+    /// The target surfaces' size (the coded size: the picture's rounded up to 8; the rest is left unwritten and
+    /// cropped by the SPS's conformance window).
+    surface_width: u32,
+    surface_height: u32,
     modifier: u64,
     uses: u64,
     renderer: String,
@@ -101,13 +106,24 @@ fn gl_error(gl: &glow::Context, what: &str) -> Result<(), String> {
 
 impl GlConverter {
     /// Sets the converter up on `egl` (current on this thread) for `width × height` pictures at `modifier`
-    /// (the DMA-BUFs' negotiated modifier), writing into `exports` (the encoder's NV12 surfaces, in order).
-    pub fn new(egl: Rc<EglContext>, exports: &[Nv12Export], width: u32, height: u32, modifier: u64) -> Result<Self, String> {
+    /// (the DMA-BUFs' negotiated modifier), writing into `exports` (the encoder's NV12 surfaces, in order, each
+    /// `surface_size`).
+    pub fn new(
+        egl: Rc<EglContext>,
+        exports: &[Nv12Export],
+        surface_size: (u32, u32),
+        width: u32,
+        height: u32,
+        modifier: u64,
+    ) -> Result<Self, String> {
         if !egl.is_current() {
             return Err("the EGL context isn't current on the converter's thread".into());
         }
-        if width % 2 != 0 || height % 2 != 0 {
+        if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             return Err(format!("{width}×{height}: 4:2:0 needs an even size"));
+        }
+        if surface_size.0 < width || surface_size.1 < height {
+            return Err(format!("surfaces of {surface_size:?} can't hold {width}×{height}"));
         }
         // SAFETY: the context is current; the loader returns EGL's entry points (null for missing ones, which
         // glow then reports as missing functions when called; the ones used are all GL 4.3 core).
@@ -158,6 +174,8 @@ impl GlConverter {
             queries,
             width,
             height,
+            surface_width: surface_size.0,
+            surface_height: surface_size.1,
             modifier,
             uses: 0,
             renderer,
@@ -192,8 +210,9 @@ impl GlConverter {
     }
 
     fn import_target(&self, export: &Nv12Export) -> Result<Target, String> {
-        if export.width != self.width || export.height != self.height {
-            return Err(format!("a surface of {}×{}, not {}×{}", export.width, export.height, self.width, self.height));
+        let (sw, sh) = (self.surface_width, self.surface_height);
+        if export.width != sw || export.height != sh {
+            return Err(format!("a surface of {}×{}, not {sw}×{sh}", export.width, export.height));
         }
         let mut images = Vec::new();
         for (l, layer) in export.layers.iter().enumerate() {
@@ -206,7 +225,7 @@ impl GlConverter {
                 stride: layer.pitch,
                 size: u64::from(object.size),
             };
-            let (w, h) = if l == 0 { (self.width, self.height) } else { (self.width / 2, self.height / 2) };
+            let (w, h) = if l == 0 { (sw, sh) } else { (sw / 2, sh / 2) };
             images.push(self.egl.import(&plane, w, h)?);
         }
         let [y_image, uv_image]: [EglImage; 2] = images.try_into().map_err(|_| "two layers")?;
@@ -342,6 +361,14 @@ impl GlConverter {
         }
     }
 
+    /// Gives up on the conversion in flight: its fence is deleted (GL keeps its own order for later work).
+    pub fn cancel(&mut self) {
+        if let Some(fence) = self.fence.take() {
+            // SAFETY: the context is current; the fence is ours and deleted once.
+            unsafe { self.gl.delete_sync(fence) };
+        }
+    }
+
     /// The last finished conversion's GPU time (timer queries). Call after [`poll`](Self::poll) returned true.
     pub fn last_timing(&self) -> ConversionTiming {
         // SAFETY: the context is current; both queries finished with the conversion (its fence signalled).
@@ -368,7 +395,13 @@ impl GlConverter {
             let read = gl.create_framebuffer()?;
             let draw = gl.create_framebuffer()?;
             gl.bind_framebuffer(glow::READ_FRAMEBUFFER, Some(read));
-            gl.framebuffer_texture_2d(glow::READ_FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(staging), 0);
+            gl.framebuffer_texture_2d(
+                glow::READ_FRAMEBUFFER,
+                glow::COLOR_ATTACHMENT0,
+                glow::TEXTURE_2D,
+                Some(staging),
+                0,
+            );
             gl.bind_framebuffer(glow::DRAW_FRAMEBUFFER, Some(draw));
             gl.framebuffer_texture_2d(glow::DRAW_FRAMEBUFFER, glow::COLOR_ATTACHMENT0, glow::TEXTURE_2D, Some(dst), 0);
             let complete = gl.check_framebuffer_status(glow::DRAW_FRAMEBUFFER) == glow::FRAMEBUFFER_COMPLETE;

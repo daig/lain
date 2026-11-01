@@ -72,7 +72,13 @@ impl GbmDevice {
         }
         let bo = Bo { bo, _dev: self.clone() };
         let (planes, got) = (bo.plane_count(), bo.modifier());
-        if got != modifier || planes != 1 || bo.width() != width || bo.height() != height || bo.stride() < width * 4 || bo.offset() != 0 {
+        if got != modifier
+            || planes != 1
+            || bo.width() != width
+            || bo.height() != height
+            || bo.stride() < width * 4
+            || bo.offset() != 0
+        {
             return Err(format!(
                 "the buffer object came out unexpected: modifier {got:#x}, {planes} planes, {}×{}, stride {}, offset {}",
                 bo.width(),

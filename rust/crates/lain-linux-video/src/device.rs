@@ -49,7 +49,9 @@ fn read_node(drm: &Path, name: &str, dev_dir: &Path) -> Option<RenderNode> {
         return None;
     }
     let (major, minor) = parse_dev(&read_trimmed(&entry.join("dev"))?)?;
-    let pci = std::fs::read_link(entry.join("device")).ok().and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
+    let pci = std::fs::read_link(entry.join("device"))
+        .ok()
+        .and_then(|p| p.file_name().map(|n| n.to_string_lossy().into_owned()));
     Some(RenderNode {
         name: name.to_string(),
         path: dev_dir.join(name),
@@ -69,7 +71,11 @@ fn node_number(name: &str) -> u32 {
 /// With `override_node` (a node name or a path whose file name is one), that node, if it is AMD; otherwise the
 /// AMD node whose `boot_vga` is 1, else the lowest-numbered AMD node. Fails, naming what it saw, when there is
 /// none. Reads sysfs only: nothing is opened.
-pub fn select_render_node(sysfs: &Path, dev_dir: &Path, override_node: Option<&str>) -> Result<RenderNode, PlatformError> {
+pub fn select_render_node(
+    sysfs: &Path,
+    dev_dir: &Path,
+    override_node: Option<&str>,
+) -> Result<RenderNode, PlatformError> {
     let drm = sysfs.join("class/drm");
     if let Some(wanted) = override_node.map(str::trim).filter(|s| !s.is_empty()) {
         let name = Path::new(wanted).file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();

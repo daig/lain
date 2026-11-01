@@ -293,6 +293,15 @@ impl<G: Gpu> Engine<G> {
     }
 
     fn emit(&self, event: VideoEvent) {
+        // The counters first, so a reader who saw the event sees them.
+        {
+            let mut s = lock(&self.inbox.state);
+            s.stats.captures = self.stats.captures;
+            s.stats.encoded = self.stats.encoded;
+            s.stats.failed = self.stats.failed;
+            s.stats.conversion_failures = self.stats.conversion_failures;
+            s.stats.rebuilds = self.stats.rebuilds;
+        }
         if let Some(tx) = &self.events {
             let _ = tx.send(event);
         }
@@ -340,11 +349,6 @@ impl<G: Gpu> Engine<G> {
             if self.converting.is_none() {
                 frame = s.frame.take();
             }
-            s.stats.captures = self.stats.captures;
-            s.stats.encoded = self.stats.encoded;
-            s.stats.failed = self.stats.failed;
-            s.stats.conversion_failures = self.stats.conversion_failures;
-            s.stats.rebuilds = self.stats.rebuilds;
         }
         if let Flow::Exit = self.check_end(now) {
             return Flow::Exit;
@@ -371,12 +375,11 @@ impl<G: Gpu> Engine<G> {
                 return Flow::Exit;
             }
             Some(DisplayEnd::Failed(why)) => return self.fatal(format!("lain's display failed: {why}")),
-            Some(DisplayEnd::Destroyed) => {
-                if !self.capture_stopped {
-                    self.capture_stopped = true;
-                    (self.stop_capture)();
-                }
+            Some(DisplayEnd::Destroyed) if !self.capture_stopped => {
+                self.capture_stopped = true;
+                (self.stop_capture)();
             }
+            Some(DisplayEnd::Destroyed) => {}
             None => {}
         }
         if let Some((at, why)) = &self.capture_end
@@ -788,7 +791,8 @@ pub(crate) mod tests {
             let (ended, ended_rx) = watch::channel(None);
             let capture_stops = Arc::new(Mutex::new(0));
             let stops = capture_stops.clone();
-            let engine = Engine::new(gpu.clone(), cfg, inbox.clone(), tx, ended_rx, Box::new(move || *lock(&stops) += 1));
+            let engine =
+                Engine::new(gpu.clone(), cfg, inbox.clone(), tx, ended_rx, Box::new(move || *lock(&stops) += 1));
             let thread = Some(std::thread::spawn(move || engine.run()));
             Self { gpu, inbox, events, ended, capture_stops, thread }
         }
@@ -1090,7 +1094,13 @@ pub(crate) mod tests {
         let mut h = Harness::new(fast_config());
         h.frame(1);
         h.captured();
-        h.gpu.state().outcomes.extend([Outcome::Good, Outcome::Garbage, Outcome::Good, Outcome::SubmitError, Outcome::Good]);
+        h.gpu.state().outcomes.extend([
+            Outcome::Good,
+            Outcome::Garbage,
+            Outcome::Good,
+            Outcome::SubmitError,
+            Outcome::Good,
+        ]);
         // Several at once (a contract violation the core never commits, still answered in order).
         for id in 1..=5 {
             h.request(id, false, false);
