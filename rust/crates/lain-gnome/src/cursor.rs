@@ -47,6 +47,9 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
+/// A bitmap as Mutter sent it: format, width, height, stride, hotspot, bytes.
+type SourceBitmap = (BitmapFormat, u32, u32, usize, (i32, i32), Vec<u8>);
+
 /// The latest cursor of lain's stream, shared between `lain-linux-video` (the writer) and `lain-gnome` (the
 /// reader). New in the port: Swift reads the cursor from AppKit on demand.
 ///
@@ -59,11 +62,19 @@ pub struct CursorState {
     /// The current image; `None` before the first bitmap and while the sprite is empty (hidden).
     image: Mutex<Option<Arc<CursorImage>>>,
     geometry: Mutex<Option<StreamGeometry>>,
+    /// At a fractional scale, the last bitmap as Mutter sent it (format, size, stride, hotspot, bytes), so a
+    /// resend isn't resampled again.
+    resampled_from: Mutex<Option<SourceBitmap>>,
 }
 
 impl Default for CursorState {
     fn default() -> Self {
-        Self { position: AtomicU64::new(INVALID), image: Mutex::new(None), geometry: Mutex::new(None) }
+        Self {
+            position: AtomicU64::new(INVALID),
+            image: Mutex::new(None),
+            geometry: Mutex::new(None),
+            resampled_from: Mutex::new(None),
+        }
     }
 }
 
@@ -112,6 +123,11 @@ impl CursorState {
             tracing::debug!(width, height, stride, len = data.len(), "short cursor bitmap");
             return;
         }
+        let fractional = lock(&self.geometry).map(|g| g.scale).filter(|s| (s - s.round()).abs() > 1e-3);
+        if let Some(g) = fractional {
+            self.set_fractional(format, (w, h), stride, hotspot, data, g);
+            return;
+        }
         let scale = self.integer_scale();
         let hx = hotspot.0 as f32 / f32::from(scale);
         let hy = hotspot.1 as f32 / f32::from(scale);
@@ -155,6 +171,7 @@ impl CursorState {
     pub fn reset(&self) {
         self.set_invalid();
         *lock(&self.image) = None;
+        *lock(&self.resampled_from) = None;
     }
 
     // --- read by lain-gnome
@@ -175,9 +192,81 @@ impl CursorState {
         g.bounds.contains(p).then_some(p)
     }
 
+    /// A bitmap at a fractional monitor scale `g` (owner's choice, `lain-hostd`'s `scale`). The client takes an
+    /// integer scale (`CursorShape.scale`) and draws `pixel_width / scale` points, so the bitmap is resampled to
+    /// the next integer scale, keeping its size in points and the hotspot. New in the port: the Mac host always
+    /// streams at 2×.
+    fn set_fractional(
+        &self,
+        format: BitmapFormat,
+        (w, h): (u16, u16),
+        stride: usize,
+        hotspot: (i32, i32),
+        data: &[u8],
+        g: f64,
+    ) {
+        let row = usize::from(w) * 4;
+        let used = &data[..stride * (usize::from(h) - 1) + row];
+        {
+            let mut last = lock(&self.resampled_from);
+            if let Some((f, lw, lh, ls, lhot, bytes)) = last.as_ref()
+                && (*f, *lw, *lh, *ls, *lhot) == (format, u32::from(w), u32::from(h), stride, hotspot)
+                && bytes == used
+                && lock(&self.image).is_some()
+            {
+                return;
+            }
+            *last = Some((format, u32::from(w), u32::from(h), stride, hotspot, used.to_vec()));
+        }
+        // BGRA, premultiplied, packed.
+        let mut src = Vec::with_capacity(row * usize::from(h));
+        for r in 0..usize::from(h) {
+            let line = &data[r * stride..r * stride + row];
+            match format {
+                BitmapFormat::Bgra => src.extend_from_slice(line),
+                BitmapFormat::Rgba => {
+                    for px in line.as_chunks::<4>().0 {
+                        src.extend_from_slice(&[px[2], px[1], px[0], px[3]]);
+                    }
+                }
+            }
+        }
+        let target = g.ceil().clamp(1.0, 255.0);
+        let factor = target / g;
+        let nw = ((f64::from(w) * factor).round() as u16).max(1);
+        let nh = ((f64::from(h) * factor).round() as u16).max(1);
+        let pixels = resample_bilinear(&src, usize::from(w), usize::from(h), usize::from(nw), usize::from(nh));
+        let (hx, hy) = ((f64::from(hotspot.0) / g) as f32, (f64::from(hotspot.1) / g) as f32);
+        *lock(&self.image) = Some(Arc::new(CursorImage::new(nw, nh, target as u8, hx, hy, pixels)));
+    }
+
     fn integer_scale(&self) -> u8 {
         lock(&self.geometry).map_or(1, |g| g.scale.round().clamp(1.0, 255.0) as u8)
     }
+}
+
+/// Bilinear resampling of packed 4-channel premultiplied pixels (premultiplied, so no colour bleeds from clear
+/// pixels), sampling at pixel centres.
+fn resample_bilinear(src: &[u8], w: usize, h: usize, nw: usize, nh: usize) -> Vec<u8> {
+    let mut out = Vec::with_capacity(nw * nh * 4);
+    let (sx, sy) = (w as f64 / nw as f64, h as f64 / nh as f64);
+    for y in 0..nh {
+        let fy = ((y as f64 + 0.5) * sy - 0.5).clamp(0.0, (h - 1) as f64);
+        let (y0, ty) = (fy.floor() as usize, fy - fy.floor());
+        let y1 = (y0 + 1).min(h - 1);
+        for x in 0..nw {
+            let fx = ((x as f64 + 0.5) * sx - 0.5).clamp(0.0, (w - 1) as f64);
+            let (x0, tx) = (fx.floor() as usize, fx - fx.floor());
+            let x1 = (x0 + 1).min(w - 1);
+            for c in 0..4 {
+                let p = |xx: usize, yy: usize| f64::from(src[(yy * w + xx) * 4 + c]);
+                let top = p(x0, y0) * (1.0 - tx) + p(x1, y0) * tx;
+                let bottom = p(x0, y1) * (1.0 - tx) + p(x1, y1) * tx;
+                out.push((top * (1.0 - ty) + bottom * ty).round().clamp(0.0, 255.0) as u8);
+            }
+        }
+    }
+    out
 }
 
 fn same_pixels(format: BitmapFormat, src: &[u8], dst: &[u8]) -> bool {
@@ -222,6 +311,37 @@ mod tests {
 
     fn geometry(scale: f64) -> Option<StreamGeometry> {
         Some(StreamGeometry { bounds: RectF::new(3840.0, 0.0, 1376.0, 1032.0), scale })
+    }
+
+    /// The owner's fractional scale (1.5): Mutter's 36-pixel bitmap is resampled to 2×, 48 pixels, so the
+    /// client still draws it 24 points wide; the hotspot keeps its place in points; a resend is no new image.
+    #[test]
+    fn a_fractional_scale_resamples_the_bitmap_to_the_next_integer() {
+        let c = CursorState::new();
+        c.set_geometry(geometry(1.5));
+        c.set_position(10, 10);
+        let mut data = vec![0u8; 36 * 36 * 4];
+        for px in data.as_chunks_mut::<4>().0.iter_mut().take(36 * 18) {
+            px.copy_from_slice(&[255, 0, 0, 255]); // opaque red, RGBA, in the top half
+        }
+        c.set_bitmap(BitmapFormat::Rgba, 36, 36, 36 * 4, (6, 3), &data);
+        let img = c.image().unwrap();
+        assert_eq!((img.pixel_width, img.pixel_height, img.scale), (48, 48, 2));
+        assert_eq!((img.hotspot_x, img.hotspot_y), (4.0, 2.0));
+        assert_eq!(&img.pixels[..4], &[0, 0, 255, 255], "swapped to BGRA");
+        let last = img.pixels.len() - 4;
+        assert_eq!(&img.pixels[last..], &[0, 0, 0, 0], "clear stays clear");
+        assert!(
+            img.pixels.as_chunks::<4>().0.iter().all(|p| p[0] <= p[3] && p[1] <= p[3] && p[2] <= p[3]),
+            "premultiplied"
+        );
+        c.set_bitmap(BitmapFormat::Rgba, 36, 36, 36 * 4, (6, 3), &data);
+        assert!(Arc::ptr_eq(&img, &c.image().unwrap()), "a resend is the same image");
+        // An integer scale passes through as before.
+        c.set_geometry(geometry(2.0));
+        c.set_bitmap(BitmapFormat::Rgba, 36, 36, 36 * 4, (6, 3), &data);
+        let img = c.image().unwrap();
+        assert_eq!((img.pixel_width, img.scale, img.hotspot_x), (36, 2, 3.0));
     }
 
     #[test]

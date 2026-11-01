@@ -276,7 +276,8 @@ pub struct View {
     pub set: BTreeSet<MonitorSpec>,
     /// lain's display's scale now, and the spec's.
     pub scale: f64,
-    pub spec_scale: u32,
+    /// The scale to keep (the closest Mutter supports to the one asked for); 0 or less counts as 1.
+    pub spec_scale: f64,
     /// lain's arrangement now.
     pub current: Option<Arrangement>,
 }
@@ -346,7 +347,8 @@ impl Tracker {
             self.candidate = None;
             return Decision::Apply(Apply::Stored);
         }
-        if (view.scale - f64::from(view.spec_scale.max(1))).abs() > 1e-3 {
+        let target = if view.spec_scale > 0.0 { view.spec_scale } else { 1.0 };
+        if (view.scale - target).abs() > 1e-3 {
             self.candidate = None;
             let key = (view.set.clone(), view.current.clone());
             if self.scale_tried.as_ref() == Some(&key) {
@@ -661,7 +663,7 @@ mod tests {
     }
 
     fn view(set: &BTreeSet<MonitorSpec>, scale: f64, current: Option<Arrangement>) -> View {
-        View { set: set.clone(), scale, spec_scale: 2, current }
+        View { set: set.clone(), scale, spec_scale: 2.0, current }
     }
 
     fn arr(offset: i32) -> Arrangement {
@@ -722,7 +724,7 @@ mod tests {
         let one = set(&["HDMI-1", "Meta-0"]);
         let mut t = Tracker::new(None);
         t.applied(one.clone(), Some(arr(0)), true);
-        let v = View { set: one, scale: 1.0, spec_scale: 0, current: Some(arr(0)) };
+        let v = View { set: one, scale: 1.0, spec_scale: 0.0, current: Some(arr(0)) };
         assert_eq!(t.on_layout(Instant::now(), v), Decision::Nothing);
     }
 

@@ -52,6 +52,8 @@ pub struct GnomeConfig {
     pub barrier: Barrier,
     /// Where the owner's arrangement is stored; `None` means `$XDG_CONFIG_HOME/lain/arrangement.toml`.
     pub arrangement_path: Option<PathBuf>,
+    /// lain's display's scale (the closest Mutter supports is applied); `None`: the iPad's own (its `Hello`).
+    pub scale: Option<f64>,
 }
 
 /// Every GNOME component, sharing one session-bus connection. `lain-hostd` composes it with
@@ -82,7 +84,7 @@ impl Gnome {
         let cursor_state = CursorState::new();
         let store = config.arrangement_path.or_else(arrangement::Store::default_path).map(arrangement::Store::new);
         let desktop = monitors::spawn(&conn, cursor_state.clone(), store).await?;
-        let display = GnomeDisplay::new(conn.clone(), desktop.clone(), cursor_state.clone());
+        let display = GnomeDisplay::new(conn.clone(), desktop.clone(), cursor_state.clone()).with_scale(config.scale);
         let input = GnomeInput::spawn(conn.clone(), desktop.desktop.clone(), cursor_state.clone(), config.barrier);
         let power = GnomePower::spawn(conn.clone());
         let settings = GnomeSettings::start(&conn).await;
