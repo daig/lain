@@ -22,6 +22,8 @@ public struct HostPreferences: Sendable, Equatable {
     public var colorFormat = ColorFormat.full
     /// How the Mac's side of Wi-Fi connections asks the radio for airtime (D34).
     public var radioPriority = NetworkStreamOptions.RadioPriority.standard
+    /// Advertise and accept over peer-to-peer (AWDL) as well as the network (an experiment: D34).
+    public var peerToPeer = true
 
     public enum ColorFormat: String, Sendable, CaseIterable {
         /// 4:4:4 10-bit where the iPad decodes it in hardware, else 4:2:0.
@@ -60,6 +62,7 @@ public struct HostPreferences: Sendable, Equatable {
         static let systemKey = "systemKey"
         static let colorFormat = "colorFormat"
         static let radioPriority = "radioPriority"
+        static let peerToPeer = "peerToPeer"
     }
 
     /// The stored settings (each one missing takes its default).
@@ -73,6 +76,7 @@ public struct HostPreferences: Sendable, Equatable {
         if let raw = defaults.string(forKey: Key.radioPriority), let r = NetworkStreamOptions.RadioPriority(rawValue: raw) {
             p.radioPriority = r
         }
+        if defaults.object(forKey: Key.peerToPeer) != nil { p.peerToPeer = defaults.bool(forKey: Key.peerToPeer) }
         return p
     }
 
@@ -83,5 +87,6 @@ public struct HostPreferences: Sendable, Equatable {
         defaults.set(systemKey, forKey: Key.systemKey)
         defaults.set(colorFormat.rawValue, forKey: Key.colorFormat)
         defaults.set(radioPriority.rawValue, forKey: Key.radioPriority)
+        defaults.set(peerToPeer, forKey: Key.peerToPeer)
     }
 }
