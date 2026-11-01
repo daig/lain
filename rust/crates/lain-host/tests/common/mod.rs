@@ -132,6 +132,7 @@ struct DisplayCounts {
     peak: usize,
     created: usize,
     removal: Duration,
+    create_delay: Duration,
 }
 
 /// [`FakeDisplay`], with a removal that takes `removal` (as a virtual display leaves the monitor list a
@@ -145,6 +146,10 @@ pub struct TestDisplay {
 impl TestDisplay {
     pub fn set_removal(&self, removal: Duration) {
         self.counts.lock().unwrap().removal = removal;
+    }
+    /// Makes every `create` take `delay` first (a slow RecordVirtual and negotiation).
+    pub fn set_create_delay(&self, delay: Duration) {
+        self.counts.lock().unwrap().create_delay = delay;
     }
     pub fn live(&self) -> usize {
         self.counts.lock().unwrap().live
@@ -161,6 +166,10 @@ impl DisplayBackend for TestDisplay {
     type Source = FakeSource;
 
     async fn create(&self, spec: DisplaySpec) -> PResult<(StreamedDisplay, FakeSource)> {
+        let delay = self.counts.lock().unwrap().create_delay;
+        if !delay.is_zero() {
+            tokio::time::sleep(delay).await;
+        }
         let created = self.fake.create(spec).await;
         if created.is_ok() {
             let mut c = self.counts.lock().unwrap();

@@ -117,6 +117,41 @@ async fn a_connection_that_never_finishes_tls_is_dropped_at_the_handshake_deadli
     assert_eq!(server.listener.pending_handshakes(), 0);
 }
 
+/// A ClientHello trickled a byte every 100 ms is cut at the handshake deadline: the deadline covers the whole
+/// handshake, not each read, so a slow peer can't hold a pending slot (the listener reviewer's probe, wave 3).
+#[tokio::test]
+async fn a_trickled_client_hello_is_cut_at_the_deadline() {
+    let mut server = Server::with_handshake_timeout(&[secret_a()], Duration::from_millis(500));
+    let mut raw = TcpStream::connect(server.addr()).await.unwrap();
+    // A 512-byte handshake record's header, then its body a byte at a time, never finished.
+    raw.write_all(&[0x16, 0x03, 0x01, 0x02, 0x00]).await.unwrap();
+    let t0 = Instant::now();
+    let trickle = tokio::spawn(async move {
+        for _ in 0..40 {
+            if raw.write_all(&[0x01]).await.is_err() {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
+        }
+    });
+    assert_eq!(next(&mut server.rejected, T).await, Some(WiFiError::Timeout));
+    assert!(t0.elapsed() < Duration::from_millis(900), "cut after {:?}", t0.elapsed());
+    trickle.abort();
+    assert!(poll_until(T, || server.listener.pending_handshakes() == 0).await);
+}
+
+/// Something other than TLS (an HTTP request) is refused at once, not at the deadline, and its socket closed.
+#[tokio::test]
+async fn garbage_is_refused_at_once() {
+    let mut server = Server::with_handshake_timeout(&[secret_a()], Duration::from_secs(30));
+    let mut raw = TcpStream::connect(server.addr()).await.unwrap();
+    raw.write_all(b"GET / HTTP/1.1\r\nHost: lain\r\n\r\n").await.unwrap();
+    assert!(matches!(next(&mut server.rejected, T).await, Some(WiFiError::Tls(_))));
+    assert!(closes(&mut raw, Duration::from_secs(2)).await);
+    assert!(poll_until(T, || server.listener.pending_handshakes() == 0).await);
+    assert!(next(&mut server.accepted, Duration::from_millis(100)).await.is_none());
+}
+
 #[tokio::test]
 async fn a_flood_of_idle_connections_stays_capped_and_a_real_client_still_gets_in() {
     // Every loopback connection comes from 127.0.0.1, so the per-address cap is the one that binds. The
