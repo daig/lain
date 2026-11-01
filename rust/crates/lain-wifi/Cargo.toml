@@ -10,6 +10,22 @@ publish.workspace = true
 lain-proto.workspace = true
 lain-platform.workspace = true
 lain-link.workspace = true
+hex.workspace = true
+hkdf.workspace = true
+# getifaddrs, in its own FFI module (`ifaddrs`).
+libc.workspace = true
+openssl.workspace = true
+sha2.workspace = true
+# `all`: TCP keepalive interval and count, TCP_USER_TIMEOUT.
+socket2 = { workspace = true, features = ["all"] }
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time", "io-util", "net", "macros"] }
+tokio-openssl.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+lain-platform = { workspace = true, features = ["fake"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "io-util", "net", "macros", "test-util"] }
 
 [lints]
 workspace = true
