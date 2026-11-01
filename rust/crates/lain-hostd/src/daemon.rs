@@ -34,6 +34,10 @@ pub struct DaemonOptions {
     pub video_log_interval: Duration,
     /// How long a cancelled listener may take to say it stopped.
     pub wifi_stop_timeout: Duration,
+    /// How long the Wi-Fi half of the shutdown (the listener cancelled, the ad withdrawn) may take before the
+    /// Wi-Fi actor is aborted, so that a slow or wedged Avahi never keeps the session from stopping within
+    /// main's budget. Longer than `wifi_stop_timeout`.
+    pub wifi_shutdown_timeout: Duration,
     /// How long the first Start at Login read may take before the session starts anyway.
     pub setup_timeout: Duration,
 }
@@ -47,6 +51,7 @@ impl Default for DaemonOptions {
             status_poll: Duration::from_secs(1),
             video_log_interval: Duration::from_secs(10),
             wifi_stop_timeout: Duration::from_secs(1),
+            wifi_shutdown_timeout: Duration::from_millis(1500),
             setup_timeout: Duration::from_secs(3),
         }
     }
@@ -56,6 +61,7 @@ impl Default for DaemonOptions {
 /// freely.
 pub struct DaemonHandle<P: Platform> {
     session: Arc<HostSession<P>>,
+    setup: P::Setup,
     wifi_status: watch::Receiver<WiFiStatus>,
     wifi_enabled: watch::Receiver<bool>,
     commands: mpsc::UnboundedSender<Command>,
@@ -65,6 +71,7 @@ impl<P: Platform> Clone for DaemonHandle<P> {
     fn clone(&self) -> Self {
         Self {
             session: self.session.clone(),
+            setup: self.setup.clone(),
             wifi_status: self.wifi_status.clone(),
             wifi_enabled: self.wifi_enabled.clone(),
             commands: self.commands.clone(),
@@ -126,17 +133,34 @@ impl<P: Platform> DaemonHandle<P> {
         video_lines(&self.session.status(), self.session.video_stats(), self.session.video_error())
     }
 
-    /// The setup changed (autostart switched by 4b's control): the iPad hears about it.
+    /// Resends the setup as it is cached now (Swift: `HostSession.setupChanged`). The Start at Login item is a
+    /// cache: after switching autostart, call [`refresh_setup`](Self::refresh_setup) instead.
     pub fn setup_changed(&self) {
         self.session.setup_changed()
+    }
+
+    /// Asks the setup source again (Start at Login from systemd), then tells the session, so the iPad hears the
+    /// new state at once rather than at the next poll. For 4b's `lain autostart on|off`, which may switch the
+    /// unit through an `Autostart` of its own, whose cache isn't the daemon's.
+    pub async fn refresh_setup(&self)
+    where
+        P::Setup: SetupRefresh,
+    {
+        self.setup.refresh().await;
+        self.session.setup_changed();
     }
 }
 
 /// The running daemon. Swift: `HostController`, minus the menu.
+///
+/// Stop it with [`shutdown`](Self::shutdown). Dropped without one, it still stops: its tasks are aborted (the
+/// listener with them, its port closed) and the session stops at once (input and power released, lain's display
+/// removed without being awaited), but the ad isn't withdrawn (Avahi drops it when its connection closes).
 pub struct Daemon<P: Platform> {
     handle: DaemonHandle<P>,
     tasks: Vec<JoinHandle<()>>,
-    wifi_task: JoinHandle<()>,
+    wifi_task: Option<JoinHandle<()>>,
+    wifi_shutdown_timeout: Duration,
 }
 
 impl<P: Platform> Daemon<P>
@@ -195,12 +219,12 @@ where
         let (commands, receiver) = mpsc::unbounded_channel();
         let wifi_task = tokio::spawn(actor.run(receiver));
 
-        let handle = DaemonHandle { session, wifi_status, wifi_enabled, commands };
+        let handle = DaemonHandle { session, setup: setup.clone(), wifi_status, wifi_enabled, commands };
         let tasks = vec![
             tokio::spawn(watch_setup(handle.session.clone(), setup, monitors, options.setup_poll)),
             tokio::spawn(log_status(handle.clone(), options.status_poll, options.video_log_interval)),
         ];
-        Self { handle, tasks, wifi_task }
+        Self { handle, tasks, wifi_task: Some(wifi_task), wifi_shutdown_timeout: options.wifi_shutdown_timeout }
     }
 }
 
@@ -212,21 +236,54 @@ impl<P: Platform> Daemon<P> {
     /// Stops everything, in order (Swift: `session.stop()` on `willTerminate`): the listener cancelled and the ad
     /// withdrawn, then the session stopped (input released, power released, lain's display destroyed; awaited),
     /// then the watch and log tasks. Returns once all of it is done.
-    pub async fn shutdown(self) {
-        let Daemon { handle, tasks, wifi_task } = self;
-        let (reply, done) = oneshot::channel();
-        if handle.commands.send(Command::Shutdown(reply)).is_ok() {
-            let _ = done.await;
+    ///
+    /// The Wi-Fi half is bounded by [`DaemonOptions::wifi_shutdown_timeout`]: past it the Wi-Fi actor is aborted
+    /// (the listener dropped, its port closed; the ad left to Avahi, which drops it with the connection), so that
+    /// the session's release, the part that matters (invariant 4), always runs within main's budget.
+    pub async fn shutdown(mut self) {
+        let handle = self.handle.clone();
+        if let Some(mut wifi_task) = self.wifi_task.take() {
+            let (reply, done) = oneshot::channel();
+            let sent = handle.commands.send(Command::Shutdown(reply)).is_ok();
+            let wifi = async {
+                if sent {
+                    let _ = done.await;
+                }
+                let _ = (&mut wifi_task).await;
+            };
+            if tokio::time::timeout(self.wifi_shutdown_timeout, wifi).await.is_err() {
+                warn!(
+                    "Wi-Fi: the listener and the ad didn't stop within {:?} (Avahi slow?); dropped them",
+                    self.wifi_shutdown_timeout
+                );
+                wifi_task.abort();
+                let _ = wifi_task.await;
+            }
         }
-        let _ = wifi_task.await;
         handle.session.stop().await;
+        let tasks = std::mem::take(&mut self.tasks);
         for task in &tasks {
             task.abort();
         }
         for task in tasks {
             let _ = task.await;
         }
-        info!("stopped");
+        info!("shutdown complete");
+    }
+}
+
+impl<P: Platform> Drop for Daemon<P> {
+    /// A daemon dropped without [`shutdown`](Daemon::shutdown) stops anyway. Its tasks hold the session (and the
+    /// log task a command sender), so without this nothing would ever end.
+    fn drop(&mut self) {
+        for task in &self.tasks {
+            task.abort();
+        }
+        if let Some(wifi_task) = &self.wifi_task {
+            wifi_task.abort();
+        }
+        // The synchronous part: input and power released, links closed; the display's removal isn't awaited.
+        drop(self.handle.session.stop());
     }
 }
 

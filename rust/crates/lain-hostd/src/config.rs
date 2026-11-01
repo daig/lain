@@ -14,10 +14,14 @@ use std::io;
 use std::path::{Path, PathBuf};
 
 use lain_gnome::Barrier;
+use lain_host::HostConfig;
 use lain_input::{CommandShortcut, InputConfig, LinuxModifier, ModifierMap, Momentum, ScrollConfig, ZoomAction};
 use lain_media::PipelineOptions;
-use lain_platform::ScrollSource;
+use lain_platform::{HostIdentity, ScrollSource};
+use lain_proto::VersionList;
 use serde::Deserialize;
+
+use crate::DaemonOptions;
 
 /// The file name in lain's directory (`lain_linux_system::paths::lain_dir`).
 pub const CONFIG_FILE: &str = "config.toml";
@@ -386,6 +390,25 @@ impl Config {
     /// The video pipeline's options: the defaults with the bitrate.
     pub fn pipeline_options(&self) -> PipelineOptions {
         PipelineOptions { average_bit_rate: self.bitrate_mbps * 1_000_000, ..PipelineOptions::default() }
+    }
+
+    /// `lain-host`'s config for this file (Swift: what `HostController` hands `HostSession`): the versions
+    /// offered (`VersionList::offered()` in the daemon, which honours `LAIN_PROTOCOL_MAX`), the host's identity
+    /// (`None`: USB only), the bitrate into the pipeline (and so `HelloAck.bitrate`) and `[input]`; the rest
+    /// `lain-host`'s defaults. Leaks the shortcuts, as [`input_config`](Self::input_config): once per process.
+    pub fn host_config(&self, identity: Option<HostIdentity>, versions: VersionList) -> HostConfig {
+        HostConfig {
+            versions,
+            identity,
+            video: self.pipeline_options(),
+            input: self.input_config(),
+            ..HostConfig::default()
+        }
+    }
+
+    /// The daemon's options for this file: `wifi`; the rest the defaults.
+    pub fn daemon_options(&self) -> DaemonOptions {
+        DaemonOptions { wifi: self.wifi, ..DaemonOptions::default() }
     }
 }
 

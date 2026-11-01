@@ -15,6 +15,10 @@ use tracing::{debug, info, warn};
 pub const OFF_IN_CONFIG: &str = "turned off in config.toml";
 /// Swift: `HostController`'s "this Mac's lain id couldn't be loaded".
 pub const OFF_NO_IDENTITY: &str = "this computer's lain id couldn't be loaded";
+/// The listener's own status once cancelled (`lain_wifi::WiFiListener::cancel`).
+pub const OFF_STOPPED: &str = "stopped";
+/// Wi-Fi switched off, but the cancelled listener never said it stopped and was dropped.
+pub const OFF_STOP_UNANSWERED: &str = "stopped (the listener didn't answer)";
 
 /// Why a runtime Wi-Fi switch was refused.
 #[derive(Debug, Clone, PartialEq, Eq, thiserror::Error)]
@@ -132,25 +136,33 @@ impl<S: SecretStore + Clone, A: Advertiser> WifiActor<S, A> {
     }
 
     /// Cancels the listener (not a drop: a drop aborts its task, and the status would never say
-    /// `Off("stopped")`), waits for it to say so, then drops it.
+    /// `Off("stopped")`), waits for it to say `Off("stopped")` itself, then drops it. An `Off` it showed before
+    /// the cancel (no pairing yet, say) is not the answer: Wi-Fi is now off because it was switched off. A
+    /// listener that doesn't answer within `stop_timeout` is dropped anyway, and the status says so
+    /// ([`OFF_STOP_UNANSWERED`]) rather than pretending it stopped by itself.
     async fn stop_listener(&mut self) {
         let Some((listener, mut status)) = self.listener.take() else { return };
         listener.cancel();
-        let stopped = tokio::time::timeout(self.stop_timeout, async {
+        let answered = tokio::time::timeout(self.stop_timeout, async {
             loop {
-                let now = status.borrow_and_update().clone();
-                if matches!(now, WiFiStatus::Off(_)) {
-                    return now;
+                if *status.borrow_and_update() == WiFiStatus::Off(OFF_STOPPED.into()) {
+                    return;
                 }
+                // Closed: the listener's actor ended, and its exit publishes `Off("stopped")` first.
                 if status.changed().await.is_err() {
-                    return WiFiStatus::Off("stopped".into());
+                    return;
                 }
             }
         })
         .await
-        .unwrap_or_else(|_| WiFiStatus::Off("stopped".into()));
+        .is_ok();
         drop(listener);
-        self.publish(stopped);
+        if answered {
+            self.publish(WiFiStatus::Off(OFF_STOPPED.into()));
+        } else {
+            warn!("Wi-Fi: the listener didn't stop within {:?}; dropped it", self.stop_timeout);
+            self.publish(WiFiStatus::Off(OFF_STOP_UNANSWERED.into()));
+        }
     }
 
     fn publish(&self, status: WiFiStatus) {
