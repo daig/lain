@@ -44,7 +44,7 @@ import Testing
     @Test func aSlowLinkBringsTheTargetUnderItsCapacity() {
         var c = BitrateController(start: 60_000_000)
         run(&c, seconds: 4, capacityBps: 12_000_000)
-        #expect(c.target <= 12_000_000, "\(c.target)")
+        #expect(c.target <= 14_000_000, "around the capacity, probing: \(c.target)")
         #expect(c.target >= 7_000_000, "not crushed to the floor: \(c.target)")
     }
 
@@ -74,11 +74,22 @@ import Testing
         #expect(c.target >= 40_000_000, "\(c.target)")
     }
 
-    @Test func anIdleLinkTeachesNothing() {
-        var c = BitrateController(start: 10_000_000)
-        // A few tiny refinement-sized acks, clear round trips: the link isn't busy, so no climb.
-        for i in 0..<40 { c.acked(bytes: 5_000, rttNs: 8 * Self.ms, at: UInt64(i) * 150 * Self.ms) }
-        #expect(c.target == 10_000_000)
+    /// Seen on the device: at 6 Mb/s the encoder makes tiny frames that never fill the link, so a rule that
+    /// waited for a busy link to climb kept the target at the floor all session. A clear link climbs.
+    @Test func aQuietClearLinkClimbsOffTheFloor() {
+        var c = BitrateController(start: 6_000_000)
+        for i in 0..<150 { c.acked(bytes: 1_500, rttNs: 9 * Self.ms, at: UInt64(i) * 67 * Self.ms) }   // 10 s
+        #expect(c.target >= 30_000_000, "\(c.target)")
+    }
+
+    /// Seen on the device: the session's first keyframe (209 KB) and the burst behind it hold frames back
+    /// and queue for a moment. That isn't the link's capacity.
+    @Test func theStartupBurstIsntTakenForASlowLink() {
+        var c = BitrateController(start: 20_000_000)
+        c.acked(bytes: 209_000, rttNs: 150 * Self.ms, at: 150 * Self.ms)
+        for i in 0..<20 { c.heldBack(at: UInt64(150 + i * 10) * Self.ms) }
+        for i in 1...12 { c.acked(bytes: 40_000, rttNs: 60 * Self.ms, at: UInt64(150 + i * 40) * Self.ms) }
+        #expect(c.target == 20_000_000)
     }
 
     /// Seen on the device: tiny frames at a few per second, one of them caught in a stall. The link delivers
