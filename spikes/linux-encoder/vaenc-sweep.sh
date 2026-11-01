@@ -8,5 +8,5 @@ while IFS= read -r line; do
     [[ -z "$line" || "$line" == \#* ]] && continue
     echo "== $line"
     # shellcheck disable=SC2086
-    ./vaenc/vaenc --seconds "$secs" $line 2>&1 | grep -E 'loadavg|run:|normal:|AU mean|IDR|refine|sequence|failed'
+    ./vaenc/vaenc --seconds "$secs" $line 2>&1 | grep -E 'loadavg|run:|normal:|content:|AU mean|IDR|refine|sequence|failed'
 done

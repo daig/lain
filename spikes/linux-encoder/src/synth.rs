@@ -17,6 +17,7 @@ use gstreamer_app as gst_app;
 use gstreamer_video as gst_video;
 
 use crate::stats::{mean, summary};
+use crate::va::{Va, assert_no_foreign_gpu_fds};
 use crate::{Args, BusySampler, bus_error, configure_encoder, cpu_ns, is_irap, loadavg, nal_types, now_ns};
 
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
@@ -78,8 +79,8 @@ fn text_frame(w: usize, h: usize, offset: usize, period: usize) -> Vec<u8> {
 }
 
 /// Makes the ring of VA-surface frames; returns them, their caps, and the pipeline that owns their pool
-/// (kept alive, and its VA display shared with the encode pipeline so no frame is copied between them).
-fn make_ring(args: &Args, w: u32, h: u32, fps: u32) -> (Vec<gst::Buffer>, gst::Caps, gst::Pipeline) {
+/// (kept alive; every pipeline shares the pinned VA display, so no frame is copied between them).
+fn make_ring(args: &Args, va: &Va, w: u32, h: u32, fps: u32) -> (Vec<gst::Buffer>, gst::Caps, gst::Pipeline) {
     let n: usize = args.get("ring", 32);
     let content = args.str("content", "text");
     let ring_format = args.str("ring-format", "BGRx");
@@ -94,9 +95,11 @@ fn make_ring(args: &Args, w: u32, h: u32, fps: u32) -> (Vec<gst::Buffer>, gst::C
         other => panic!("unknown --content {other}"),
     };
     let desc = format!(
-        "{src} ! vapostproc name=up ! video/x-raw(memory:VAMemory),format={ring_format} ! appsink name=sink sync=false"
+        "{src} ! {} name=up ! video/x-raw(memory:VAMemory),format={ring_format} ! appsink name=sink sync=false",
+        va.postproc
     );
     let pipeline = gst::parse::launch(&desc).unwrap().downcast::<gst::Pipeline>().unwrap();
+    va.pin(&pipeline);
     let sink = pipeline.by_name("sink").unwrap().downcast::<gst_app::AppSink>().unwrap();
     pipeline.set_state(gst::State::Playing).expect("ring pipeline");
     if content == "text" {
@@ -126,7 +129,7 @@ fn make_ring(args: &Args, w: u32, h: u32, fps: u32) -> (Vec<gst::Buffer>, gst::C
     (ring, caps, pipeline)
 }
 
-pub fn run(args: &Args) {
+pub fn run(args: &Args, va: &Va) {
     let w: u32 = args.get("width", 2752);
     let h: u32 = args.get("height", 2064);
     let fps: u32 = args.get("fps", 120);
@@ -141,8 +144,7 @@ pub fn run(args: &Args) {
     let dump = args.map.get("dump").cloned();
 
     println!("loadavg before: {}", loadavg());
-    let (ring, ring_caps, ring_pipeline) = make_ring(args, w, h, fps);
-    let ctx = ring_pipeline.context("gst.va.display.handle");
+    let (ring, ring_caps, ring_pipeline) = make_ring(args, va, w, h, fps);
 
     let nv12 = if colorimetry.is_empty() {
         "video/x-raw(memory:VAMemory),format=NV12".to_string()
@@ -152,19 +154,18 @@ pub fn run(args: &Args) {
     // --codec h264 is for comparison only (lain streams HEVC). --queue puts a thread boundary between the
     // conversion and the encoder, so they can overlap when more than one request is in flight.
     let (encoder, out_caps) = match args.str("codec", "h265").as_str() {
-        "h264" => ("vah264enc", "video/x-h264,profile=high"),
-        _ => ("vah265enc", "video/x-h265,profile=main"),
+        "h264" => (va.h264enc.as_deref().expect("no VA H.264 encoder"), "video/x-h264,profile=high"),
+        _ => (va.h265enc.as_str(), "video/x-h265,profile=main"),
     };
     let queue = if args.map.contains_key("queue") { "queue max-size-buffers=2 ! " } else { "" };
     let desc = format!(
-        "appsrc name=src format=time is-live=true min-latency=0 max-buffers=4 ! vapostproc name=pp ! {nv12} ! \
-         {queue}{encoder} name=enc ! {out_caps} ! fakesink name=sink sync=false async=false"
+        "appsrc name=src format=time is-live=true min-latency=0 max-buffers=4 ! {} name=pp ! {nv12} ! \
+         {queue}{encoder} name=enc ! {out_caps} ! fakesink name=sink sync=false async=false",
+        va.postproc
     );
     let pipeline = gst::parse::launch(&desc).unwrap().downcast::<gst::Pipeline>().unwrap();
-    match &ctx {
-        Some(c) => pipeline.set_context(c),
-        None => eprintln!("warning: no VA display context to share; frames may be copied"),
-    }
+    // One pinned VA display for the ring, the conversion and the encoder: no frame is copied between them.
+    va.pin(&pipeline);
     let appsrc = pipeline.by_name("src").unwrap().downcast::<gst_app::AppSrc>().unwrap();
 
     // --csc-at-capture: a capture thread converts every tick's BGRx frame to NV12 as it is "captured"
@@ -177,14 +178,15 @@ pub fn run(args: &Args) {
     let mut capture_thread = None;
     let mut capture_pipeline = None;
     if csc_at_capture {
+        // --csc-queue: how many BGRx frames may wait for the conversion (leaky: the oldest is dropped).
+        let csc_queue: u32 = args.get("csc-queue", 2);
         let cdesc = format!(
-            "appsrc name=csrc format=time is-live=true min-latency=0 max-buffers=2 leaky-type=downstream ! \
-             vapostproc ! {nv12} ! appsink name=csink sync=false max-buffers=1 drop=true emit-signals=false"
+            "appsrc name=csrc format=time is-live=true min-latency=0 max-buffers={csc_queue} leaky-type=downstream ! \
+             {} ! {nv12} ! appsink name=csink sync=false max-buffers=1 drop=true emit-signals=false",
+            va.postproc
         );
         let cp = gst::parse::launch(&cdesc).unwrap().downcast::<gst::Pipeline>().unwrap();
-        if let Some(c) = &ctx {
-            cp.set_context(c);
-        }
+        va.pin(&cp);
         let csrc = cp.by_name("csrc").unwrap().downcast::<gst_app::AppSrc>().unwrap();
         csrc.set_caps(Some(&ring_caps));
         let csink = cp.by_name("csink").unwrap().downcast::<gst_app::AppSink>().unwrap();
@@ -241,6 +243,7 @@ pub fn run(args: &Args) {
     }
     let enc = pipeline.by_name("enc").unwrap();
     configure_encoder(&enc, args);
+    assert_eq!(enc.property::<String>("device-path"), va.node, "encoder not on the pinned node");
 
     let recs: Arc<Mutex<HashMap<u64, Rec>>> = Arc::default();
     let (tx, rx) = mpsc::channel::<u64>();
@@ -428,6 +431,7 @@ pub fn run(args: &Args) {
     let wall = now_ns() - start;
     let cpu = cpu_ns() - cpu0;
     let gfx_busy = busy.finish();
+    assert_no_foreign_gpu_fds();
     let load_after = loadavg();
     stop_capture.store(true, std::sync::atomic::Ordering::Relaxed);
     if let Some(t) = capture_thread {
@@ -453,17 +457,24 @@ pub fn run(args: &Args) {
     let mut idr_ok = 0;
     let mut idr_missed = 0;
     let mut unrequested_irap = 0;
+    // AUs with no start code at all: vah265enc overrunning its coded buffer, almost always on an IDR
+    // (forced, or its periodic one every key-int-max frames), so a missing IRAP may be hiding here.
+    let mut corrupt: Vec<(usize, Kind)> = Vec::new();
     let mut refine_irap = 0;
     let mut bytes_total = 0usize;
     let mut cap_to_au: Vec<u64> = Vec::new();
     let mut done = 0u64;
     let mut pts_sorted: Vec<_> = kinds.keys().copied().collect();
     pts_sorted.sort_unstable();
-    for pts in &pts_sorted {
+    for (index, pts) in pts_sorted.iter().enumerate() {
         let kind = kinds[pts];
         let Some(r) = recs.get(pts) else { continue };
         if r.t_out == 0 {
             continue;
+        }
+        if r.types.is_empty() {
+            // index + 1: the uncounted warm-up frame is the encoder's frame 0.
+            corrupt.push((index + 1, kind));
         }
         done += 1;
         bytes_total += r.size;
@@ -479,8 +490,14 @@ pub fn run(args: &Args) {
             (Kind::Refine, true) => refine_irap += 1,
             _ => {}
         }
-        if let Some(t_cap) = push_tick.get(pts).and_then(|k| cap_times.lock().unwrap().get(k).copied()) {
-            cap_to_au.push(r.t_out - t_cap);
+        // Capture → AU, from the moment the frame encoded was "captured": its tick (convert on request), or
+        // the push of its BGRx frame into the conversion (--csc-at-capture). Comparable across both modes,
+        // unlike push → AU, which starts after the frame has waited for the previous encode.
+        if let Some(&k) = push_tick.get(pts) {
+            let t_cap = if csc_at_capture { cap_times.lock().unwrap().get(&k).copied() } else { Some(start + k * period) };
+            if let Some(t_cap) = t_cap {
+                cap_to_au.push(r.t_out - t_cap);
+            }
         }
         let e = by_kind.entry(kind).or_default();
         e.0.push(r.t_out - r.t_enc_in);
@@ -488,11 +505,17 @@ pub fn run(args: &Args) {
         e.2.push(r.t_enc_in - r.t_pp_in);
         e.3.push(r.size as u64);
     }
+    // Content fps counts new frames (normal and forced IDR) only; refinements re-encode a frame already sent.
+    let content = pts_sorted
+        .iter()
+        .filter(|p| kinds[*p] != Kind::Refine && recs.get(*p).is_some_and(|r| r.t_out > 0))
+        .count();
     println!(
-        "run: {w}x{h} tick {fps} Hz for {:.2} s, inflight<={max_inflight}: {done} encodes = {:.1} fps \
-         ({} ticks, {:.1}% of ticks encoded){}",
+        "run: {w}x{h} tick {fps} Hz for {:.2} s, inflight<={max_inflight}: {content} content encodes = {:.1} fps, \
+         {} refinements ({} ticks, {:.1}% of ticks encoded){}",
         wall as f64 / 1e9,
-        done as f64 * 1e9 / wall as f64,
+        content as f64 * 1e9 / wall as f64,
+        done - content as u64,
         total_ticks,
         normal_encodes as f64 * 100.0 / total_ticks as f64,
         if stalled { " STALLED" } else { "" }
@@ -512,13 +535,17 @@ pub fn run(args: &Args) {
             println!("  AU size mean {:.1} KB, max {:.1} KB", mean(sizes) / 1e3, *sizes.iter().max().unwrap() as f64 / 1e3);
         }
     }
-    if csc_at_capture {
-        println!("  {}", summary("capture (BGRx frame pushed for conversion) → AU", &cap_to_au));
-    }
+    let origin = if csc_at_capture { "BGRx frame pushed for conversion" } else { "tick of the frame encoded" };
+    println!("{}", summary(&format!("capture ({origin}) → AU"), &cap_to_au));
     if idr_every > 0 {
         println!("forced IDR: {idr_ok} on the requested frame, {idr_missed} not");
     }
     println!("IRAP pictures not requested: {unrequested_irap} normal, {refine_irap} refinement");
+    println!(
+        "AUs with no start code (corrupt): {} at encoder frames {:?}",
+        corrupt.len(),
+        corrupt.iter().take(12).collect::<Vec<_>>()
+    );
     if refine_every > 0 {
         let sizes: Vec<_> = pts_sorted
             .iter()
