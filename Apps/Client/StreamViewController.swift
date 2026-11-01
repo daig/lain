@@ -251,6 +251,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             panelView.heightAnchor.constraint(lessThanOrEqualTo: view.heightAnchor, multiplier: 0.92),
         ])
         input.setCurve(preferences.curve)
+        input.setScrollScale(preferences.scrollScale)
         input.setInvertScroll(preferences.reverseScroll)
 
         // 4 Hz: whether video is up (hides the connect status) and the HUD's numbers.
@@ -317,6 +318,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             preferences = p
             p.save()
             input.setCurve(p.curve)
+            input.setScrollScale(p.scrollScale)
             input.setInvertScroll(p.reverseScroll)
         }
         renderPanel()

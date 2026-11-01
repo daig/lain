@@ -462,3 +462,19 @@ let ms: UInt64 = 1_000_000
         #expect(sent.contains { if case .keyEvent(let e) = $0 { e.usage == 0x18 && e.isDown } else { false } })
     }
 }
+
+@Suite struct ScrollScaleTests {
+    @Test func scrollDeltasAreScaledAndReversed() {
+        let r = Recorder()
+        let p = r.pipeline
+        p.scrollScale = 2
+        p.scrollChanged(dx: 1, dy: -3, at: 0)
+        p.scrollWheel(dx: 0, dy: 4, at: 10 * ms)
+        p.invertScroll = true
+        p.scrollWheel(dx: 0, dy: 4, at: 20 * ms)
+        let deltas = r.sent.compactMap { m -> [Float]? in
+            if case .scroll(let s) = m, s.momentumPhase == .none, s.dx != 0 || s.dy != 0 { [s.dx, s.dy] } else { nil }
+        }
+        #expect(deltas == [[2, -6], [0, 8], [0, -8]])
+    }
+}

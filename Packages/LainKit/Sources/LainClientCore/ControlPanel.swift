@@ -8,6 +8,10 @@ public struct ClientPreferences: Sendable, Equatable {
     public var pointerSpeed = 3 {
         didSet { pointerSpeed = min(max(pointerSpeed, 1), Self.pointerSensitivities.count) }
     }
+    /// 1…5; 3 scrolls as far as the fingers move.
+    public var scrollSpeed = 3 {
+        didSet { scrollSpeed = min(max(scrollSpeed, 1), Self.scrollScales.count) }
+    }
     /// Reverses the trackpad's scroll direction (off: as the host's natural scrolling).
     public var reverseScroll = false
 
@@ -15,6 +19,10 @@ public struct ClientPreferences: Sendable, Equatable {
 
     /// The curve's `sensitivity` for each speed.
     public static let pointerSensitivities = [0.45, 0.6, 0.75, 0.95, 1.2]
+    /// The scroll multiplier for each speed.
+    public static let scrollScales = [0.5, 0.75, 1.0, 1.4, 2.0]
+
+    public var scrollScale: Double { Self.scrollScales[scrollSpeed - 1] }
 
     public var curve: AccelerationCurve {
         var c = AccelerationCurve()
@@ -22,17 +30,19 @@ public struct ClientPreferences: Sendable, Equatable {
         return c
     }
 
-    static let speedKey = "lain.pointerSpeed", scrollKey = "lain.reverseScroll"
+    static let speedKey = "lain.pointerSpeed", scrollKey = "lain.reverseScroll", scrollSpeedKey = "lain.scrollSpeed"
 
     public static func load(from defaults: UserDefaults = .standard) -> ClientPreferences {
         var p = ClientPreferences()
         if defaults.object(forKey: speedKey) != nil { p.pointerSpeed = defaults.integer(forKey: speedKey) }
+        if defaults.object(forKey: scrollSpeedKey) != nil { p.scrollSpeed = defaults.integer(forKey: scrollSpeedKey) }
         p.reverseScroll = defaults.bool(forKey: scrollKey)
         return p
     }
 
     public func save(to defaults: UserDefaults = .standard) {
         defaults.set(pointerSpeed, forKey: Self.speedKey)
+        defaults.set(scrollSpeed, forKey: Self.scrollSpeedKey)
         defaults.set(reverseScroll, forKey: Self.scrollKey)
     }
 }
@@ -52,6 +62,7 @@ public struct ControlPanel: Sendable, Equatable {
         /// A saved host; nil: automatic (the cable first, then the last connected).
         case host(String?)
         case pointerSpeed
+        case scrollSpeed
         case scrollDirection
     }
 
@@ -83,7 +94,7 @@ public struct ControlPanel: Sendable, Equatable {
             rows.append(.host(nil))
             rows += hosts.hosts.map { .host($0.id) }
         }
-        return rows + [.pointerSpeed, .scrollDirection]
+        return rows + [.pointerSpeed, .scrollSpeed, .scrollDirection]
     }
 
     // MARK: Input
@@ -128,6 +139,9 @@ public struct ControlPanel: Sendable, Equatable {
             // Return cycles: up to the fastest, then back to the slowest.
             change(row, by: preferences.pointerSpeed == ClientPreferences.pointerSensitivities.count
                        ? 1 - preferences.pointerSpeed : 1, preferences: preferences)
+        case .scrollSpeed:
+            change(row, by: preferences.scrollSpeed == ClientPreferences.scrollScales.count
+                       ? 1 - preferences.scrollSpeed : 1, preferences: preferences)
         case .scrollDirection: change(row, by: 1, preferences: preferences)
         }
     }
@@ -137,6 +151,7 @@ public struct ControlPanel: Sendable, Equatable {
         switch row {
         case .host: return .none
         case .pointerSpeed: p.pointerSpeed += step
+        case .scrollSpeed: p.scrollSpeed += step
         case .scrollDirection: p.reverseScroll.toggle()
         }
         return p == preferences ? .none : .setPreferences(p)
@@ -183,9 +198,10 @@ public struct ControlPanel: Sendable, Equatable {
         for (i, row) in rows.enumerated() {
             switch row {
             case .pointerSpeed:
-                let n = preferences.pointerSpeed, all = ClientPreferences.pointerSensitivities.count
-                add(Self.pad("Pointer speed") + "‹ " + String(repeating: "●", count: n)
-                    + String(repeating: "○", count: all - n) + " ›", row: i)
+                add(Self.pad("Pointer speed") + Self.dots(preferences.pointerSpeed, of: ClientPreferences.pointerSensitivities.count),
+                    row: i)
+            case .scrollSpeed:
+                add(Self.pad("Scroll speed") + Self.dots(preferences.scrollSpeed, of: ClientPreferences.scrollScales.count), row: i)
             case .scrollDirection:
                 add(Self.pad("Scroll direction") + "‹ " + (preferences.reverseScroll ? "Reversed" : "Natural") + " ›", row: i)
             case .host:
@@ -209,6 +225,10 @@ public struct ControlPanel: Sendable, Equatable {
         ("left ⌥", "Option"),
         ("⌃⌥⌘ L", "stats HUD"),
     ]
+
+    static func dots(_ n: Int, of all: Int) -> String {
+        "‹ " + String(repeating: "●", count: n) + String(repeating: "○", count: all - n) + " ›"
+    }
 
     static func pad(_ s: String, to width: Int = 20) -> String {
         s.count >= width ? s + " " : s + String(repeating: " ", count: width - s.count)

@@ -17,6 +17,9 @@ public final class ClientInputPipeline {
     /// Negate scroll deltas. Off by default: the pan translation already has the Mac's continuous-
     /// scroll sign, and macOS applies no extra natural-scrolling flip to synthetic continuous events.
     public var invertScroll = false
+    /// Multiplies scroll deltas (trackpad and wheel; the trackpad's momentum follows them). 1: as the iPad
+    /// reports them.
+    public var scrollScale = 1.0
     /// D19: pointer input (moves, button-downs, scroll, gestures) flows only while this is set, which the
     /// capture layer ties to the pointer lock. Keyboard input flows regardless. Button-ups for buttons
     /// already down still pass so nothing sticks.
@@ -280,7 +283,8 @@ public final class ClientInputPipeline {
         guard pointerEnabled, !overlayShown else { return }
         if !isScrolling { scrollBegan(at: timeNs) }
         guard dx != 0 || dy != 0 else { return }
-        let (sx, sy) = invertScroll ? (-dx, -dy) : (dx, dy)
+        let k = invertScroll ? -scrollScale : scrollScale
+        let (sx, sy) = (dx * k, dy * k)
         momentum.changed(dx: sx, dy: sy, at: timeNs)
         let phase: GesturePhase = scrollStarted ? .changed : .began
         scrollStarted = true
@@ -305,7 +309,8 @@ public final class ClientInputPipeline {
     public func scrollWheel(dx: Double, dy: Double, at timeNs: UInt64) {
         guard pointerEnabled, !overlayShown, dx != 0 || dy != 0 else { return }
         if let stop = momentum.cancel() { send(.scroll(stop)) }
-        let (sx, sy) = invertScroll ? (-dx, -dy) : (dx, dy)
+        let k = invertScroll ? -scrollScale : scrollScale
+        let (sx, sy) = (dx * k, dy * k)
         send(.scroll(Scroll(dx: Float(sx), dy: Float(sy), phase: .none, momentumPhase: .none)))
     }
 
