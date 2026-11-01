@@ -105,9 +105,13 @@ impl UsbMuxClient {
     }
 
     async fn open(&self) -> Result<UnixStream, UsbMuxError> {
-        UnixStream::connect(&self.socket_path)
-            .await
-            .map_err(|source| UsbMuxError::Unavailable { path: self.socket_path.clone(), source })
+        UnixStream::connect(&self.socket_path).await.map_err(|source| match source.kind() {
+            // No daemon: the socket file is missing, or stale after the daemon exited.
+            io::ErrorKind::NotFound | io::ErrorKind::ConnectionRefused => {
+                UsbMuxError::Unavailable { path: self.socket_path.clone(), source }
+            }
+            _ => UsbMuxError::io("connect", source),
+        })
     }
 
     async fn within<T>(&self, f: impl Future<Output = Result<T, UsbMuxError>>) -> Result<T, UsbMuxError> {

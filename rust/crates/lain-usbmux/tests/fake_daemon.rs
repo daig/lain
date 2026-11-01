@@ -263,3 +263,111 @@ async fn next_is_cancel_safe() {
     mux.inject(&full[20..]);
     assert_eq!(next(&mut events).await, Some(UsbMuxEvent::Attached(UsbMuxDevice::new(8, "IPAD8"))));
 }
+
+/// Reads until the pipe ends; true if it ended (EOF or reset) in time. Bytes read before the end are ignored.
+async fn ends(stream: &mut (impl tokio::io::AsyncRead + Unpin)) -> bool {
+    let mut buf = [0u8; 64];
+    timeout(WAIT, async {
+        loop {
+            match stream.read(&mut buf).await {
+                Ok(0) | Err(_) => return,
+                Ok(_) => {}
+            }
+        }
+    })
+    .await
+    .is_ok()
+}
+
+/// Writes and reads back through an echoing pipe.
+async fn echoes(pipe: &mut tokio::net::UnixStream) {
+    pipe.write_all(b"still").await.unwrap();
+    let mut buf = [0u8; 5];
+    timeout(WAIT, pipe.read_exact(&mut buf)).await.unwrap().unwrap();
+    assert_eq!(&buf, b"still");
+}
+
+#[tokio::test]
+async fn a_detach_closes_that_devices_bridged_pipes() {
+    let mux = FakeUsbMuxd::start(
+        vec![FakeDevice::usb(5, "IPAD"), FakeDevice::usb(6, "IPAD2")],
+        FakeTarget::Tcp(echo_server().await),
+    )
+    .unwrap();
+    let mut gone = mux.client().connect(5, 47800).await.unwrap();
+    let mut kept = mux.client().connect(6, 47800).await.unwrap();
+    echoes(&mut gone).await;
+    mux.detach(5);
+    assert!(ends(&mut gone).await, "the detached device's pipe stays open");
+    echoes(&mut kept).await;
+}
+
+#[tokio::test]
+async fn a_detach_closes_that_devices_handed_off_pipes() {
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let mux =
+        FakeUsbMuxd::start(vec![FakeDevice::usb(5, "IPAD"), FakeDevice::usb(6, "IPAD2")], FakeTarget::Handoff(tx))
+            .unwrap();
+    let mut gone = mux.client().connect(5, 47800).await.unwrap();
+    let mut gone_far = timeout(WAIT, rx.recv()).await.unwrap().unwrap();
+    let mut kept = mux.client().connect(6, 47800).await.unwrap();
+    let mut kept_far = timeout(WAIT, rx.recv()).await.unwrap().unwrap();
+    mux.detach(5);
+    assert!(ends(&mut gone).await, "the client's end stays open");
+    assert!(ends(&mut gone_far.stream).await, "the handed-off end stays open");
+    kept.write_all(b"ping").await.unwrap();
+    let mut buf = [0u8; 4];
+    timeout(WAIT, kept_far.stream.read_exact(&mut buf)).await.unwrap().unwrap();
+    assert_eq!(&buf, b"ping");
+}
+
+/// Opens a bridged and a handed-off pipe on two fakes, ends both fakes with `end`, and checks every pipe ends.
+async fn ending_the_daemon_closes_every_pipe(end: fn(&FakeUsbMuxd)) {
+    let bridged = FakeUsbMuxd::start(vec![FakeDevice::usb(5, "IPAD")], FakeTarget::Tcp(echo_server().await)).unwrap();
+    let (tx, mut rx) = mpsc::unbounded_channel();
+    let handed = FakeUsbMuxd::start(vec![FakeDevice::usb(5, "IPAD")], FakeTarget::Handoff(tx)).unwrap();
+    let mut a = bridged.client().connect(5, 47800).await.unwrap();
+    echoes(&mut a).await;
+    let mut b = handed.client().connect(5, 47800).await.unwrap();
+    let mut b_far = timeout(WAIT, rx.recv()).await.unwrap().unwrap();
+    end(&bridged);
+    end(&handed);
+    assert!(ends(&mut a).await, "the bridged pipe stays open");
+    assert!(ends(&mut b).await, "the handed-off pipe's client end stays open");
+    assert!(ends(&mut b_far.stream).await, "the handed-off end stays open");
+}
+
+#[tokio::test]
+async fn an_exit_closes_every_pipe() {
+    ending_the_daemon_closes_every_pipe(FakeUsbMuxd::exit).await;
+}
+
+#[tokio::test]
+async fn a_stop_closes_every_pipe() {
+    ending_the_daemon_closes_every_pipe(FakeUsbMuxd::stop).await;
+}
+
+#[tokio::test]
+async fn a_connect_right_after_an_exit_is_refused() {
+    let mux = FakeUsbMuxd::start(vec![FakeDevice::usb(5, "IPAD")], FakeTarget::Tcp(echo_server().await)).unwrap();
+    mux.exit();
+    for r in [mux.client().connect(5, 47800).await.map(drop), mux.client().list_devices().await.map(drop)] {
+        assert!(
+            matches!(&r, Err(UsbMuxError::Unavailable { source, .. }) if source.kind() == std::io::ErrorKind::ConnectionRefused),
+            "{r:?}"
+        );
+    }
+}
+
+#[tokio::test]
+async fn other_socket_errors_are_io_errors() {
+    // A path through a regular file: ENOTDIR, which isn't the daemon being absent.
+    let dir = tempfile::tempdir().unwrap();
+    let file = dir.path().join("file");
+    std::fs::write(&file, b"").unwrap();
+    let r = UsbMuxClient::new(file.join("usbmuxd")).list_devices().await;
+    assert!(
+        matches!(&r, Err(UsbMuxError::Io { op: "connect", source }) if source.kind() == std::io::ErrorKind::NotADirectory),
+        "{r:?}"
+    );
+}
