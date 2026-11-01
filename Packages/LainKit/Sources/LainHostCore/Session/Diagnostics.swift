@@ -1,3 +1,4 @@
+import Foundation
 import LainProtocol
 
 /// The session's once-a-second diagnostics (logged as category `diag`): how the iPad's input arrives, from
@@ -88,7 +89,8 @@ public struct VideoWindow: Sendable, Equatable {
     public init() {}
 
     /// With the cumulative stats' change over the same second (captured, held back before encode).
-    public func line(captured: Int, droppedBeforeEncode: Int) -> String {
+    /// `forLink`/`forEncoder`: the held-back frames by what they waited for (nil: not split).
+    public func line(captured: Int, droppedBeforeEncode: Int, forLink: Int? = nil, forEncoder: Int? = nil) -> String {
         let sorted = ackRttsMs.sorted()
         let p50 = sorted.isEmpty ? 0 : sorted[sorted.count / 2], max = sorted.last ?? 0
         let mean = sent > 0 ? bytes / sent : 0
@@ -96,6 +98,10 @@ public struct VideoWindow: Sendable, Equatable {
                               + " · ack p50 %.0f max %.0f ms · in flight max %d",
                           captured, sent, keyframes, refinements, droppedBeforeEncode, Double(bytes) * 8 / 1e6, mean / 1024,
                           maxFrameBytes / 1024, p50, max, maxInFlight)
+        if let forLink, let forEncoder {
+            line = line.replacingOccurrences(of: "held back \(droppedBeforeEncode) ",
+                                             with: "held back \(droppedBeforeEncode) (link \(forLink), encoder \(forEncoder)) ")
+        }
         if let targetBps {
             line += String(format: " · target %.1f Mb/s", Double(targetBps) / 1e6)
             line += deliveryBps.map { String(format: ", delivered %.1f", Double($0) / 1e6) } ?? ""

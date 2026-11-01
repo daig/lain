@@ -7,8 +7,12 @@ public final class FrameGate<Frame: Sendable>: Sendable {
     public struct Stats: Sendable, Equatable {
         public var offered = 0
         public var encoded = 0
-        /// Replaced in the slot by a newer frame before they could be encoded.
+        /// Replaced in the slot by a newer frame before they could be encoded…
         public var droppedBeforeEncode = 0
+        /// …while `maxInFlight` frames were unacknowledged (the link was the limit)…
+        public var droppedForLink = 0
+        /// …or while the encoder was busy with the previous one (the encoder was the limit).
+        public var droppedForEncoder = 0
         public var peakInFlight = 0
         /// Re-offers turned away because a newer frame had already been offered (`isStale`).
         public var staleRejected = 0
@@ -53,7 +57,10 @@ public final class FrameGate<Frame: Sendable>: Sendable {
                 s.stats.encoded += 1
                 return frame
             }
-            if s.slot != nil { s.stats.droppedBeforeEncode += 1 }
+            if s.slot != nil {
+                s.stats.droppedBeforeEncode += 1
+                if s.window.canSend { s.stats.droppedForEncoder += 1 } else { s.stats.droppedForLink += 1 }
+            }
             s.slot = frame
             return nil
         }
