@@ -17,7 +17,9 @@
 //!   the wire: Mesa writes the slice's QP itself. Measured here: Mesa 26.0.8 ignores a per-picture
 //!   change of the rate control's `max_qp` or of the HRD with packed headers (the output was byte-identical), and
 //!   follows the initial QP. Swift lets VideoToolbox spend the spare budget instead; libva gives a direct QP. A
-//!   refinement exceeds the two-frame HRD (it is meant to: an idle desktop has the budget to spare).
+//!   refinement exceeds the two-frame HRD (it is meant to: an idle desktop has the budget to spare). A
+//!   refinement that is also an IDR gets the same PPS as any IDR (Mesa's, `init_qp` 26), and the P-frames after
+//!   it decode clean (`gpu_tests::refinement_idr_then_p_frames`, 2026-11-01).
 //! - The coded buffer holds a raw picture (`width × height × 1.5`), never less than four frames' budget.
 //!
 //! One picture is in flight at a time ([`HevcEncoder::submit`], then [`HevcEncoder::poll`]).

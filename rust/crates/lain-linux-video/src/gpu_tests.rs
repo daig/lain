@@ -125,6 +125,21 @@ fn gradient_nv12(width: u32, height: u32, f: u32) -> Nv12Picture {
     Nv12Picture { width, height, data }
 }
 
+/// `picture` in the top-left of a `cw × ch` NV12 picture, the rest black (Y 16, CbCr 128).
+fn pad_nv12(picture: &Nv12Picture, cw: u32, ch: u32) -> Nv12Picture {
+    let (w, h, cw_, ch_) = (picture.width as usize, picture.height as usize, cw as usize, ch as usize);
+    let mut data = vec![16u8; cw_ * ch_];
+    data.resize(cw_ * ch_ * 3 / 2, 128);
+    for y in 0..h {
+        data[y * cw_..y * cw_ + w].copy_from_slice(&picture.data[y * w..y * w + w]);
+    }
+    for y in 0..h / 2 {
+        let (src, dst) = (w * h + y * w, cw_ * ch_ + y * cw_);
+        data[dst..dst + w].copy_from_slice(&picture.data[src..src + w]);
+    }
+    Nv12Picture { width: cw, height: ch, data }
+}
+
 /// Synthetic NV12 frames, one per surface (frame i in surface i).
 fn fill_surfaces(pipe: &GpuPipeline, width: u32, height: u32, content: Content) -> Vec<Nv12Picture> {
     let (w, h) = (width as usize, height as usize);
@@ -136,7 +151,10 @@ fn fill_surfaces(pipe: &GpuPipeline, width: u32, height: u32, content: Content) 
             }
             Content::Gradient => gradient_nv12(width, height, i as u32),
         };
-        pipe.va().put_nv12(surface, &picture).expect("vaPutImage");
+        // The whole surface, at the coded size, padding black: radeonsi's vaPutImage crashed (SIGSEGV) putting a
+        // 1366×770 image into a 1408×784 surface (2026-11-01).
+        let (cw, ch) = pipe.settings().encoder.headers().coded_size();
+        pipe.va().put_nv12(surface, &pad_nv12(&picture, cw, ch)).expect("vaPutImage");
         pictures.push(picture);
     }
     pictures
@@ -592,11 +610,12 @@ fn refinement_idr_then_p_frames() {
 }
 
 /// A conversion that reports a GL error leaves no fence behind: the next one starts (the converter used to keep
-/// it, and refuse every later conversion as "already in flight").
+/// it, and refuse every later conversion as "already in flight"). At a size VCN pads (1366×770 in 1408×784
+/// surfaces), the conversion still matches the CPU reference in the visible area.
 #[test]
 #[ignore = "GPU: run through rust/scripts/gpu-run.sh"]
 fn a_gl_error_does_not_wedge_the_converter() {
-    let (w, h) = (256, 144);
+    let (w, h) = (1366, 770);
     let mut pipe = pipeline(w, h);
     let gbm = pipe.gbm().clone();
     let bo = gbm.create_bo(w, h, DRM_FORMAT_XRGB8888, MUTTER_MODIFIER).expect("a GBM buffer");
@@ -620,6 +639,22 @@ fn a_gl_error_does_not_wedge_the_converter() {
     assert!(err.contains("dispatching"), "{err}");
     pipe.start_conversion(&picture, 2).expect("the next conversion starts");
     while !pipe.poll_conversion(1_000_000).unwrap() {}
+    // Read the whole coded surface back, then compare its visible area.
+    let (cw, ch) = pipe.settings().encoder.headers().coded_size();
+    let got = pipe.va().get_nv12(pipe.surface_ids()[2], cw, ch).unwrap();
+    let (wu, hu, cwu, chu) = (w as usize, h as usize, cw as usize, ch as usize);
+    let mut visible = Vec::with_capacity(wu * hu * 3 / 2);
+    for y in 0..hu {
+        visible.extend_from_slice(&got.data[y * cwu..y * cwu + wu]);
+    }
+    for y in 0..hu / 2 {
+        let at = cwu * chu + y * cwu;
+        visible.extend_from_slice(&got.data[at..at + wu]);
+    }
+    let want = reference_nv12(&synthetic_bgrx(wu, hu, 0, false), wu, hu);
+    let (ey, ec, off) = max_error(&visible, &want, wu, hu);
+    println!("{w}×{h} in {cw}×{ch} surfaces: Y max {ey}, CbCr max {ec}, {off} samples off");
+    assert!(ey <= 1 && ec <= 1);
 }
 
 /// A rebuild with a picture still in flight tears the session down without waiting it out (the engine's video
