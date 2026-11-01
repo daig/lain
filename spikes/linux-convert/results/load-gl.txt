@@ -1,0 +1,74 @@
+{"result": "before", "same_as_brief": true, "layout": {"monitors": [{"connector": "HDMI-1", "vendor": "SAM", "product": "Odyssey G95NC", "current_mode": "3840x2160@60.000"}], "logical_monitors": [{"x": 0, "y": 0, "scale": 1.0, "transform": 0, "primary": true, "connectors": ["HDMI-1"]}], "layout_mode": 1}}
+{"result": "virtual", "connector": "Meta-0", "mode": "2752x2064@120.000"}
+=== gl-load-paced: gl/glconv --wg 16x8 --frames 1200 --pace 120 --verify 1 (22:23:06)
+loadavg before: 0.87 0.50 0.25 1/1269 17364; gpu_busy before: 0%
+loadavg before: 0.87 0.50 0.25 1/1274 17405
+gpu_busy_percent before: 0
+device /dev/dri/by-path/pci-0000:79:00.0-render (/dev/dri/renderD130), gbm backend drm
+EGL 1.5 Mesa Project 1.5
+GL 4.6 (Core Profile) Mesa 26.0.8-1ubuntu0.3 | AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic) | AMD
+GL_EXT_EGL_image_storage 1, GL_OES_EGL_image 1, GL_ARB_timer_query 1 (core in 3.3), EGL_ANDROID_native_fence_sync 1
+libva info: VA-API version 1.23.0
+libva info: User environment variable requested driver 'radeonsi'
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/radeonsi_drv_video.so
+libva info: Found init function __vaDriverInit_1_23
+libva info: va_openDriver() returns 0
+VA 1.23 Mesa Gallium driver 26.0.8-1ubuntu0.3 for AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic)
+VA surface export: NV12 2752x2064, 1 objects, 2 layers
+  object 0: size 10027008, modifier 0x0200000000401b03
+  layer 0: R8  , object 0, offset 0, pitch 2816
+  layer 1: GR88, object 0, offset 6488064, pitch 3072
+Y texture internal format 0x8229, UV 0x822b
+input BO: XR24 2752x2064, modifier 0x0200000000401b03, 1 plane(s), stride 11264
+filled 8 input BOs in 169 ms (input texture internal format 0x8051)
+note: the imported XR24 texture is GL_RGB8, which is not an image-unit format: --input image|u32 read garbage (verification fails); use --input texel
+case wg 16x8 input texelFetch, 1200 frames, pace 120 Hz, sync glClientWaitSync
+  shader 16x8 texel compiled+linked in 13.7 ms
+    run: 1200 conversions in 10.00 s = 120.1 conversions/s
+    GPU (timer queries)    p50 2.972  p95 3.319  p99 3.801  max 4.927  mean 2.468 ms
+    CPU dispatch->fence    p50 3.900  p95 4.376  p99 5.440  max 6.141  mean 3.255 ms
+    CPU dispatch->flush    p50 0.065  p95 0.091  p99 0.137  max 0.249  mean 0.068 ms
+    verify ring frame 1 via VA surface 0: Y max 0 mean 0.00000 | CbCr max 0 mean 0.00000 (CbCr off by 1: 0, >1: 0)
+gpu_busy_percent after: 100
+loadavg after: 0.74 0.48 0.25 1/1270 17651
+nvidia-guard: no non-AMD GPU node was opened
+gpu_busy during: mean 60%, max 100%, 101 samples
+loadavg after: 0.74 0.48 0.25 5/1248 17656; gpu_busy after: 0%; exit 0
+=== gl-load-full: gl/glconv --wg 16x8 --frames 1200 --pace 0 --verify 1 (22:23:21)
+loadavg before: 0.68 0.47 0.25 1/1237 17670; gpu_busy before: 0%
+loadavg before: 0.68 0.47 0.25 2/1242 17711
+gpu_busy_percent before: 85
+device /dev/dri/by-path/pci-0000:79:00.0-render (/dev/dri/renderD130), gbm backend drm
+EGL 1.5 Mesa Project 1.5
+GL 4.6 (Core Profile) Mesa 26.0.8-1ubuntu0.3 | AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic) | AMD
+GL_EXT_EGL_image_storage 1, GL_OES_EGL_image 1, GL_ARB_timer_query 1 (core in 3.3), EGL_ANDROID_native_fence_sync 1
+libva info: VA-API version 1.23.0
+libva info: User environment variable requested driver 'radeonsi'
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/radeonsi_drv_video.so
+libva info: Found init function __vaDriverInit_1_23
+libva info: va_openDriver() returns 0
+VA 1.23 Mesa Gallium driver 26.0.8-1ubuntu0.3 for AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic)
+VA surface export: NV12 2752x2064, 1 objects, 2 layers
+  object 0: size 10027008, modifier 0x0200000000401b03
+  layer 0: R8  , object 0, offset 0, pitch 2816
+  layer 1: GR88, object 0, offset 6488064, pitch 3072
+Y texture internal format 0x8229, UV 0x822b
+input BO: XR24 2752x2064, modifier 0x0200000000401b03, 1 plane(s), stride 11264
+filled 8 input BOs in 167 ms (input texture internal format 0x8051)
+note: the imported XR24 texture is GL_RGB8, which is not an image-unit format: --input image|u32 read garbage (verification fails); use --input texel
+case wg 16x8 input texelFetch, 1200 frames, pace 0 Hz, sync glClientWaitSync
+  shader 16x8 texel compiled+linked in 2.9 ms
+    run: 1200 conversions in 1.27 s = 947.8 conversions/s
+    GPU (timer queries)    p50 0.655  p95 2.643  p99 2.771  max 3.333  mean 0.876 ms
+    CPU dispatch->fence    p50 0.733  p95 2.744  p99 2.906  max 3.404  mean 1.054 ms
+    CPU dispatch->flush    p50 0.048  p95 0.072  p99 0.087  max 0.194  mean 0.050 ms
+    verify ring frame 1 via VA surface 0: Y max 0 mean 0.00000 | CbCr max 0 mean 0.00000 (CbCr off by 1: 0, >1: 0)
+gpu_busy_percent after: 0
+loadavg after: 0.68 0.47 0.25 1/1259 17757
+nvidia-guard: no non-AMD GPU node was opened
+gpu_busy during: mean 87%, max 100%, 16 samples
+loadavg after: 0.68 0.47 0.25 1/1237 17764; gpu_busy after: 0%; exit 0
+{"result": "gtkprobe", "ticks_per_s": [115, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120], "guard_rc": -15}
+{"result": "pwprobe", "pictures_per_s": [107, 120, 120, 120, 119, 120, 120, 120, 120, 120, 120, 120, 120, 121, 120, 120, 120, 120, 120, 120, 120, 120, 120, 23], "modifier": "0x200000000401b03"}
+session closed by Mutter
+{"result": "after", "same_as_before": true, "same_as_brief": true, "layout": {"monitors": [{"connector": "HDMI-1", "vendor": "SAM", "product": "Odyssey G95NC", "current_mode": "3840x2160@60.000"}], "logical_monitors": [{"x": 0, "y": 0, "scale": 1.0, "transform": 0, "primary": true, "connectors": ["HDMI-1"]}], "layout_mode": 1}}
