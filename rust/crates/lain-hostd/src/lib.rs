@@ -18,14 +18,17 @@ pub mod config;
 mod daemon;
 mod linux;
 pub mod process;
+mod service;
 mod setup;
 mod status;
+pub mod tray;
 mod wifi;
 
 pub use bus::{BUS_NAME, claim_bus_name, claim_name};
 pub use config::{CONFIG_FILE, Config, ConfigError};
 pub use daemon::{Daemon, DaemonHandle, DaemonOptions};
 pub use linux::LinuxPlatform;
+pub use service::{Control, INTERFACE, OBJECT_PATH, serve};
 pub use setup::{DaemonSetup, LoginItem, SetupRefresh};
 pub use status::video_lines;
 pub use wifi::{OFF_IN_CONFIG, OFF_NO_IDENTITY, OFF_STOP_UNANSWERED, OFF_STOPPED, WifiControlError};

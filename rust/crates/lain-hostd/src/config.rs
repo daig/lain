@@ -532,6 +532,32 @@ fn key_at(text: &str, span: std::ops::Range<usize>) -> Option<String> {
     })
 }
 
+/// Sets a top-level boolean `key` in the config file at `path`, keeping everything else as written (comments
+/// included): its line is replaced, or the key goes before the first table. The file is created if missing, and
+/// the result must still parse, or nothing is written.
+pub fn set_top_level_bool(path: &Path, key: &str, value: bool) -> Result<(), String> {
+    let text = match std::fs::read_to_string(path) {
+        Ok(text) => text,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e.to_string()),
+    };
+    let line = format!("{key} = {value}");
+    let mut lines: Vec<String> = text.lines().map(str::to_owned).collect();
+    let first_table = lines.iter().position(|l| l.trim_start().starts_with('[')).unwrap_or(lines.len());
+    let is_key = |l: &str| l.trim_start().strip_prefix(key).is_some_and(|rest| rest.trim_start().starts_with('='));
+    match lines[..first_table].iter().position(|l| is_key(l)) {
+        Some(i) => lines[i] = line,
+        None => lines.insert(first_table, line),
+    }
+    let mut out = lines.join("\n");
+    out.push('\n');
+    Config::parse(path, &out).map_err(|e| e.to_string())?;
+    if let Some(dir) = path.parent() {
+        std::fs::create_dir_all(dir).map_err(|e| e.to_string())?;
+    }
+    std::fs::write(path, out).map_err(|e| e.to_string())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -568,6 +594,22 @@ mod tests {
         let path = dir.path().join("dir.toml");
         std::fs::create_dir(&path).unwrap();
         assert!(matches!(Config::load(&path), Err(ConfigError::Read { .. })));
+    }
+
+    #[test]
+    fn set_top_level_bool_edits_in_place() {
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("lain/config.toml");
+        set_top_level_bool(&path, "wifi", false).unwrap();
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), "wifi = false\n");
+        std::fs::write(&path, "# mine\nscale = 1.5\nwifi = false # off\n\n[input]\nswap_iso_keys = true\n").unwrap();
+        set_top_level_bool(&path, "wifi", true).unwrap();
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert_eq!(text, "# mine\nscale = 1.5\nwifi = true\n\n[input]\nswap_iso_keys = true\n");
+        std::fs::write(&path, "[input]\nswap_iso_keys = true\n").unwrap();
+        set_top_level_bool(&path, "wifi", false).unwrap();
+        assert!(Config::load(&path).unwrap().input.swap_iso_keys);
+        assert!(!Config::load(&path).unwrap().wifi, "before the table, so top-level");
     }
 
     #[test]
