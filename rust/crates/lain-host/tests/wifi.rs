@@ -13,7 +13,7 @@ mod common;
 use std::time::Duration;
 
 use common::*;
-use lain_host::{HostConfig, HostStatus, Tuning, WifiAdmission};
+use lain_host::{HostConfig, HostSession, HostStatus, Tuning, WifiAdmission};
 use lain_link::{BoundStream, ByteStream, ChannelAuth, LinkDialer, PairingAccounts, TransportError, VersionGap};
 use lain_platform::PlatformError;
 use lain_proto::*;
@@ -326,6 +326,25 @@ async fn another_ipad_over_wifi_is_busy() {
     rig.session.stop().await;
 }
 
+/// A network session stays in the network slot while a newer link from another iPad is turned away busy and
+/// ends: `has_wifi_link` still says yes, and `stop` still ends it.
+#[tokio::test(start_paused = true)]
+async fn a_busy_link_ending_leaves_the_live_wifi_session_counted() {
+    let (one, two) = (secret(), secret());
+    let rig = WifiRig::new(vec![(SERIAL.into(), one.clone()), ("IPAD-8".into(), two.clone())], wifi_config());
+    let first = rig.connect(&one, wifi_hello()).await;
+    assert!(first.hello_ack().is_some());
+    let second = rig.connect(&two, wifi_hello()).await;
+    assert!(second.is_busy("another iPad is connected"), "{:?}", second.reply);
+    assert!(second.link.closed(Duration::from_secs(3)).await);
+    tokio::time::sleep(Duration::from_secs(1)).await;
+    assert!(!first.link.closed(Duration::from_millis(10)).await);
+    assert!(rig.session.has_wifi_link(), "a network session is live");
+    rig.session.stop().await;
+    assert!(first.link.closed(T).await);
+    assert!(!rig.session.has_wifi_link());
+}
+
 // MARK: Other USB devices
 
 /// Nothing reached the live Wi-Fi session: the same status with nothing new published, its link open, nothing
@@ -431,6 +450,47 @@ async fn usbmuxd_exiting_and_coming_back_is_no_error() {
     assert!(rig.usb.next_link(T).await.is_some());
     assert!(rig.statuses.reaches(&HostStatus::connected_usb("iPad16,6"), T).await);
     rig.session.stop().await;
+}
+
+/// usbmuxd exiting or starting can accept the `Listen` connection and close it before answering: that is
+/// "no iPad" too, not an error.
+#[tokio::test]
+async fn a_usbmuxd_closing_during_listen_is_no_error() {
+    let path = std::env::temp_dir().join(format!("lain-host-test-{}-closing-usbmuxd.sock", std::process::id()));
+    let _ = std::fs::remove_file(&path);
+    let listener = tokio::net::UnixListener::bind(&path).unwrap();
+    let accepted = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let count = accepted.clone();
+    let server = tokio::spawn(async move {
+        while let Ok((stream, _)) = listener.accept().await {
+            count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            drop(stream);
+        }
+    });
+    let config = HostConfig {
+        tuning: Tuning { usbmux_retry_interval: Duration::from_millis(100), ..Tuning::default() },
+        ..wifi_config()
+    };
+    let session = HostSession::start(
+        TestPlatform::new(lain_platform::fake::MemorySecretStore::with(vec![])),
+        config,
+        lain_usbmux::UsbMuxClient::new(&path),
+        None,
+    );
+    let mut statuses = Statuses(session.status_changes());
+    tokio::time::sleep(Duration::from_millis(350)).await; // several polls
+    let polls = accepted.load(std::sync::atomic::Ordering::SeqCst);
+    let status = session.status();
+    session.stop().await;
+    server.abort();
+    let _ = std::fs::remove_file(&path);
+    assert!(polls >= 2, "polled {polls} times");
+    assert_eq!(status, HostStatus::WaitingForIPad);
+    let mut seen = Vec::new();
+    while let Ok(status) = statuses.0.try_recv() {
+        seen.push(status);
+    }
+    assert!(!seen.iter().any(|s| matches!(s, HostStatus::Error(_))), "no error on the way: {seen:?}");
 }
 
 // MARK: Another protocol
@@ -555,10 +615,16 @@ async fn every_usb_link_up_signals_secrets_changed() {
     let mut changed = rig.session.secrets_changed();
     assert_eq!(*changed.borrow_and_update(), 0);
     rig.mux.attach(FakeDevice::usb(7, SERIAL));
-    let _usb = rig.usb.next_link(T).await.expect("a USB link");
+    let usb = rig.usb.next_link(T).await.expect("a USB link");
     assert!(rig.statuses.reaches(&HostStatus::connected_usb("iPad16,6"), T).await);
     assert!(within(T, changed.changed()).await.is_some());
-    assert_eq!(*changed.borrow(), 1);
+    assert_eq!(*changed.borrow_and_update(), 1);
+    // The client closes realtime and comes back: the next link-up signals again.
+    usb.close();
+    let _usb = rig.usb.next_link(T).await.expect("the second USB link");
+    assert!(rig.statuses.reaches(&HostStatus::connected_usb("iPad16,6"), T).await);
+    assert!(within(T, changed.changed()).await.is_some());
+    assert_eq!(*changed.borrow(), 2);
     assert_eq!(rig.secrets.snapshot(), stored(&secret).into_iter().collect(), "authenticated: nothing written");
     rig.session.stop().await;
 }
@@ -853,3 +919,26 @@ async fn the_cable_going_in_during_a_takeover_waits_for_every_earlier_display() 
 
 #[allow(dead_code)]
 fn _uses(_: LinkDialer<WifiDialer>) {}
+
+/// `HostSetup` never goes before `HelloAck`: a setup change while a takeover waits for the earlier display
+/// (and before the new session has answered) is carried by the `HostSetup` after the first layout.
+/// Intended tightening of Swift, whose `sendSetupIfChanged` checks only that the link hasn't ended.
+#[tokio::test(start_paused = true)]
+async fn host_setup_never_goes_before_hello_ack() {
+    let secret = secret();
+    let rig = WifiRig::new(stored(&secret), wifi_config());
+    rig.platform.display.set_removal(Duration::from_millis(800));
+    let first = rig.connect(&secret, wifi_hello()).await;
+    assert!(first.hello_ack().is_some());
+    let host = rig.wifi.clone();
+    let key = secret.clone();
+    let second = tokio::spawn(async move { WifiIPad::connect(&host, &key, wifi_hello()).await });
+    assert!(first.link.closed(T).await);
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    rig.session.setup_changed();
+    let mut second = second.await.unwrap().expect("a link");
+    assert!(matches!(second.reply, Message::HelloAck(_)), "first message: {:?}", second.reply);
+    assert!(matches!(second.link.next(T).await, Some(Message::DisplayLayout(_))));
+    assert!(matches!(second.link.next(T).await, Some(Message::HostSetup(_))));
+    rig.session.stop().await;
+}
