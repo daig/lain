@@ -1,6 +1,7 @@
 import CoreGraphics
 import LainHostCore
 import Observation
+import Synchronization
 import SwiftUI
 
 @main
@@ -66,6 +67,30 @@ struct LainHostApp: App {
                 Divider()
                 ForEach(video, id: \.self) { Text($0) }
             }
+            if host.videoStoppedOnTheMac {
+                Button("Resume Video") { host.resumeVideo() }
+            }
+            Divider()
+            Menu("Display Scale") {
+                ForEach(HostPreferences.scaleChoices, id: \.self) { scale in
+                    Button((host.preferences.displayScale == scale ? "✓ " : "") + HostController.scaleTitle(scale)) {
+                        host.update { $0.displayScale = scale }
+                    }
+                }
+            }
+            Menu("Keep Display After Disconnect") {
+                ForEach(HostPreferences.keepAliveChoices, id: \.self) { seconds in
+                    Button((host.preferences.displayKeepAliveSeconds == seconds ? "✓ " : "") + HostController.keepAliveTitle(seconds)) {
+                        host.update { $0.displayKeepAliveSeconds = seconds }
+                    }
+                }
+            }
+            Button((host.preferences.resumeAfterStop ? "✓ " : "") + "Resume Video After Stop") {
+                host.update { $0.resumeAfterStop.toggle() }
+            }
+            Button((host.preferences.systemKey ? "✓ " : "") + "Right Option Is the System Key") {
+                host.update { $0.systemKey.toggle() }
+            }
             Divider()
             switch host.loginAgent {
             case .enabled:
@@ -97,6 +122,13 @@ final class HostController {
     private(set) var videoLines: [String]?
     /// lain on the iPad runs an older protocol version (it works): what updating it adds.
     private(set) var peerVersionNote: String?
+    /// The owner's settings, kept in the app's defaults.
+    private(set) var preferences = HostPreferences.load()
+    /// The live session's capture was stopped from the Mac's menu bar.
+    private(set) var videoStoppedOnTheMac = false
+    /// Read by the session's queues as each session starts.
+    @ObservationIgnored private let livePreferences = LivePreferences(HostPreferences.load())
+    @ObservationIgnored private let keeper = DisplayKeeper(keepFor: .seconds(HostPreferences.load().displayKeepAliveSeconds))
 
     @ObservationIgnored private var session: HostSession?
     @ObservationIgnored private var accessPoll: Task<Void, Never>?
@@ -114,10 +146,15 @@ final class HostController {
         }
         // The Wi-Fi listener exists only here, after the test-host guard: a test host never listens or
         // advertises (§7.7 D29 decision 12).
-        let session = HostSession(dependencies: .init(sink: InputInjector(), video: { HostVideoPipeline.live() },
+        let preferences = livePreferences, keeper = keeper
+        let session = HostSession(dependencies: .init(sink: InputInjector(),
+                                                      video: { HostVideoPipeline.live(keeper: keeper,
+                                                                                      scale: preferences.value.displayScale) },
                                                       identity: identity,
                                                       wifi: identity.map { _ in HostWiFiConfig(advertise: true) },
-                                                      setup: Self.probeSetup)) {
+                                                      setup: Self.probeSetup,
+                                                      preferences: { preferences.value },
+                                                      displayKeeper: keeper)) {
             [weak self] status in
             // Main-queue hops keep status updates in order.
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.status = status } }
@@ -140,6 +177,8 @@ final class HostController {
                 if self?.wifiLine != wifi { self?.wifiLine = wifi }
                 let note = session.peerVersionNote
                 if self?.peerVersionNote != note { self?.peerVersionNote = note }
+                let stopped = session.isVideoStoppedOnTheMac
+                if self?.videoStoppedOnTheMac != stopped { self?.videoStoppedOnTheMac = stopped }
                 // A grant, a display attached: the iPad hears about it (if its version has HostSetup).
                 session.setupChanged()
             }
@@ -184,7 +223,53 @@ final class HostController {
         ]
     }
 
+    /// Changes a setting: saved, and applied to the live session where it can't wait for the next one
+    /// (the scale and the system key reconnect it; the keep-alive applies to the next display kept).
+    func update(_ change: (inout HostPreferences) -> Void) {
+        var new = preferences
+        change(&new)
+        guard new != preferences else { return }
+        let old = preferences
+        preferences = new
+        new.save()
+        livePreferences.value = new
+        keeper.keepFor = .seconds(new.displayKeepAliveSeconds)
+        if new.displayScale != old.displayScale || new.systemKey != old.systemKey { session?.reconnect() }
+    }
+
+    func resumeVideo() {
+        session?.resumeVideo()
+    }
+
+    nonisolated static func scaleTitle(_ scale: Double) -> String {
+        let spec = { var s = VirtualDisplay.Spec(); s.scale = scale; return s }()
+        let name = switch scale {
+        case ..<1.9: "More Space"
+        case 1.9..<2.1: "Default"
+        default: "Larger"
+        }
+        return "\(name): \(spec.pointWidth)×\(spec.pointHeight)"
+    }
+
+    nonisolated static func keepAliveTitle(_ seconds: Int) -> String {
+        switch seconds {
+        case 0: "Off"
+        case ..<60: "\(seconds) s"
+        default: "\(seconds / 60) min"
+        }
+    }
+
     func requestAccessibility() {
         hasAccessibility = InputInjector.requestAccess()
+    }
+}
+
+/// The settings the session's queues read as each session starts.
+final class LivePreferences: Sendable {
+    private let preferences: Mutex<HostPreferences>
+    init(_ preferences: HostPreferences) { self.preferences = Mutex(preferences) }
+    var value: HostPreferences {
+        get { preferences.withLock { $0 } }
+        set { preferences.withLock { $0 = newValue } }
     }
 }

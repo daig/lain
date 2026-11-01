@@ -101,6 +101,9 @@ public final class HostVideoPipeline: Sendable {
         var encodeMs = RollingPercentiles(capacity: 240)
         var rttMs = RollingPercentiles(capacity: 240)
         var rate = RateMeter()
+        /// Capture failed on its own (not stopped by the owner): the display goes with it rather than being
+        /// kept for the next session (`DisplayKeeper`).
+        var discardDisplay = false
     }
 
     public let displayProvider: any StreamedDisplayProvider
@@ -225,6 +228,9 @@ public final class HostVideoPipeline: Sendable {
             try await frameSource.start(config, onFrame: { [weak self] buffer, t in self?.captured(buffer, t) },
                                         onError: { [weak self] error in
                                             self?.log.error("capture failed: \(error)")
+                                            if !(error is CaptureStoppedByUser) {
+                                                self?.state.withLock { $0.discardDisplay = true }
+                                            }
                                             onError?(error)
                                         })
         } catch {
@@ -235,8 +241,9 @@ public final class HostVideoPipeline: Sendable {
         if !isRunning { await frameSource.stop() }
     }
 
-    /// Stops capture, releases the encoder and gate, stops the cursor monitor and removes the display.
-    /// Idempotent and synchronous: nothing is sent on the video connection after it returns (except by
+    /// Stops capture, releases the encoder and gate, stops the cursor monitor and retires the display: kept
+    /// for the next session when the provider has a `DisplayKeeper`, else removed (and removed in any case
+    /// after a capture failure). Idempotent and synchronous: nothing is sent on the video connection after it returns (except by
     /// a VideoToolbox callback already past its check); the capture stop and display removal finish in
     /// the background (`waitUntilStopped`). A stop while `start` is still creating the display lets the
     /// start remove it, and the background part waits for that too.
@@ -252,6 +259,7 @@ public final class HostVideoPipeline: Sendable {
             guard s.phase != .stopped else { return nil }
             // A start still creating the display removes it itself when it sees `.stopped`.
             let removeDisplay = s.display != nil && s.phase != .starting
+            let keepDisplay = !s.discardDisplay
             s.phase = .stopped
             defer {
                 s.timer = nil; s.cursor = nil; s.encoder = nil; s.gate = nil; s.channel = nil; s.lastCaptured = nil
@@ -263,8 +271,12 @@ public final class HostVideoPipeline: Sendable {
                 // display from this pipeline may still exist.
                 await starting.wait()
                 if removeDisplay {
-                    provider.destroy()
-                    await provider.waitUntilRemoved()
+                    if keepDisplay {
+                        await provider.retire()
+                    } else {
+                        provider.destroy()
+                        await provider.waitUntilRemoved()
+                    }
                 }
             }
             return Taken(timer: s.timer, cursor: s.cursor, encoder: s.encoder, gate: s.gate)
@@ -506,8 +518,11 @@ struct RateMeter: Sendable {
 extension HostVideoPipeline {
     /// The production wiring: the iPad-geometry virtual display (Extend mode, origin left to macOS),
     /// ScreenCaptureKit, and `NSCursor.currentSystem`. Needs Screen Recording; creating it touches nothing.
-    public static func live(options: Options = Options()) -> HostVideoPipeline {
-        HostVideoPipeline(display: VirtualStreamedDisplayProvider(refreshRate: options.frameRate),
+    public static func live(options: Options = Options(), keeper: DisplayKeeper? = nil,
+                            scale: Double = HostPreferences.defaultScale) -> HostVideoPipeline {
+        var spec = VirtualDisplay.Spec()
+        spec.scale = scale
+        return HostVideoPipeline(display: VirtualStreamedDisplayProvider(spec: spec, refreshRate: options.frameRate, keeper: keeper),
                           frameSource: ScreenCaptureFrameSource(), cursorSource: SystemCursorSource(), options: options)
     }
 }

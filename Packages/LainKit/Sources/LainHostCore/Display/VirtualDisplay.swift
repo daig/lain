@@ -15,7 +15,25 @@ public final class VirtualDisplay: @unchecked Sendable {
         public var sizeMillimeters = CGSize(width: 264.8, height: 198.6)
         public var refreshRates: [Double] = [120, 60]
         public var hiDPI = true
+        /// Panel pixels per point (`HostPreferences.displayScale`): 2 is the iPad's own. Another scale makes a
+        /// desktop of `pointWidth`×`pointHeight` points, rendered at 2× (`backingWidth`), and capture scales it
+        /// to the panel (or to the backing size, when that is smaller).
+        public var scale = 2.0
         public init() {}
+
+        /// The desktop's size in points (even, so every size derived from it is too).
+        public var pointWidth: Int { Self.even(Double(pixelWidth) / scale) }
+        public var pointHeight: Int { Self.even(Double(pixelHeight) / scale) }
+        /// The display's own pixels: twice the points with HiDPI.
+        public var backingWidth: Int { hiDPI ? 2 * pointWidth : pointWidth }
+        public var backingHeight: Int { hiDPI ? 2 * pointHeight : pointHeight }
+        /// What is captured and encoded: the backing size, but never more than the panel.
+        public var streamWidth: Int { min(backingWidth, pixelWidth) }
+        public var streamHeight: Int { min(backingHeight, pixelHeight) }
+        /// Tells displays of different geometry apart (`DisplayKeeper`).
+        public var keeperKey: String { "\(pixelWidth)x\(pixelHeight)@\(pointWidth)x\(pointHeight)" }
+
+        static func even(_ x: Double) -> Int { max(2, Int((x / 2).rounded()) * 2) }
     }
 
     public enum Failure: Error { case create, applySettings, didNotAppear }
@@ -31,8 +49,8 @@ public final class VirtualDisplay: @unchecked Sendable {
         self.spec = spec
         let d = CGVirtualDisplayDescriptor()
         d.name = spec.name
-        d.maxPixelsWide = UInt32(spec.pixelWidth)
-        d.maxPixelsHigh = UInt32(spec.pixelHeight)
+        d.maxPixelsWide = UInt32(spec.backingWidth)
+        d.maxPixelsHigh = UInt32(spec.backingHeight)
         d.sizeInMillimeters = spec.sizeMillimeters
         d.vendorID = Self.vendorID
         d.productID = 0x0001
@@ -47,8 +65,7 @@ public final class VirtualDisplay: @unchecked Sendable {
         let settings = CGVirtualDisplaySettings()
         settings.hiDPI = spec.hiDPI ? 1 : 0
         // With hiDPI on, each mode is also offered at 2× (pixels = 2 × points).
-        let w = spec.hiDPI ? spec.pixelWidth / 2 : spec.pixelWidth
-        let h = spec.hiDPI ? spec.pixelHeight / 2 : spec.pixelHeight
+        let w = spec.pointWidth, h = spec.pointHeight
         settings.modes = spec.refreshRates.map { CGVirtualDisplayMode(width: UInt32(w), height: UInt32(h), refreshRate: $0) }
         guard display.apply(settings) else { throw Failure.applySettings }
         self.display = display
@@ -94,10 +111,17 @@ public final class VirtualDisplay: @unchecked Sendable {
         return (CGDisplayCopyAllDisplayModes(displayID, opts) as? [CGDisplayMode]) ?? []
     }
 
-    /// Switches to the native mode: `pixelWidth` pixels wide at `refreshRate`.
+    /// Whether the window server reports the spec's mode as current.
+    public var isInStreamingMode: Bool {
+        guard let m = CGDisplayCopyDisplayMode(displayID) else { return false }
+        return m.pixelWidth == spec.backingWidth && m.pixelHeight == spec.backingHeight
+    }
+
+    /// Switches to the spec's mode: `pointWidth` points, `backingWidth` pixels wide, at `refreshRate`
+    /// (at scale 2, the panel's native mode).
     @discardableResult
     public func selectNativeMode(refreshRate: Double) -> CGDisplayMode? {
-        guard let mode = modes().first(where: { $0.pixelWidth == spec.pixelWidth && $0.pixelHeight == spec.pixelHeight
+        guard let mode = modes().first(where: { $0.pixelWidth == spec.backingWidth && $0.pixelHeight == spec.backingHeight
             && abs($0.refreshRate - refreshRate) < 1 }) else { return nil }
         var config: CGDisplayConfigRef?
         CGBeginDisplayConfiguration(&config)
