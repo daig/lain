@@ -48,7 +48,13 @@ impl LinuxModifier {
 /// modifier keys both hold the one key mapped here.
 ///
 /// Caps Lock isn't here: it is a toggle, sent to the desktop as the Caps Lock key itself (as Swift's
-/// `InputInjector` posts `kVK_CapsLock`), and the client's `CAPS_LOCK` flag is ignored.
+/// `InputInjector` posts `kVK_CapsLock`), and the client's `CAPS_LOCK` flag is ignored. That is an intended
+/// difference with a cost: Swift also puts the client's flag on every posted event (`cgFlags`:
+/// `.capsLock` → `.maskAlphaShift`), while Linux events carry no flags, so the desktop's own lock state
+/// decides the case. The two are never synced: if the desktop's Caps Lock is on when the client's is off (it
+/// starts off at every connect), letters type inverted until the user presses Caps Lock. Reading and syncing
+/// the desktop's lock state would be the platform's job (not in the contracts); left for the lead's live
+/// check.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ModifierMap {
     pub shift: Option<LinuxModifier>,
@@ -92,6 +98,37 @@ impl ModifierMap {
     }
 }
 
+/// A host-side shortcut for a Command combination the client can only send through its hold remap
+/// (Swift: `RemapTable.default`, "the Cmd combos iPadOS never delivers, reached with Opt instead"): from a
+/// press of `usage` with Command held until Command is released, Command holds `hold` instead of what the
+/// [`ModifierMap`] gives it. No Swift counterpart: on the Mac, Cmd-Tab is the app switcher as it is.
+///
+/// The client turns Opt-Tab into Option released, Command pressed, Tab (Command staying held while Option
+/// is), so with the default map GNOME would get Ctrl+Tab (the next tab) where the user asked for the app
+/// switcher, and GNOME's own Alt+Tab would be unreachable from the iPad. Holding the replacement until
+/// Command is released keeps the switcher open across repeated Tabs, as on the Mac.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct CommandShortcut {
+    /// The client's key: a HID keyboard-page usage, as sent (before [`InputConfig::swap_iso_keys`]).
+    ///
+    /// [`InputConfig::swap_iso_keys`]: crate::InputConfig::swap_iso_keys
+    pub usage: u16,
+    /// What Command holds instead.
+    pub hold: LinuxModifier,
+}
+
+impl CommandShortcut {
+    /// The defaults: Cmd-Tab and Cmd-Shift-Tab (the client's Opt-Tab and Opt-Shift-Tab) hold Alt, GNOME's
+    /// switch-applications; Cmd-` (Opt-`, the Mac's next window) holds Alt, GNOME's switch-group (Alt +
+    /// the key above Tab). The client's other default remaps have no hold equivalent on GNOME and keep the
+    /// map's Ctrl: Cmd-Space (Spotlight; GNOME's search is a Super tap, and Super+Space switches the input
+    /// source), Cmd-H (Hide) and Cmd-Q (Quit, which is Ctrl+Q on GNOME anyway).
+    pub const DEFAULTS: &'static [CommandShortcut] = &[
+        CommandShortcut { usage: 0x2B, hold: LinuxModifier::Alt },
+        CommandShortcut { usage: 0x35, hold: LinuxModifier::Alt },
+    ];
+}
+
 /// A set of [`LinuxModifier`]s.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub struct ModifierSet(u8);
@@ -115,7 +152,9 @@ impl ModifierSet {
         self.0 == 0
     }
 
-    /// The members in press order ([`LinuxModifier::ALL`]).
+    /// The members in [`LinuxModifier::ALL`]'s order. The set keeps no press order, so this is the order the
+    /// router presses modifiers in, and the reverse is the fixed order it releases them in, whatever order
+    /// they were pressed in (Swift's `InputInjector` releases in reverse press order; harmless).
     pub fn iter(self) -> impl DoubleEndedIterator<Item = LinuxModifier> {
         LinuxModifier::ALL.into_iter().filter(move |&m| self.contains(m))
     }

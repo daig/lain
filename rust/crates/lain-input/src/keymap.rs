@@ -10,9 +10,21 @@
 //!   F13–F15.
 //! - Insert (`0x49`) is `KEY_INSERT`, not Help.
 //! - Keypad Num Lock (`0x53`, the Mac's keypad Clear) is `KEY_NUMLOCK`, which toggles the desktop's Num Lock.
-//! - Every page-7 usage the kernel knows is mapped, including those `MacKeyCode` lacks (F21–F24, the editing
-//!   keys `0x74`–`0x7E`, the JIS/Korean keys `0x88`, `0x8A`–`0x8C`, `0x92`–`0x94`, and the non-standard media
-//!   usages `0xE8`–`0xFB` the kernel accepts).
+//!   The keypad then follows that lock state, which is the desktop's (shared with its local keyboard) and
+//!   which neither lain-input nor the client can see. GNOME starts with Num Lock off
+//!   (`org.gnome.desktop.peripherals.keyboard numlock-state`), and XKB's keypad keys are `KEYPAD`-typed
+//!   (`<KP7> = [KP_Home, KP_7]`), so a keypad digit types Home, End or an arrow until Num Lock is on; on the
+//!   Mac the keypad always types digits and Clear is an ordinary key. `KEY_NUMLOCK` is kept deliberately: it
+//!   is how a PC keyboard on the iPad turns digits on. A Mac-like keypad is a desktop setting (the XKB option
+//!   `numpad:mac`, or `numlock-state` true), for `lain-gnome`/`lain-hostd` to offer or check, not this table.
+//!   Only external keyboards are affected: the iPad's Magic Keyboard has no keypad.
+//! - Every page-7 usage the kernel knows is in the table, including those `MacKeyCode` lacks (F21–F24, the
+//!   editing keys `0x74`–`0x7E`, the JIS/Korean keys `0x88`, `0x8A`–`0x8C`, `0x92`–`0x94`, and the
+//!   non-standard media usages `0xE8`–`0xFB` the kernel accepts). But the router drops the [`SYSTEM_KEYS`] by
+//!   default, as Swift drops them (`MacKeyCode` has no `0x66` and nothing from `0xE8`): Power (`0x66`), Sleep
+//!   (`0xF8`), Coffee, GNOME's screen lock (`0xF9`), and Eject (`0xEC`), which gnome-settings-daemon turns
+//!   into a power action, a suspend (ending the session the input came from, with no way to wake the host
+//!   from the iPad), a lock or an eject.
 //! - The Globe/fn key (consumer `0x29D`, Apple top-case `0x03`) is a modifier, handled by
 //!   [`ModifierMap`](crate::ModifierMap) (Function, mapped to nothing by default), never a key code.
 //!
@@ -118,7 +130,7 @@ const fn build() -> [u16; 256] {
     t[0x50] = KEY_LEFT;
     t[0x51] = KEY_DOWN;
     t[0x52] = KEY_UP;
-    // Keypad.
+    // Keypad. Num Lock toggles the desktop's shared lock state, which the keypad digits follow (module docs).
     t[0x53] = KEY_NUMLOCK;
     t[0x54] = KEY_KPSLASH;
     t[0x55] = KEY_KPASTERISK;
@@ -136,7 +148,7 @@ const fn build() -> [u16; 256] {
     t[0x61] = KEY_KP9;
     t[0x62] = KEY_KP0;
     t[0x63] = KEY_KPDOT;
-    // ISO key beside left Shift, Application (Menu), Power, Keypad =.
+    // ISO key beside left Shift, Application (Menu), Power (a system key), Keypad =.
     t[0x64] = KEY_102ND;
     t[0x65] = KEY_COMPOSE;
     t[0x66] = KEY_POWER;
@@ -228,6 +240,11 @@ pub fn evdev_key(usage: u16) -> Option<u16> {
         _ => None,
     }
 }
+
+/// The keys the router drops unless [`InputConfig::allow_system_keys`](crate::InputConfig::allow_system_keys)
+/// is set: `KEY_POWER`, `KEY_SLEEP`, `KEY_COFFEE` (`KEY_SCREENLOCK`) and `KEY_EJECTCD` (see the module
+/// documentation). Swift never posts them: `MacKeyCode` has no code for their usages.
+pub const SYSTEM_KEYS: [u16; 4] = [KEY_POWER, KEY_SLEEP, KEY_COFFEE, KEY_EJECTCD];
 
 /// The modifier flag a modifier key controls (Swift: `PhysicalKey.modifier`), if `(page, usage)` is one.
 /// Caps Lock isn't: it is a toggle, and goes to the desktop as an ordinary key.

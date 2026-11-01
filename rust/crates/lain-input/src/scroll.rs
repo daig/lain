@@ -10,6 +10,13 @@
 //! **Kinetic scrolling.** macOS takes the client's synthesized momentum as the fling. GTK 4 flings by itself
 //! after a stop from a `Finger` or `Continuous` source, so the client's momentum and GTK's fling must never
 //! both happen; [`Momentum`] picks which one does.
+//!
+//! **How GTK 4 measures its fling** (`gtk/gtkeventcontrollerscroll.c`, read 2026-11-01; to be confirmed live
+//! in open spike 4): every smooth scroll event, the stop included, is pushed into a history that keeps only
+//! the events of the last `SCROLL_CAPTURE_THRESHOLD_MS` (150 ms) before the newest one; at the stop, the
+//! velocity is the history's summed deltas over its time span. So a stop sent right after fast deltas flings
+//! fast, and a stop sent more than 150 ms after the last delta finds only itself in the history and doesn't
+//! fling at all (Mutter stamps injected events on arrival). [`Momentum::Client`] relies on the second rule.
 
 use lain_platform::{InputAction, ScrollSource};
 use lain_proto::{GesturePhase, MomentumPhase, Scroll};
@@ -17,16 +24,28 @@ use lain_proto::{GesturePhase, MomentumPhase, Scroll};
 /// Which kinetic continuation follows a scroll gesture. Either way there is only ever one.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Default)]
 pub enum Momentum {
-    /// The desktop's own: the phase's end becomes a [`InputAction::ScrollStop`], after which the toolkit
-    /// flings, and the client's momentum is dropped. The default (the brief's policy).
+    /// The desktop's own: the phase's end (or cancel) becomes a [`InputAction::ScrollStop`] at once, after
+    /// which the toolkit flings from the phase's last deltas, and the client's momentum is dropped. The
+    /// default (the brief's policy). A cancelled phase flings too, where the Mac's doesn't: Wayland has no
+    /// cancel.
     #[default]
     Desktop,
-    /// The client's: its momentum is passed through as more scrolls of the same sequence, and the stop is sent
-    /// only when the momentum ends (when the toolkit's fling, from the momentum's last and slowest deltas, is
-    /// negligible). For open spike 4, to compare. Because the router can't wait for the client's momentum to
-    /// begin (one display frame after the phase ends), the phase's stop is held back until the next message:
-    /// if that is momentum, the momentum continues the sequence; if it is anything else, the stop is sent then,
-    /// and momentum arriving later is dropped (the toolkit is already flinging).
+    /// The client's: its momentum is passed through as more scrolls of the same sequence, and the toolkit
+    /// must not fling at all. For open spike 4, to compare. Every end of the sequence (the phase's end or
+    /// cancel; the momentum's end, whether it decayed or the client cut it short for a new touch, a click, a
+    /// wheel notch or a release) holds the stop back until [`ScrollConfig::client_stop_delay_ns`] after the
+    /// last delta, so that GTK's velocity window is empty when it arrives (see the module documentation).
+    /// Meanwhile:
+    /// - the client's momentum (which begins one display frame after the phase ends) continues the sequence;
+    /// - a new touch continues it too, with no stop in between, so nothing flings;
+    /// - other input (keys, moves, clicks, pinches) goes out inside the still-open sequence;
+    /// - the stop goes out from [`InputRouter::poll`](crate::InputRouter::poll) at the deadline, or before
+    ///   the first message handled after it. A slow lift, after which the client starts no momentum (under
+    ///   150 pt/s), therefore ends without a fling, as on the Mac.
+    ///
+    /// Two cases send the stop early, so the toolkit may fling from recent fast deltas (spike 4 to check how
+    /// much): a wheel notch (a wheel never goes inside a `Finger` sequence) and release-all (nothing may stay
+    /// open once the link is gone).
     Client,
 }
 
@@ -38,11 +57,23 @@ pub struct ScrollConfig {
     /// and flings after the stop. `Continuous` behaves the same in GTK 4; `Wheel` would turn each delta into
     /// detents (10 pixels each) with no fling. Open spike 4 decides.
     pub phased_source: ScrollSource,
+    /// [`Momentum::Client`] only: how long after the sequence's last delta its held-back stop goes out. Above
+    /// GTK 4's 150 ms velocity window, with a margin for delivery. No Swift counterpart.
+    pub client_stop_delay_ns: u64,
+}
+
+impl ScrollConfig {
+    /// The default [`client_stop_delay_ns`](Self::client_stop_delay_ns): 200 ms.
+    pub const DEFAULT_CLIENT_STOP_DELAY_NS: u64 = 200_000_000;
 }
 
 impl Default for ScrollConfig {
     fn default() -> Self {
-        Self { momentum: Momentum::Desktop, phased_source: ScrollSource::Finger }
+        Self {
+            momentum: Momentum::Desktop,
+            phased_source: ScrollSource::Finger,
+            client_stop_delay_ns: Self::DEFAULT_CLIENT_STOP_DELAY_NS,
+        }
     }
 }
 
@@ -53,10 +84,11 @@ enum Sequence {
     Idle,
     /// Scrolls sent from the client's phase (fingers down), no stop yet.
     Phase,
-    /// [`Momentum::Client`]: the phase ended, and its stop waits for the next message.
-    PendingStop,
     /// [`Momentum::Client`]: the client's momentum continues the sequence.
     Momentum,
+    /// [`Momentum::Client`]: the phase or the momentum ended; the stop is due `client_stop_delay_ns` after
+    /// the last delta.
+    PendingStop,
 }
 
 /// The scroll state machine. Swift: `HostInputRouter.noteScroll` plus `InputInjector.scroll`.
@@ -64,11 +96,13 @@ enum Sequence {
 pub(crate) struct ScrollPolicy {
     config: ScrollConfig,
     sequence: Sequence,
+    /// When the open sequence's last delta was sent.
+    last_delta_ns: u64,
 }
 
 impl ScrollPolicy {
     pub(crate) fn new(config: ScrollConfig) -> Self {
-        Self { config, sequence: Sequence::Idle }
+        Self { config, sequence: Sequence::Idle, last_delta_ns: 0 }
     }
 
     /// Whether a sequence is open on the desktop (a stop is owed).
@@ -76,78 +110,103 @@ impl ScrollPolicy {
         self.sequence != Sequence::Idle
     }
 
-    /// One client scroll. Returns whether it did anything on the desktop.
-    pub(crate) fn scroll(&mut self, s: &Scroll, out: &mut Vec<InputAction>) -> bool {
+    /// When a held-back stop is due ([`Momentum::Client`] only).
+    pub(crate) fn deadline(&self) -> Option<u64> {
+        (self.sequence == Sequence::PendingStop)
+            .then(|| self.last_delta_ns.saturating_add(self.config.client_stop_delay_ns))
+    }
+
+    /// Sends a held-back stop whose deadline has passed. Returns whether it did.
+    pub(crate) fn poll(&mut self, now_ns: u64, out: &mut Vec<InputAction>) -> bool {
+        match self.deadline() {
+            Some(deadline) if now_ns >= deadline => {
+                self.stop(out);
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// One client scroll at `now_ns`. Returns whether it did anything on the desktop.
+    pub(crate) fn scroll(&mut self, s: &Scroll, now_ns: u64, out: &mut Vec<InputAction>) -> bool {
         let start = out.len();
         let (dx, dy) = wayland_delta(s);
-        let source = self.config.phased_source;
+        let moved = dx != 0.0 || dy != 0.0;
+        let client = self.config.momentum == Momentum::Client;
         match (s.phase, s.momentum_phase) {
             // A wheel: no phase, no momentum. It ends any open sequence first (the client ends its own
-            // momentum before a wheel notch).
+            // momentum before a wheel notch), so a wheel never goes inside a `Finger` sequence.
             (GesturePhase::None, MomentumPhase::None) => {
-                if dx != 0.0 || dy != 0.0 {
+                if moved {
                     self.end(out);
                     out.push(InputAction::Scroll { dx, dy, source: ScrollSource::Wheel });
                 }
             }
-            // The phase: deltas while the fingers are down. A new touch after a pending stop or the client's
-            // momentum continues the same sequence (no stop, so no fling in between).
+            // The phase: deltas while the fingers are down. A new touch while a stop is held back or the
+            // client's momentum runs continues the same sequence (no stop, so no fling in between).
             (GesturePhase::Began | GesturePhase::Changed, _) => {
-                if dx != 0.0 || dy != 0.0 {
-                    out.push(InputAction::Scroll { dx, dy, source });
+                if moved {
+                    self.delta(dx, dy, now_ns, out);
                     self.sequence = Sequence::Phase;
                 }
             }
             // A touch that hasn't moved: nothing to scroll yet.
             (GesturePhase::MayBegin, _) => {}
             (GesturePhase::Ended, _) => {
-                if dx != 0.0 || dy != 0.0 {
-                    out.push(InputAction::Scroll { dx, dy, source });
+                if moved {
+                    self.delta(dx, dy, now_ns, out);
                     self.sequence = Sequence::Phase;
                 }
-                if self.sequence == Sequence::Phase {
-                    match self.config.momentum {
-                        Momentum::Desktop => self.stop(out),
-                        Momentum::Client => self.sequence = Sequence::PendingStop,
-                    }
+                if self.sequence != Sequence::Idle {
+                    self.ended(out);
                 }
             }
             // The system cancelled the pan; the client starts no momentum after it. Wayland has no cancel, so
-            // this is a stop too (and the toolkit may fling: a difference from the Mac, where a cancelled phase
-            // has none).
-            (GesturePhase::Cancelled, _) => self.end(out),
-            // The client's momentum.
+            // this ends the sequence like an end.
+            (GesturePhase::Cancelled, _) => {
+                if self.sequence != Sequence::Idle {
+                    self.ended(out);
+                }
+            }
+            // The client's momentum, continuing a sequence the phase left open.
             (GesturePhase::None, MomentumPhase::Began | MomentumPhase::Changed) => {
-                if self.config.momentum == Momentum::Client
-                    && matches!(self.sequence, Sequence::PendingStop | Sequence::Momentum)
-                {
+                if client && matches!(self.sequence, Sequence::PendingStop | Sequence::Momentum) {
                     self.sequence = Sequence::Momentum;
-                    if dx != 0.0 || dy != 0.0 {
-                        out.push(InputAction::Scroll { dx, dy, source });
+                    if moved {
+                        self.delta(dx, dy, now_ns, out);
                     }
                 }
             }
+            // The momentum's end, natural or cut short by the client. Its stop is held back like the phase's:
+            // after a cut, the momentum's last deltas are fast, and the new touch that usually follows
+            // continues the sequence.
             (GesturePhase::None, MomentumPhase::Ended) => {
-                if matches!(self.sequence, Sequence::PendingStop | Sequence::Momentum) {
-                    self.stop(out);
+                if client && self.sequence == Sequence::Momentum {
+                    self.sequence = Sequence::PendingStop;
                 }
             }
         }
         out.len() > start
     }
 
-    /// Any input message other than a scroll: a stop held back for the client's momentum is sent now, since
-    /// the momentum, which would have come first, isn't coming.
-    pub(crate) fn before_other_input(&mut self, out: &mut Vec<InputAction>) {
-        if self.sequence == Sequence::PendingStop {
+    /// Ends whatever is open, at once (Swift: `HostInputRouter.releaseAll`, which ends an open phase and
+    /// momentum).
+    pub(crate) fn end(&mut self, out: &mut Vec<InputAction>) {
+        if self.sequence != Sequence::Idle {
             self.stop(out);
         }
     }
 
-    /// Ends whatever is open (Swift: `HostInputRouter.releaseAll`, which ends an open phase and momentum).
-    pub(crate) fn end(&mut self, out: &mut Vec<InputAction>) {
-        if self.sequence != Sequence::Idle {
-            self.stop(out);
+    fn delta(&mut self, dx: f64, dy: f64, now_ns: u64, out: &mut Vec<InputAction>) {
+        out.push(InputAction::Scroll { dx, dy, source: self.config.phased_source });
+        self.last_delta_ns = now_ns;
+    }
+
+    /// The end of the phase: a stop now, or one held back.
+    fn ended(&mut self, out: &mut Vec<InputAction>) {
+        match self.config.momentum {
+            Momentum::Desktop => self.stop(out),
+            Momentum::Client => self.sequence = Sequence::PendingStop,
         }
     }
 
