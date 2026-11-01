@@ -8,10 +8,11 @@ use std::time::Duration;
 use futures::Stream;
 use lain_platform::clock;
 use lain_proto::{
-    Envelope, FrameParser, HANDSHAKE_VERSION, HeaderFlags, Lowered, Message, MessageCodec, ProtocolError, VersionList,
+    Envelope, FrameHeader, FrameParser, HANDSHAKE_VERSION, HEADER_SIZE, HeaderFlags, Lowered, Message, MessageCodec,
+    ProtocolError, VersionList,
 };
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{OwnedSemaphorePermit, Semaphore, mpsc, watch};
 
 use crate::stream::constant_time_eq;
 use crate::{ByteStream, LinkTransport, SendError, TransportError};
@@ -23,6 +24,16 @@ pub const CLOSE_LINGER: Duration = Duration::from_secs(2);
 
 /// How much a channel reads from its stream at once.
 const READ_CHUNK: usize = 64 * 1024;
+
+/// How many bytes of received frames (header and payload) a channel holds unread before it stops reading
+/// its stream: one frame of the largest size the protocol allows. Past it the reader waits until
+/// [`MessageChannel::recv`] takes messages, so the peer meets the stream's own backpressure (TCP's window,
+/// usbmuxd's, a memory pipe's). Invisible on the wire.
+///
+/// Difference from Swift, whose `MessageChannel` buffers received messages without bound (`pending`): a
+/// peer that hasn't authenticated yet (a video connection waiting for its realtime, an acceptor's
+/// connection before delivery) could otherwise make this side hold any amount of memory.
+pub const INBOUND_BUFFER: usize = HEADER_SIZE + FrameHeader::MAX_PAYLOAD_LENGTH as usize;
 
 /// Why a channel closed: the first cause wins and is the one every observer sees. Swift reports a close as
 /// `(any Error)?` to the close handler; this names each cause.
@@ -212,7 +223,8 @@ impl Shared {
 /// [`pending_bytes`](Self::pending_bytes) tells how much is queued and not yet written, for a sender that
 /// wants to look.
 ///
-/// **Receiving**: messages are buffered until read, with [`recv`](Self::recv),
+/// **Receiving**: messages are buffered until read (up to [`INBOUND_BUFFER`] bytes; then the channel stops
+/// reading its stream, and so notices the peer's close only once some are read), with [`recv`](Self::recv),
 /// [`recv_timeout`](Self::recv_timeout) (Swift: `next(timeoutSeconds:)`), or as a stream
 /// ([`into_stream`](Self::into_stream); Swift: `setHandler`).
 ///
@@ -223,7 +235,8 @@ impl Shared {
 /// Must be created inside a tokio runtime (it spawns its two tasks).
 pub struct MessageChannel {
     shared: Arc<Shared>,
-    inbound: mpsc::UnboundedReceiver<Envelope>,
+    /// Each message with its share of [`INBOUND_BUFFER`], given back when it is read.
+    inbound: mpsc::UnboundedReceiver<(Envelope, OwnedSemaphorePermit)>,
     /// A frame in the wrong version was received: nothing more is delivered (Swift clears its buffer).
     violated: bool,
 }
@@ -249,7 +262,8 @@ impl MessageChannel {
             pairing_secret,
         });
         let (read, write) = tokio::io::split(stream);
-        tokio::spawn(read_loop(read, shared.clone(), inbound_tx, options.answer_version_mismatch));
+        let budget = Arc::new(Semaphore::new(INBOUND_BUFFER));
+        tokio::spawn(read_loop(read, shared.clone(), inbound_tx, budget, options.answer_version_mismatch));
         tokio::spawn(write_loop(write, shared.clone(), command_rx));
         Self { shared, inbound, violated: false }
     }
@@ -333,7 +347,7 @@ impl MessageChannel {
             return Err(TransportError::Closed);
         }
         match self.inbound.recv().await {
-            Some(env) => {
+            Some((env, _unread)) => {
                 let version = self.shared.version();
                 let expected = version.unwrap_or(HANDSHAKE_VERSION);
                 if env.header.version == expected {
@@ -434,7 +448,8 @@ async fn wait_closed(shared: &Shared) -> CloseReason {
 async fn read_loop<R: AsyncRead + Unpin>(
     mut read: R,
     shared: Arc<Shared>,
-    inbound: mpsc::UnboundedSender<Envelope>,
+    inbound: mpsc::UnboundedSender<(Envelope, OwnedSemaphorePermit)>,
+    budget: Arc<Semaphore>,
     answer_version_mismatch: bool,
 ) {
     let mut closing = shared.reason.subscribe();
@@ -457,7 +472,16 @@ async fn read_loop<R: AsyncRead + Unpin>(
             match parser.next() {
                 Ok(Some(env)) => {
                     parsed_any = true;
-                    let _ = inbound.send(env);
+                    // Waits, reading no further, while the unread messages fill INBOUND_BUFFER. A frame is at
+                    // most INBOUND_BUFFER bytes (the parser refuses larger ones), so it always fits eventually.
+                    let size = HEADER_SIZE + env.header.payload_length as usize;
+                    let permit = tokio::select! {
+                        biased;
+                        _ = closing.wait_for(Option::is_some) => return,
+                        permit = budget.clone().acquire_many_owned(size as u32) => permit,
+                    };
+                    let Ok(permit) = permit else { return }; // never closed
+                    let _ = inbound.send((env, permit));
                 }
                 Ok(None) => break,
                 Err(error) => {

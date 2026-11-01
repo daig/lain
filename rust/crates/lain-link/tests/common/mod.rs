@@ -81,12 +81,17 @@ pub async fn next<T>(rx: &mut mpsc::UnboundedReceiver<T>, within: Duration) -> O
 
 /// A secret store whose reads fail on demand and that counts writes (the acceptor's read rules, §7.7 D29:
 /// a pairing writes, a re-authentication doesn't). Swift: `ScriptedSecrets`.
+/// Also, on demand: writes that fail, or calls that never finish (a Secret Service waiting on a locked
+/// keyring's prompt), counted while in flight.
 #[derive(Clone, Default)]
 pub struct ScriptedSecrets {
     pub inner: MemorySecretStore,
     pub fails_secret_read: bool,
     pub fails_listing: bool,
+    pub fails_store: bool,
+    pub hangs: bool,
     pub writes: Arc<AtomicUsize>,
+    pub in_flight: Arc<AtomicUsize>,
 }
 
 impl ScriptedSecrets {
@@ -97,16 +102,48 @@ impl ScriptedSecrets {
     pub fn write_count(&self) -> usize {
         self.writes.load(Ordering::SeqCst)
     }
+
+    pub fn in_flight(&self) -> usize {
+        self.in_flight.load(Ordering::SeqCst)
+    }
+
+    /// With `hangs`, never returns; counted in `in_flight` until dropped.
+    async fn maybe_hang(&self) {
+        if self.hangs {
+            let _guard = InFlight::new(&self.in_flight);
+            std::future::pending::<()>().await;
+        }
+    }
+}
+
+struct InFlight(Arc<AtomicUsize>);
+
+impl InFlight {
+    fn new(count: &Arc<AtomicUsize>) -> Self {
+        count.fetch_add(1, Ordering::SeqCst);
+        Self(count.clone())
+    }
+}
+
+impl Drop for InFlight {
+    fn drop(&mut self) {
+        self.0.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 impl SecretStore for ScriptedSecrets {
     async fn secret(&self, account: &str) -> lain_platform::Result<Option<Vec<u8>>> {
+        self.maybe_hang().await;
         if self.fails_secret_read {
             return Err(PlatformError::Denied("scripted read failure".into()));
         }
         self.inner.secret(account).await
     }
     async fn set_secret(&self, account: &str, secret: &[u8]) -> lain_platform::Result<()> {
+        self.maybe_hang().await;
+        if self.fails_store {
+            return Err(PlatformError::Denied("scripted store failure".into()));
+        }
         self.writes.fetch_add(1, Ordering::SeqCst);
         self.inner.set_secret(account, secret).await
     }
@@ -114,6 +151,7 @@ impl SecretStore for ScriptedSecrets {
         self.inner.remove_secret(account).await
     }
     async fn all_secrets(&self) -> lain_platform::Result<BTreeMap<String, Vec<u8>>> {
+        self.maybe_hang().await;
         if self.fails_listing {
             return Err(PlatformError::Denied("scripted listing failure".into()));
         }
@@ -274,4 +312,26 @@ pub async fn read_frame(stream: &mut (impl tokio::io::AsyncRead + Unpin)) -> std
     frame.resize(HEADER_SIZE + length, 0);
     stream.read_exact(&mut frame[HEADER_SIZE..]).await?;
     Ok(frame)
+}
+
+/// A handshake-layer frame of about 60 KB (an `Error` with a long text), which any channel parses.
+pub fn bulky_frame() -> Vec<u8> {
+    let message = Message::Error(ErrorMessage { code: ErrorCode::INTERNAL, message: "x".repeat(60_000) });
+    MessageCodec::encode(&message, 0, 0, None, Some(HANDSHAKE_VERSION))
+}
+
+/// Writes [`bulky_frame`]s to `stream` until one write makes no progress for 500 ms (the far end stopped
+/// reading) or `limit` bytes are written; returns the bytes written. Under tokio's paused clock the wait
+/// costs no real time.
+pub async fn flood(stream: &mut (impl tokio::io::AsyncWrite + Unpin), limit: usize) -> usize {
+    use tokio::io::AsyncWriteExt;
+    let frame = bulky_frame();
+    let mut written = 0;
+    while written < limit {
+        match tokio::time::timeout(Duration::from_millis(500), stream.write_all(&frame)).await {
+            Ok(Ok(())) => written += frame.len(),
+            _ => break,
+        }
+    }
+    written
 }

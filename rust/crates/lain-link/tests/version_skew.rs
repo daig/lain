@@ -140,6 +140,12 @@ async fn a_legacy_v2_peer_is_answered_in_v2_in_either_role() {
         let mut answer = Vec::new();
         raw.read_to_end(&mut answer).await.unwrap();
         assert_eq!(answer[2], 2);
+        // Exactly one frame, in v2: Error(versionMismatch), sequence 0, with Swift's text. Only the timestamp
+        // (bytes 12..20) is the clock's.
+        answer[12..20].fill(0);
+        let why = format!("lain here speaks protocol {}", VersionList::supported());
+        assert_eq!(why, "lain here speaks protocol v3–v4");
+        assert_eq!(hex::encode(answer), hex::encode(MessageCodec::legacy_version_mismatch(2, &why, 0, 0)));
         let error = next(&mut acceptor.rejections, T).await.unwrap();
         assert_eq!(error, TransportError::VersionMismatch { remote: 2 });
         assert_eq!(
@@ -249,6 +255,27 @@ async fn the_roles_write_the_golden_handshake_frames() {
     raw.write_all(&MessageCodec::encode(&Message::ChannelHello(hello), 0, 0, None, None)).await.unwrap();
     let accept_frame = read_frame(&mut raw).await.unwrap();
     assert_eq!(hex::encode(unstamped(accept_frame)), hex::encode(&golden["channelAccept"]));
+}
+
+/// The `ChannelHello` HMAC against a vector computed outside this code: Python's `hmac`/`hashlib` over the
+/// golden `channelHello` payload up to its HMAC, keyed by `Pair`'s sample secret (bytes 200..<232). Every
+/// other test computes and checks the HMAC with the same Rust code; this ties it to Swift's input
+/// (`ChannelHello.authenticatedBytes`: version list, kind, token).
+#[test]
+fn the_channel_hello_hmac_matches_an_independent_vector() {
+    let Message::ChannelHello(hello) = sample(MessageType::ChannelHello) else { unreachable!() };
+    let golden = &golden_handshake()["channelHello"];
+    let payload = &golden[HEADER_SIZE..];
+    let authenticated = hello.authenticated_bytes();
+    assert_eq!(authenticated, payload[..payload.len() - ChannelHello::MAC_SIZE], "the golden payload minus its HMAC");
+    assert_eq!(hex::encode(&authenticated), "02030102030405060708040b0c0d0e0f10111201000102030405060708090a0b0c0d0e0f");
+    let secret = sample_pair_secret();
+    assert_eq!(secret.to_vec(), (200u8..232).collect::<Vec<_>>());
+    let mac = ChannelAuth::mac(&secret, &hello);
+    assert_eq!(hex::encode(mac), "e1645531f3cb91af42a546d4055554a2c73157d927bf81425db1cd5c87f2f214");
+    let mut signed = hello.clone();
+    signed.hmac = mac;
+    assert!(ChannelAuth::is_valid(&signed, &secret));
 }
 
 fn sample_pair_secret() -> [u8; 32] {

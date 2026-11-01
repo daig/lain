@@ -621,6 +621,186 @@ async fn video_must_offer_what_its_realtime_offered() {
     );
 }
 
+// MARK: Refusals and the acceptor's state, pinned (Swift: `Link.swift` `handlePair`, `join`, `finished`)
+
+#[tokio::test(start_paused = true)]
+async fn a_pairing_hello_followed_by_anything_but_pair_is_refused() {
+    let mut client = Acceptor::client(store(&[]), true, offered());
+    let mut raw = client.raw();
+    raw.send(&hello_msg(ConnectionKind::Realtime, token(), None)).unwrap();
+    raw.send(&hello_msg(ConnectionKind::Realtime, token(), None)).unwrap();
+    let reply = raw.recv_timeout(T).await.unwrap();
+    assert_eq!(reply.header.version, HANDSHAKE_VERSION);
+    assert_eq!(reply.message, err_msg(ErrorCode::AUTHENTICATION_FAILED, "expected Pair, got channelHello"));
+    assert_eq!(raw.recv_timeout(T).await, Err(TransportError::Closed));
+    assert_eq!(next(&mut client.rejections, T).await, Some(TransportError::UnexpectedMessage("channelHello".into())));
+    assert!(client.secrets.snapshot().is_empty());
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pairing_hello_without_pair_closes_silently_at_the_hello_timeout() {
+    let mut client = Acceptor::client(store(&[]), true, offered());
+    let mut raw = client.raw();
+    raw.send(&hello_msg(ConnectionKind::Realtime, token(), None)).unwrap();
+    let start = Instant::now();
+    // No Error frame: the first thing received is the close.
+    assert_eq!(raw.recv_timeout(Duration::from_secs(10)).await, Err(TransportError::Closed));
+    assert!(start.elapsed() >= HELLO_TIMEOUT);
+    assert!(next(&mut client.rejections, Duration::from_millis(100)).await.is_none());
+}
+
+/// A store failure answers `Error(internal)`, which HostLink fails on as it is: it neither re-pairs nor
+/// stores.
+#[tokio::test(start_paused = true)]
+async fn a_pairing_the_client_cannot_store_answers_internal_and_the_host_stores_nothing() {
+    let store_ = ScriptedSecrets { fails_store: true, ..ScriptedSecrets::default() };
+    let mut client = Acceptor::client(store_.clone(), true, offered()).answering_hello();
+    let mut raw = client.raw();
+    raw.send(&hello_msg(ConnectionKind::Realtime, token(), None)).unwrap();
+    raw.send(&Message::Pair(Pair { secret: ChannelAuth::random_bytes(), host_id: String::new() })).unwrap();
+    assert_eq!(
+        raw.recv_timeout(T).await.unwrap().message,
+        err_msg(ErrorCode::INTERNAL, "could not store pairing secret")
+    );
+    assert_eq!(
+        next(&mut client.rejections, T).await,
+        Some(TransportError::Secrets(lain_platform::PlatformError::Denied("scripted store failure".into())))
+    );
+
+    let host_secrets = store(&[]);
+    assert_eq!(
+        host_open(client.dialer(), &host_secrets, true).await.err(),
+        Some(TransportError::UnexpectedMessage("Error(internal): could not store pairing secret".into()))
+    );
+    assert!(host_secrets.snapshot().is_empty());
+    assert!(store_.inner.snapshot().is_empty());
+    assert!(next(&mut client.links, Duration::from_millis(200)).await.is_none());
+}
+
+/// A secret store that never answers (a locked keyring's prompt) holds a connection no longer than the
+/// hello timeout, in either role: it is answered `Error(internal)` (retry, don't re-pair), reported, and
+/// nothing stays parked however often the dialer retries.
+#[tokio::test(start_paused = true)]
+async fn a_secret_store_that_never_answers_is_given_up_at_the_hello_timeout() {
+    let secret = secret();
+    let hung = |initial: &[(&str, &[u8])]| ScriptedSecrets { hangs: true, ..ScriptedSecrets::new(initial) };
+    let acceptors =
+        [Acceptor::host(hung(&[("IPAD", &secret)])), Acceptor::client(hung(&[("host", &secret)]), true, offered())];
+    for mut acceptor in acceptors {
+        let mut raws = Vec::new();
+        for _ in 0..5 {
+            let raw = acceptor.raw();
+            raw.send(&hello_msg(ConnectionKind::Realtime, token(), Some(&secret))).unwrap();
+            raws.push(raw);
+        }
+        let start = Instant::now();
+        for raw in &mut raws {
+            assert_eq!(
+                raw.recv_timeout(HELLO_TIMEOUT + T).await.unwrap().message,
+                err_msg(ErrorCode::INTERNAL, "could not read the pairing secrets")
+            );
+            assert_eq!(raw.recv_timeout(T).await, Err(TransportError::Closed));
+        }
+        assert!(start.elapsed() >= HELLO_TIMEOUT && start.elapsed() < HELLO_TIMEOUT + T);
+        for _ in 0..5 {
+            let rejection = next(&mut acceptor.rejections, T).await;
+            assert!(
+                matches!(rejection, Some(TransportError::Secrets(lain_platform::PlatformError::Unavailable(_)))),
+                "{rejection:?}"
+            );
+        }
+        assert_eq!(acceptor.secrets.in_flight(), 0, "no read outlives its connection's hello timeout");
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_pairing_store_that_never_finishes_answers_internal_at_the_hello_timeout() {
+    let store_ = ScriptedSecrets { hangs: true, ..ScriptedSecrets::default() };
+    let mut client = Acceptor::client(store_.clone(), true, offered()).answering_hello();
+    let host_secrets = store(&[]);
+    let start = Instant::now();
+    assert_eq!(
+        host_open(client.dialer(), &host_secrets, true).await.err(),
+        Some(TransportError::UnexpectedMessage("Error(internal): could not store pairing secret".into()))
+    );
+    assert!(start.elapsed() >= HELLO_TIMEOUT);
+    assert!(matches!(next(&mut client.rejections, T).await, Some(TransportError::Secrets(_))));
+    assert_eq!(store_.in_flight(), 0);
+    assert!(host_secrets.snapshot().is_empty());
+}
+
+/// A video connection under an unknown token waits, unauthenticated, for its realtime; whatever it sends
+/// meanwhile is held only up to `INBOUND_BUFFER`, then its writes wait. (Swift buffers without bound.)
+#[tokio::test(start_paused = true)]
+async fn a_waiting_connection_cannot_make_the_acceptor_buffer_without_bound() {
+    let host = Acceptor::host(store(&[("IPAD", &secret())]));
+    let mut raw = host.raw_bytes();
+    let hello = hello_msg(ConnectionKind::Video, token(), Some(&secret()));
+    raw.write_all(&MessageCodec::encode(&hello, 0, 0, None, None)).await.unwrap();
+    let written = flood(&mut raw, 3 * INBOUND_BUFFER).await;
+    let slack = 2 * bulky_frame().len() + 64 * 1024 + MEMORY_STREAM_BUFFER;
+    assert!(written < INBOUND_BUFFER + slack, "an unauthenticated peer pushed {written} bytes that nobody reads");
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_replaced_video_connection_is_closed() {
+    let secret = secret();
+    let mut host = Acceptor::host(store(&[("IPAD", &secret)]));
+    let token = token();
+    let mut realtime = host.raw();
+    realtime.send(&hello_msg(ConnectionKind::Realtime, token, Some(&secret))).unwrap();
+    assert!(matches!(realtime.recv_timeout(T).await.unwrap().message, Message::ChannelAccept(_)));
+    let mut first = host.raw();
+    first.send(&hello_msg(ConnectionKind::Video, token, Some(&secret))).unwrap();
+    assert!(matches!(first.recv_timeout(T).await.unwrap().message, Message::ChannelAccept(_)));
+    let mut second = host.raw();
+    second.send(&hello_msg(ConnectionKind::Video, token, Some(&secret))).unwrap();
+    assert!(matches!(second.recv_timeout(T).await.unwrap().message, Message::ChannelAccept(_)));
+    assert!(tokio::time::timeout(Duration::from_millis(100), first.closed()).await.is_ok(), "the first is closed");
+    let audio = host.raw();
+    audio.send(&hello_msg(ConnectionKind::Audio, token, Some(&secret))).unwrap();
+    let accepted = next(&mut host.links, T).await.unwrap();
+    // The link's video is the second connection.
+    second.set_version(accepted.link.version);
+    accepted.link.video.send(&ping(9, 0)).unwrap();
+    assert_eq!(second.recv_timeout(T).await.unwrap().message, ping(9, 0));
+}
+
+#[tokio::test(start_paused = true)]
+async fn a_second_realtime_for_one_session_is_closed() {
+    let secret = secret();
+    let host = Acceptor::host(store(&[("IPAD", &secret)]));
+    let token = token();
+    let mut first = host.raw();
+    first.send(&hello_msg(ConnectionKind::Realtime, token, Some(&secret))).unwrap();
+    assert!(matches!(first.recv_timeout(T).await.unwrap().message, Message::ChannelAccept(_)));
+    let mut second = host.raw();
+    second.send(&hello_msg(ConnectionKind::Realtime, token, Some(&secret))).unwrap();
+    assert_eq!(second.recv_timeout(T).await, Err(TransportError::Closed), "closed without an answer");
+    assert!(first.close_reason().is_none(), "the first stays");
+}
+
+/// The newest 64 finished tokens close a late join at once; an older one waits out the hello timeout like
+/// any orphan.
+#[tokio::test(start_paused = true)]
+async fn sixty_four_finished_tokens_are_remembered() {
+    let secret = secret();
+    let mut host = Acceptor::host(store(&[("IPAD", &secret)]));
+    let mut tokens = Vec::new();
+    for _ in 0..65 {
+        let link = LinkDialer::new(host.dialer()).open(&secret).await.unwrap();
+        next(&mut host.links, T).await.unwrap();
+        tokens.push(link.session_token);
+    }
+    let remembered = host.raw();
+    remembered.send(&hello_msg(ConnectionKind::Video, tokens[1], Some(&secret))).unwrap();
+    assert!(tokio::time::timeout(Duration::from_millis(100), remembered.closed()).await.is_ok());
+    let evicted = host.raw();
+    evicted.send(&hello_msg(ConnectionKind::Video, tokens[0], Some(&secret))).unwrap();
+    assert!(tokio::time::timeout(Duration::from_secs(1), evicted.closed()).await.is_err(), "waits");
+    assert!(tokio::time::timeout(HELLO_TIMEOUT, evicted.closed()).await.is_ok());
+}
+
 // MARK: SecretAccounts
 
 #[test]
