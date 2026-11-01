@@ -28,7 +28,7 @@ pub use daemon::{Daemon, DaemonHandle, DaemonOptions};
 pub use linux::LinuxPlatform;
 pub use setup::{DaemonSetup, LoginItem, SetupRefresh};
 pub use status::video_lines;
-pub use wifi::{OFF_IN_CONFIG, OFF_NO_IDENTITY, WifiControlError};
+pub use wifi::{OFF_IN_CONFIG, OFF_NO_IDENTITY, OFF_STOP_UNANSWERED, OFF_STOPPED, WifiControlError};
 
 /// The log filter when `RUST_LOG` isn't set: info for lain's crates, warn for the rest.
 pub const DEFAULT_LOG_FILTER: &str = "warn,lain_hostd=info,lain_host=info,lain_wifi=info,lain_link=info,\

@@ -13,11 +13,8 @@ use std::time::Duration;
 
 use clap::Parser;
 use lain_gnome::{Gnome, GnomeConfig};
-use lain_host::HostConfig;
 use lain_hostd::process::{EnvironmentPlan, REEXEC_MARKER, environment_plan, raise_open_file_limit};
-use lain_hostd::{
-    BUS_NAME, CONFIG_FILE, Config, DEFAULT_LOG_FILTER, Daemon, DaemonOptions, LinuxPlatform, claim_bus_name,
-};
+use lain_hostd::{BUS_NAME, CONFIG_FILE, Config, DEFAULT_LOG_FILTER, Daemon, LinuxPlatform, claim_bus_name};
 use lain_linux_system::autostart::{UNIT_NAME, user_unit_dir};
 use lain_linux_system::paths::{config_home, lain_dir};
 use lain_linux_system::{Autostart, AvahiAdvertiser, SystemSecretStore, load_host_identity};
@@ -169,13 +166,7 @@ async fn run(args: Args) -> ExitCode {
     let autostart = Autostart::new(conn.clone(), &user_unit_dir(&config_home), UNIT_NAME);
     let platform = LinuxPlatform::new(gnome, LinuxVideo::new(LinuxVideoConfig::default()), autostart, secrets);
 
-    let host = HostConfig {
-        versions,
-        identity,
-        video: config.pipeline_options(),
-        input: config.input_config(),
-        ..HostConfig::default()
-    };
+    let host = config.host_config(identity, versions);
     // Connected whenever there is an id, so that Wi-Fi switched on at run time is advertised too; it publishes
     // nothing until the listener listens.
     let advertiser = match &host.identity {
@@ -188,8 +179,7 @@ async fn run(args: Args) -> ExitCode {
         },
         None => None,
     };
-    let options = DaemonOptions { wifi: config.wifi, ..DaemonOptions::default() };
-    let daemon = Daemon::start(platform, host, UsbMuxClient::default(), advertiser, options).await;
+    let daemon = Daemon::start(platform, host, UsbMuxClient::default(), advertiser, config.daemon_options()).await;
 
     let (mut term, mut int) = match (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) {
         (Ok(term), Ok(int)) => (term, int),

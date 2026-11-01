@@ -6,18 +6,20 @@
 mod common;
 
 use std::net::SocketAddr;
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
 use common::*;
-use lain_host::HostStatus;
-use lain_hostd::{OFF_IN_CONFIG, OFF_NO_IDENTITY, WifiControlError};
+use lain_host::{HostConfig, HostStatus};
+use lain_hostd::{Daemon, OFF_IN_CONFIG, OFF_NO_IDENTITY, WifiControlError};
 use lain_link::{LinkTransport, PairingAccounts};
 use lain_linux_system::FileSecretStore;
-use lain_platform::fake::MemorySecretStore;
-use lain_platform::{Chroma, Monitor, PlatformError, RectF, RequirementState, SecretStore, SetupReport};
+use lain_platform::fake::{FakePower, MemorySecretStore};
+use lain_platform::{
+    Advertiser, Chroma, Monitor, PlatformError, RectF, RequirementState, SecretStore, ServiceAd, SetupReport,
+};
 use lain_proto::*;
-use lain_usbmux::fake::FakeDevice;
+use lain_usbmux::fake::{FakeDevice, FakeTarget, FakeUsbMuxd};
 use lain_wifi::WiFiStatus;
 
 fn paired(secret: &[u8]) -> (MemorySecretStore, RigOptions) {
@@ -154,7 +156,7 @@ async fn a_usb_pairing_brings_wifi_up_and_the_ipad_comes_back_over_tls() {
 async fn wifi_off_in_the_config_listens_for_nothing_and_usb_works() {
     let secret = secret();
     let (host, options) = paired(&secret);
-    let mut rig = Rig::new(host, RigOptions { wifi: false, ..options }).await;
+    let mut rig = Rig::new(host, RigOptions { config: config("wifi = false\n"), ..options }).await;
     assert_eq!(*rig.handle.wifi_status().borrow(), WiFiStatus::Off(OFF_IN_CONFIG.into()));
     assert!(!*rig.handle.wifi_enabled().borrow());
 
@@ -319,4 +321,220 @@ async fn a_video_failure_is_reported_to_the_ipad_and_the_handle() {
     // Input still works (input only).
     input_round_trips(&rig, &mut link).await;
     rig.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_config_file_reaches_the_ipad_and_the_desktop() {
+    let secret = secret();
+    let (host, options) = paired(&secret);
+    let file = config("bitrate_mbps = 25\n[input.modifiers]\ncommand = \"super\"\n");
+    let mut rig = Rig::new(host, RigOptions { config: file.clone(), ..options }).await;
+    let mut link = rig.usb.next_link(T).await.expect("a USB link");
+    let ack = link.hello_ack().await.expect("HelloAck");
+    assert_eq!(ack.bitrate, 25_000_000, "bitrate_mbps reaches HelloAck");
+    assert!(rig.connected(LinkTransport::Usb).await);
+    assert_eq!(rig.platform.video().last_session().expect("video started").config().bitrate, 25_000_000);
+    // Cmd-A arrives as Super+A, not the default Ctrl+A.
+    let remapped = routed(file.input_config(), &some_input());
+    assert_ne!(remapped, routed(lain_input::InputConfig::default(), &some_input()));
+    assert_eq!(rig.input, file.input_config());
+    rig.platform.input().take();
+    for m in some_input() {
+        link.send(m);
+    }
+    assert!(eventually(T, || rig.actions().len() >= remapped.len()).await);
+    assert_eq!(rig.actions(), remapped);
+    rig.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn refresh_setup_tells_the_ipad_at_once() {
+    let secret = secret();
+    let (host, options) = paired(&secret);
+    // Polling never comes round: only refresh_setup can tell.
+    let mut rig = Rig::new(host, RigOptions { setup_poll: Duration::from_secs(3600), ..options }).await;
+    let mut link = rig.usb.next_link(T).await.expect("a USB link");
+    assert!(link.hello_ack().await.is_some());
+    let first = link.host_setup(|_| true).await.expect("HostSetup");
+    assert_eq!(first.state_of(SetupRequirement::StartAtLogin), Some(SetupState::Missing));
+
+    // 4b's `lain autostart on`, through an Autostart other than the daemon's: setup_changed alone resends the
+    // stale cache; refresh_setup asks again.
+    rig.login.set(RequirementState::Granted);
+    rig.handle.refresh_setup().await;
+    let granted = link
+        .host_setup(|s| s.state_of(SetupRequirement::StartAtLogin) == Some(SetupState::Granted))
+        .await
+        .expect("a new HostSetup");
+    assert!(!granted.has_other_display);
+    rig.shutdown().await;
+}
+
+// MARK: Review fixes, round 1
+
+/// The daemon over the fakes with `advertiser`, paired, a USB iPad attached; `power` is the platform's.
+async fn paired_usb_daemon<A: lain_platform::Advertiser>(
+    advertiser: A,
+    power: FakePower,
+) -> (TestPlatform<MemorySecretStore>, Daemon<TestPlatform<MemorySecretStore>>, UsbIPad, FakeUsbMuxd) {
+    let secret = secret();
+    let host = MemorySecretStore::with([(SERIAL.to_owned(), secret.clone())]);
+    let mut platform = TestPlatform::new(host, FakeLogin::new(RequirementState::Missing));
+    platform.fake.power = power;
+    let usb = UsbIPad::new(vec![(PairingAccounts::USB_HOST.to_owned(), secret)], hello()).await;
+    let addr = SocketAddr::from(([127, 0, 0, 1], usb.listener.port()));
+    let mux = FakeUsbMuxd::start(vec![FakeDevice::usb(7, SERIAL)], FakeTarget::Tcp(addr)).unwrap();
+    let config = HostConfig { identity: Some(identity()), ..HostConfig::default() };
+    let daemon = Daemon::start(platform.clone(), config, mux.client(), Some(advertiser), test_options(true)).await;
+    (platform, daemon, usb, mux)
+}
+
+/// An Avahi that publishes but never answers a withdrawal.
+#[derive(Clone, Default)]
+struct HungWithdraw;
+
+impl Advertiser for HungWithdraw {
+    async fn advertise(&self, _ad: ServiceAd) -> lain_platform::Result<()> {
+        Ok(())
+    }
+    async fn withdraw(&self) {
+        std::future::pending::<()>().await
+    }
+}
+
+/// An Avahi that takes 20 s to publish (each of `AvahiAdvertiser`'s calls may take 5 s, and a publish makes
+/// several).
+#[derive(Clone, Default)]
+struct WedgedAvahi(Arc<Mutex<Vec<Option<ServiceAd>>>>);
+
+impl Advertiser for WedgedAvahi {
+    async fn advertise(&self, ad: ServiceAd) -> lain_platform::Result<()> {
+        self.0.lock().unwrap().push(Some(ad));
+        tokio::time::sleep(Duration::from_secs(20)).await;
+        Ok(())
+    }
+    async fn withdraw(&self) {
+        self.0.lock().unwrap().push(None);
+    }
+}
+
+/// Records, at each withdrawal, whether power was still held.
+#[derive(Clone)]
+struct OrderedAdvertiser {
+    power: FakePower,
+    withdrawn_while_awake: Arc<Mutex<Vec<bool>>>,
+}
+
+impl Advertiser for OrderedAdvertiser {
+    async fn advertise(&self, _ad: ServiceAd) -> lain_platform::Result<()> {
+        Ok(())
+    }
+    async fn withdraw(&self) {
+        self.withdrawn_while_awake.lock().unwrap().push(self.power.is_awake());
+    }
+}
+
+/// main's budget for the whole shutdown.
+const MAINS_SHUTDOWN_TIMEOUT: Duration = Duration::from_secs(5);
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_hung_withdrawal_doesnt_hold_up_the_session_stop() {
+    let (platform, daemon, mut usb, _mux) = paired_usb_daemon(HungWithdraw, FakePower::default()).await;
+    let mut wifi = daemon.handle().wifi_status();
+    assert!(reaches(&mut wifi, |s| matches!(s, WiFiStatus::Listening { .. })).await.is_some());
+    let mut link = usb.next_link(T).await.unwrap();
+    assert!(link.hello_ack().await.is_some());
+    assert!(eventually(T, || platform.power().is_awake()).await);
+    assert!(within(MAINS_SHUTDOWN_TIMEOUT, daemon.shutdown()).await.is_some(), "the shutdown overran main's 5 s");
+    assert!(!platform.power().is_awake());
+    assert!(platform.display().created().is_none());
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_wedged_avahi_doesnt_keep_the_session_from_stopping() {
+    let advertiser = WedgedAvahi::default();
+    let (platform, daemon, mut usb, _mux) = paired_usb_daemon(advertiser.clone(), FakePower::default()).await;
+    let handle = daemon.handle();
+    let mut link = usb.next_link(T).await.unwrap();
+    assert!(link.hello_ack().await.is_some());
+    let mut status = handle.status_watch();
+    let want = HostStatus::Connected { device_model: "iPad16,6".into(), via: LinkTransport::Usb };
+    assert!(reaches(&mut status, |s| *s == want).await.is_some());
+    // The Wi-Fi actor is inside the publish.
+    assert!(eventually(T, || !advertiser.0.lock().unwrap().is_empty()).await);
+    assert!(within(MAINS_SHUTDOWN_TIMEOUT, daemon.shutdown()).await.is_some(), "the shutdown overran main's 5 s");
+    assert!(!platform.power().is_awake(), "session.stop() never ran");
+    assert!(platform.display().created().is_none());
+    assert!(link.closed(T).await);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_ad_is_withdrawn_before_the_session_stops() {
+    let power = FakePower::default();
+    let withdrawn = Arc::new(Mutex::new(Vec::new()));
+    let advertiser = OrderedAdvertiser { power: power.clone(), withdrawn_while_awake: withdrawn.clone() };
+    let (platform, daemon, mut usb, _mux) = paired_usb_daemon(advertiser, power).await;
+    let mut wifi = daemon.handle().wifi_status();
+    assert!(reaches(&mut wifi, |s| matches!(s, WiFiStatus::Listening { .. })).await.is_some());
+    let mut link = usb.next_link(T).await.unwrap();
+    assert!(link.hello_ack().await.is_some());
+    assert!(eventually(T, || platform.power().is_awake()).await);
+    within(T, daemon.shutdown()).await.expect("the daemon stops");
+    assert!(!platform.power().is_awake());
+    assert_eq!(*withdrawn.lock().unwrap(), vec![true], "the ad outlived the session's release");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn runtime_off_without_a_pairing_says_stopped() {
+    let mut rig = Rig::new(MemorySecretStore::default(), RigOptions { devices: vec![], ..RigOptions::default() }).await;
+    let mut wifi = rig.handle.wifi_status();
+    let off = WiFiStatus::Off("no paired iPad yet".into());
+    assert_eq!(reaches(&mut wifi, |s| *s == off).await, Some(off));
+    rig.handle.set_wifi(false).await.unwrap();
+    assert_eq!(*rig.handle.wifi_status().borrow(), WiFiStatus::Off("stopped".into()));
+    rig.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn wifi_off_is_the_listeners_own_cancel() {
+    let secret = secret();
+    let (host, options) = paired(&secret);
+    let mut rig = Rig::new(host, RigOptions { devices: vec![], ..options }).await;
+    rig.listening().await;
+    let started = std::time::Instant::now();
+    rig.handle.set_wifi(false).await.unwrap();
+    // Well under the 1 s fallback: the listener answered the cancel itself.
+    assert!(started.elapsed() < Duration::from_millis(500), "took {:?}", started.elapsed());
+    assert_eq!(*rig.handle.wifi_status().borrow(), WiFiStatus::Off("stopped".into()));
+    rig.shutdown().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn dropping_the_daemon_stops_the_session() {
+    let secret = secret();
+    let (host, options) = paired(&secret);
+    let rig = Rig::new(host, options).await;
+    let Rig { platform, daemon, handle, mut usb, mux, .. } = rig;
+    let link = usb.next_link(T).await.unwrap();
+    assert!(eventually(T, || platform.power().is_awake()).await);
+    let mut wifi = handle.wifi_status();
+    drop(handle);
+    drop(daemon);
+    assert!(eventually(T, || !platform.power().is_awake()).await, "power still held");
+    assert!(link.closed(T).await, "the link is still up");
+    // The Wi-Fi actor is gone too: its status watch closed.
+    assert!(within(T, async { while wifi.changed().await.is_ok() {} }).await.is_some(), "the Wi-Fi actor runs on");
+    drop(mux);
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn nothing_polls_after_the_shutdown() {
+    let secret = secret();
+    let (host, options) = paired(&secret);
+    let mut rig = Rig::new(host, RigOptions { devices: vec![], ..options }).await;
+    tokio::time::sleep(Duration::from_millis(120)).await;
+    rig.shutdown().await;
+    let after = rig.login.refreshes();
+    tokio::time::sleep(Duration::from_millis(300)).await;
+    assert_eq!(rig.login.refreshes(), after, "the setup poll outlived the shutdown");
 }

@@ -9,8 +9,8 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lain_host::{HostConfig, HostStatus};
-use lain_hostd::{Daemon, DaemonHandle, DaemonOptions, DaemonSetup, LoginItem};
+use lain_host::HostStatus;
+use lain_hostd::{Config, Daemon, DaemonHandle, DaemonOptions, DaemonSetup, LoginItem};
 use lain_input::{InputConfig, InputRouter};
 use lain_link::{ChannelSender, ClientLinkListener, Link, LinkDialer, LinkTransport, PairingAccounts, TransportError};
 use lain_platform::fake::{
@@ -384,9 +384,9 @@ pub struct RigOptions {
     pub ipad_stored: Vec<(String, Vec<u8>)>,
     pub devices: Vec<FakeDevice>,
     pub identity: Option<HostIdentity>,
-    pub wifi: bool,
+    /// The config file, mapped as the binary maps it (`Config::host_config`, `Config::daemon_options`).
+    pub config: Config,
     pub login: RequirementState,
-    pub input: InputConfig,
     pub setup_poll: Duration,
 }
 
@@ -396,12 +396,16 @@ impl Default for RigOptions {
             ipad_stored: Vec::new(),
             devices: vec![FakeDevice::usb(7, SERIAL)],
             identity: Some(identity()),
-            wifi: true,
+            config: Config::default(),
             login: RequirementState::Missing,
-            input: InputConfig::default(),
             setup_poll: Duration::from_millis(50),
         }
     }
+}
+
+/// `text` as `config.toml`.
+pub fn config(text: &str) -> Config {
+    Config::parse(std::path::Path::new("/test/lain/config.toml"), text).expect("a valid config")
 }
 
 pub fn test_options(wifi: bool) -> DaemonOptions {
@@ -435,12 +439,16 @@ impl<S: SecretStore + Clone> Rig<S> {
         let addr = SocketAddr::from(([127, 0, 0, 1], usb.listener.port()));
         let mux = FakeUsbMuxd::start(options.devices, FakeTarget::Tcp(addr)).expect("fake usbmuxd");
         let advertiser = FakeAdvertiser::default();
-        let config = HostConfig { identity: options.identity, input: options.input, ..HostConfig::default() };
-        let daemon_options = DaemonOptions { setup_poll: options.setup_poll, ..test_options(options.wifi) };
+        let config = options.config.host_config(options.identity, VersionList::offered().clone());
+        let input = config.input;
+        let daemon_options = DaemonOptions {
+            setup_poll: options.setup_poll,
+            ..test_options(options.config.daemon_options().wifi)
+        };
         let daemon =
             Daemon::start(platform.clone(), config, mux.client(), Some(advertiser.clone()), daemon_options).await;
         let handle = daemon.handle();
-        Self { platform, login, advertiser, usb, mux, daemon: Some(daemon), handle, input: options.input }
+        Self { platform, login, advertiser, usb, mux, daemon: Some(daemon), handle, input }
     }
 
     pub fn status(&self) -> HostStatus {
