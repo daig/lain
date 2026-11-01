@@ -13,7 +13,7 @@
   on the GFX engine (VA-API VPP, through `vapostproc`) adds about 3.5–7 ms to the encode span. Measured from the
   tick that captured the frame, across sessions, converting on request gives **p50 15.5–18.7 / p95 19.4–22.6 ms at
   70–88 fps**; converting every frame on capture gives **p50 19.7–24.1 / p95 22.0–26.7 ms at 91–120 fps** (120 fps
-  in one run of four). The spread follows the GFX engine's load from the desktop's compositing (40–61 % gfx busy
+  in two runs of five, both the author's round-2 runs, one with `--csc-queue 1`). The spread follows the GFX engine's load from the desktop's compositing (40–61 % gfx busy
   in the reruns), not CPU loadavg. At 2064×1548 the encode span with conversion is 8.6 ms at 116 fps.
 - Capture is **zero-copy**: `pipewiresrc` negotiates DMA-BUF (`AR24`, AMD tiled modifier `0x0200000000401b03`),
   and `vapostproc` imports, converts and scales it on the GPU, at 5 % of one CPU core.
@@ -222,7 +222,7 @@ reference, unless stated otherwise.
 | Path | capture → AU p50 ms | p95 ms | fps | runs with 120 fps |
 |---|---|---|---|---|
 | convert on request (vapostproc inline) | **15.5–18.7** | **19.4–22.6** | 70–88 | – |
-| convert on capture, newest converted frame encoded | **19.7–24.1** | **22.0–26.7** | 91–120 | 1 of 4 |
+| convert on capture, newest converted frame encoded | **19.7–24.1** | **22.0–26.7** | 91–120 | 2 of 5 |
 
 The encode span with conversion was 14.1–14.2 ms in the reruns, against 7.33 ms for NV12, so the conversion costs
 about 3.5–7 ms depending on the session. **What drives the spread is the GFX engine's load from the desktop's
@@ -265,7 +265,7 @@ Round 1 (push → AU only, which isn't comparable across the two modes):
   the encode span.
 - **Converting on request has the lower end-to-end latency** in every session (capture → AU p50 15.5–18.7 against
   19.7–24.1 ms; p95 19.4–22.6 against 22.0–26.7). Converting on capture gives more fps (91–120 against 70–88) but
-  reached 120 fps in only one run of four; each frame then waits for the conversion, for the
+  reached 120 fps in only two runs of five (the author's two round-2 runs, none of the reviewer's three); each frame then waits for the conversion, for the
   previous encode, and in the latest slot, and the encode itself slows (8.1 ms here, 10 ms in round 1, against 7.3)
   because the GFX engine converts at 120 Hz beside the encoder on a two-CU iGPU that also composites the desktop.
   The two-buffer leaky queue in front of the conversion isn't what inflates it: one buffer gives the same.
@@ -484,14 +484,14 @@ backend must handle:
   - `submit_ns` and `encode_done_ns` are taken around submit and map.
 - **Where to convert: on request.** Measured from capture, it has the lower latency at 2752×2064 in every session
   (p50 15.5–18.7 / p95 19.4–22.6 ms against 19.7–24.1 / 22.0–26.7 ms on capture), and wastes no GFX work on frames
-  never encoded. Converting on capture gives 91–120 fps here (120 in one run of four), against 70–88 fps on
+  never encoded. Converting on capture gives 91–120 fps here (120 in two runs of five), against 70–88 fps on
   request. Confirm on `RecordVirtual` at 120 Hz in wave 3, with the gfx busy figure recorded.
 - `info()`: 4:2:0, 8-bit, `ColorTags::SRGB_FULL_RANGE`, which is true only with `colorimetry=1:3:7:1` on the
   conversion caps.
 - **Expect about 70–88 fps on request at 2752×2064** on this iGPU (capture → AU p50 about 15.5–18.7 ms,
   depending on the desktop's GFX load). 120 fps needs a smaller encode size (2064×1548: 8.6 ms with conversion) or
-  a cheaper conversion; conversion on capture costs about 4–5.5 ms more latency and reached 120 fps in only one
-  run of four.
+  a cheaper conversion; conversion on capture costs about 4–5.5 ms more latency and reached 120 fps in only two
+  runs of five.
 
 **Wave-3 acceptance items this spike didn't cover.**
 - Decode-verify the output (for example with `vah265dec`, or the iPad) after a forced IDR, after a refinement,

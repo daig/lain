@@ -100,9 +100,11 @@ def main():
             cp = pprobe.of("cursor")[n_p:]
             emit("abs", sent=[x, y], centre=pt == "C", virtual_meta=cv, physical_meta_changes=cp[-1:] if cp else [])
 
-        # 3. relative motion from the centre
+        # 3. relative motion from the centre. Relative motion goes wherever the pointer is, so check it is on
+        # the virtual monitor first (an absolute move can stick at the panel barrier, exp3.jsonl line 20).
         s.move_abs(vpath, 688, 516)
         settle(vprobe, len(vprobe.of("cursor")))
+        require_pointer_on(vprobe, W, H, "relative motion")
         for (dx, dy) in [(10, 0), (0, 10), (-20, -20), (0.5, 0.5)]:
             n_v = len(vprobe.of("cursor"))
             s.rd.NotifyPointerMotionRelative(float(dx), float(dy))
