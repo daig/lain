@@ -29,11 +29,22 @@ public struct NetworkStreamOptions: Sendable {
     /// input packets don't queue behind video on the radio (invariant 3); video and audio stay best
     /// effort. Off: everything best effort (the bench compares both).
     public var interactiveRealtime: Bool
+    /// How video and audio ask for airtime (an experiment over AWDL's periodic stall, D34).
+    public var radioPriority: RadioPriority
 
-    public init(includePeerToPeer: Bool = true, loopbackOnly: Bool = false, interactiveRealtime: Bool = true) {
+    public enum RadioPriority: String, Sendable, CaseIterable {
+        /// Video and audio best effort; on a listener, no service class (the default before D34).
+        case standard
+        /// Video and audio as `.interactiveVideo`; a listener gives it to every connection it accepts.
+        case interactiveVideo
+    }
+
+    public init(includePeerToPeer: Bool = true, loopbackOnly: Bool = false, interactiveRealtime: Bool = true,
+                radioPriority: RadioPriority = .standard) {
         self.includePeerToPeer = includePeerToPeer
         self.loopbackOnly = loopbackOnly
         self.interactiveRealtime = interactiveRealtime
+        self.radioPriority = radioPriority
     }
 
     /// Loopback only, for tests: nothing leaves the machine and nothing is advertised.
@@ -42,7 +53,8 @@ public struct NetworkStreamOptions: Sendable {
     /// A dialer's parameters: `kind` picks the service class; `requiredInterface` pins the path.
     public func dialParameters(psk: WiFiPSK, kind: ConnectionKind?, requiredInterface: NWInterface? = nil) -> NWParameters {
         let p = parameters(tls: WiFiTLS.clientOptions(psk))
-        p.serviceClass = kind == .realtime && interactiveRealtime ? .interactiveVoice : .bestEffort
+        p.serviceClass = kind == .realtime && interactiveRealtime ? .interactiveVoice
+            : radioPriority == .interactiveVideo ? .interactiveVideo : .bestEffort
         if let requiredInterface { p.requiredInterface = requiredInterface }
         return p
     }
@@ -61,6 +73,7 @@ public struct NetworkStreamOptions: Sendable {
     private func listenerParameters(tls: NWProtocolTLS.Options) -> NWParameters {
         let p = parameters(tls: tls)
         if loopbackOnly { p.requiredLocalEndpoint = .hostPort(host: .ipv4(.loopback), port: .any) }
+        if radioPriority == .interactiveVideo { p.serviceClass = .interactiveVideo }
         return p
     }
 
@@ -115,9 +128,14 @@ public struct NetworkPath: Sendable, Equatable {
                   localEndpoint: path?.localEndpoint)
     }
 
+    /// AWDL or low-latency WLAN, by name (they report as Wi-Fi or other).
+    public static func isPeerToPeer(_ interfaceName: String) -> Bool {
+        interfaceName.hasPrefix("awdl") || interfaceName.hasPrefix("llw")
+    }
+
     /// By name first (awdl0 and llw0 report as Wi-Fi or other), then by type.
     public static func kind(interfaceName name: String, type: NWInterface.InterfaceType?) -> Kind {
-        if name.hasPrefix("awdl") || name.hasPrefix("llw") { return .peerToPeer }
+        if isPeerToPeer(name) { return .peerToPeer }
         switch type {
         case .loopback?: return .loopback
         case .wifi?: return .wifi
@@ -609,19 +627,35 @@ public final class WiFiLinkDialer: StreamDialer {
     public let timeout: Double
     private let pin = Mutex<Pin?>(nil)
 
-    /// Peer-to-peer stays on whatever `options` say (without it awdl0 is excluded); only a
-    /// loopback-only test dialer goes without.
+    /// Which way the first connection goes (the others follow it, pinned).
+    public enum Route: Sendable, Equatable {
+        /// Whichever the system picks (peer-to-peer or the network).
+        case automatic
+        /// Only this peer-to-peer interface (awdl0, llw0).
+        case direct(NWInterface)
+        /// Only through the network: peer-to-peer interfaces excluded.
+        case network
+    }
+
+    public let route: Route
+
+    /// Peer-to-peer stays on (without it awdl0 is excluded) unless `route` is `.network`.
     public init(endpoint: NWEndpoint, psk: WiFiPSK, options: NetworkStreamOptions = NetworkStreamOptions(),
-                timeout: Double = NetworkStreamDialer.defaultTimeout) {
+                route: Route = .automatic, timeout: Double = NetworkStreamDialer.defaultTimeout) {
         var options = options
-        options.includePeerToPeer = true
+        options.includePeerToPeer = route != .network
         self.endpoint = endpoint
         self.psk = psk
         self.options = options
+        self.route = route
         self.timeout = timeout
     }
 
     public var pinned: Pin? { pin.withLock { $0 } }
+
+    private var directInterface: NWInterface? {
+        if case .direct(let interface) = route { interface } else { nil }
+    }
 
     public func dial() async throws -> any ByteStream { try await connect(kind: nil) }
 
@@ -634,7 +668,8 @@ public final class WiFiLinkDialer: StreamDialer {
         let stream: NetworkStream
         do {
             stream = try await NetworkStream.connect(
-                to: target, using: options.dialParameters(psk: psk, kind: kind, requiredInterface: current?.interface), psk: psk,
+                to: target, using: options.dialParameters(psk: psk, kind: kind, requiredInterface: current?.interface ?? directInterface),
+                psk: psk,
                 timeout: timeout, label: "lain.wifi.\(name)")
         } catch let error as NetworkStreamError {
             let what = "dial \(name) to \(target.debugDescription) failed: \(error)"

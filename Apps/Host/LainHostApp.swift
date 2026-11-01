@@ -85,6 +85,14 @@ struct LainHostApp: App {
                     }
                 }
             }
+            Menu("Wi-Fi Radio Priority") {
+                ForEach(NetworkStreamOptions.RadioPriority.allCases, id: \.self) { priority in
+                    Button((host.preferences.radioPriority == priority ? "✓ " : "")
+                           + (priority == .standard ? "Standard" : "Interactive Video")) {
+                        host.update { $0.radioPriority = priority }
+                    }
+                }
+            }
             Menu("Keep Display After Disconnect") {
                 ForEach(HostPreferences.keepAliveChoices, id: \.self) { seconds in
                     Button((host.preferences.displayKeepAliveSeconds == seconds ? "✓ " : "") + HostController.keepAliveTitle(seconds)) {
@@ -159,7 +167,10 @@ final class HostController {
                                                                                       scale: preferences.value.displayScale,
                                                                                       colorFormat: preferences.value.colorFormat) },
                                                       identity: identity,
-                                                      wifi: identity.map { _ in HostWiFiConfig(advertise: true) },
+                                                      wifi: identity.map { _ in
+                                                          HostWiFiConfig(options: NetworkStreamOptions(radioPriority: preferences.value.radioPriority),
+                                                                         advertise: true)
+                                                      },
                                                       setup: Self.probeSetup,
                                                       preferences: { preferences.value },
                                                       displayKeeper: keeper)) {
@@ -241,7 +252,9 @@ final class HostController {
         new.save()
         livePreferences.value = new
         keeper.keepFor = .seconds(new.displayKeepAliveSeconds)
-        if new.displayScale != old.displayScale || new.systemKey != old.systemKey || new.colorFormat != old.colorFormat {
+        if new.radioPriority != old.radioPriority {
+            session?.setRadioPriority(new.radioPriority)   // restarts the listener; reconnects a Wi-Fi session
+        } else if new.displayScale != old.displayScale || new.systemKey != old.systemKey || new.colorFormat != old.colorFormat {
             session?.reconnect()
         }
     }

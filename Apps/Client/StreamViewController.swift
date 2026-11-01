@@ -21,8 +21,11 @@ import UIKit
 final class StreamViewController: UIViewController, UIGestureRecognizerDelegate {
     let input: ClientInput
     let video: ClientVideoPipeline
-    /// Set once the session exists: the overlay asks it for the Mac's stats while it shows.
-    var session: ClientSession?
+    /// Set once the session exists: the panel asks it for the host's stats while it shows, and it takes the
+    /// iPad's Wi-Fi path and radio priority.
+    var session: ClientSession? {
+        didSet { session?.setNetwork(path: preferences.wifiPath, radioPriority: preferences.radioPriority) }
+    }
 
     var status = ClientStatus.waitingForMac(wifi: false) {
         didSet {
@@ -320,6 +323,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             input.setCurve(p.curve)
             input.setScrollScale(p.scrollScale)
             input.setInvertScroll(p.reverseScroll)
+            session?.setNetwork(path: p.wifiPath, radioPriority: p.radioPriority)
         }
         renderPanel()
         // The session applies a pick on its queue: show its result once it has.

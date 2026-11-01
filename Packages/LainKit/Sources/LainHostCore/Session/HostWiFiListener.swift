@@ -43,6 +43,8 @@ public struct HostWiFiConfig: Sendable {
 /// created, replaced and cancelled only under the lock, and never once cancelled.
 final class HostWiFiListener: Sendable {
     private let config: HostWiFiConfig
+    /// Changeable at run time (the menu's radio priority): read by each listener created.
+    private let options: Mutex<NetworkStreamOptions>
     private let secrets: any SecretStore
     private let advertisement: NetworkStreamListener.Advertisement?
     private let onAccept: @Sendable (NetworkStream) -> Void
@@ -55,6 +57,8 @@ final class HostWiFiListener: Sendable {
         var generation: UInt64 = 0
         /// The PSK identities of the last successful read (the listener's, while one runs).
         var identities: Set<String> = []
+        /// A restart is wanted whatever the keys (new options).
+        var restart = false
         var status = HostWiFiStatus.starting
         var port: UInt16?
         var name: String?
@@ -81,6 +85,7 @@ final class HostWiFiListener: Sendable {
     init(config: HostWiFiConfig, secrets: any SecretStore, identity: HostIdentity?,
          onAccept: @escaping @Sendable (NetworkStream) -> Void) {
         self.config = config
+        options = Mutex(config.options)
         self.secrets = secrets
         self.onAccept = onAccept
         if config.advertise, let identity {
@@ -124,7 +129,8 @@ final class HostWiFiListener: Sendable {
         let identities = Set(psks.map(\.identity))
         state.withLock { s in
             guard s.apply(ticket) else { return }
-            let changed = identities != s.identities
+            let changed = identities != s.identities || s.restart
+            s.restart = false
             s.identities = identities
             if !changed, s.listener != nil {
                 s.backoff = nil   // the read works and the listener runs: nothing is failing
@@ -147,7 +153,7 @@ final class HostWiFiListener: Sendable {
             let generation = s.generation
             do {
                 let listener = try NetworkStreamListener(
-                    psks: psks, options: config.options, advertisement: advertisement,
+                    psks: psks, options: options.withLock { $0 }, advertisement: advertisement,
                     handshakeTimeout: config.handshakeTimeout,
                     onEvent: { [weak self] event in self?.handle(event, generation: generation) }, onAccept: onAccept)
                 s.listener = (generation, listener)
@@ -159,6 +165,18 @@ final class HostWiFiListener: Sendable {
                 retryLater(&s)
             }
         }
+    }
+
+    /// New options (the radio priority): the listener restarts with them; connections already accepted keep
+    /// theirs.
+    func setOptions(_ new: NetworkStreamOptions) {
+        let changed = options.withLock { o -> Bool in
+            defer { o = new }
+            return o.radioPriority != new.radioPriority || o.includePeerToPeer != new.includePeerToPeer
+        }
+        guard changed else { return }
+        state.withLock { $0.restart = true }
+        refresh()
     }
 
     /// Stops listening for good (`HostSession.stop()`); a pending retry is cancelled.
