@@ -3,11 +3,13 @@
 
   exp2_arrange.py temp     create, apply scale 2 at a non-default place with method 1 (temporary), check the
                            stream's format, destroy, recreate: what comes back?
-  exp2_arrange.py persist  the same with method 2 (persistent), then look at ~/.config/monitors.xml. Mutter
-                           writes it a few seconds later, so the run waits up to 15 s for it, reports its
-                           content and, if the file did not exist before the run, deletes it again.
-  exp2_arrange.py restart  create only and report where Mutter puts the monitor (run after `persist` to see
-                           whether the stored config is used for a fresh session).
+  exp2_arrange.py restart  create only and report where Mutter puts the monitor.
+
+Method 2 (persistent) is deliberately not offered. Every method-2 apply makes GNOME Shell show its "Keep these
+display settings?" dialog; Mutter reverts after about 20 s unless someone clicks Keep, and only Keep writes
+~/.config/monitors.xml. A method-2 result therefore records a person's click (or the timeout), not what Mutter
+persists, and lain never uses method 2 because nobody at the iPad can answer the dialog. The `persist` mode
+that produced results/exp2_persist.jsonl was removed for that reason (it is in commit 1198caa).
 
 The physical monitor keeps its mode, scale 1 and primary in every config applied here; only its logical
 position may move (when the virtual monitor goes to its left or above it). Each run ends with the layout
@@ -83,7 +85,9 @@ def main():
     before = dc.summary()
     xml_before = os.path.exists(MONITORS_XML)
     emit("before", layout=before, monitors_xml_exists=xml_before)
-    method = {"temp": 1, "persist": 2}.get(phase)
+    if phase not in ("temp", "restart"):
+        sys.exit(f"unknown phase {phase!r}: temp or restart")
+    method = 1 if phase == "temp" else None
     try:
         s, path, probe = create(dc)
         st = dc.state()
@@ -123,9 +127,6 @@ def main():
         # Now destroy and recreate in this Mutter run.
         destroy(s, probe, dc)
         emit("after_destroy", layout=dc.summary())
-        if phase == "persist":
-            emit("monitors_xml", exists=os.path.exists(MONITORS_XML),
-                 content=open(MONITORS_XML).read() if os.path.exists(MONITORS_XML) else None)
         s, path, probe = create(dc)
         st = dc.state()
         emit("recreated", connector=virtual_connector(st), logical=st["logical_monitors"],
@@ -134,12 +135,6 @@ def main():
         destroy(s, probe, dc)
     finally:
         pump(0.5)
-        if phase == "persist":
-            appeared = pump_until(lambda: os.path.exists(MONITORS_XML), 0 if xml_before else 15)
-            if appeared and not xml_before:
-                content = open(MONITORS_XML).read()
-                os.remove(MONITORS_XML)
-                emit("monitors_xml_written_later", content=content, removed=True)
         after = dc.summary()
         emit("after", layout=after, same_as_before=after == before,
              monitors_xml_exists=os.path.exists(MONITORS_XML))

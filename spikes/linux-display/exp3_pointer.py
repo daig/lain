@@ -14,13 +14,14 @@ the cursor's position on each stream. Then:
   5. Put the pointer back where it was (absolute motion on the physical stream).
 
 Input safety: motion and scrolling only while the pointer is over the virtual monitor (which shows only the
-wallpaper); one Shift press and release; no buttons.
+wallpaper), checked from the virtual stream's cursor metadata right before each scroll and the Shift
+(require_pointer_on); one Shift press and release; no buttons.
 """
 
 import time
 
 from mutter import (AXIS_FINISH, AXIS_FINGER, AXIS_WHEEL, KEY_LEFTSHIFT, DisplayConfig, Idle, Probe, Session,
-                    emit, log, pump, pump_until)
+                    emit, log, pointer_on, pump, pump_until, require_pointer_on)
 
 W, H, FPS = 2752, 2064, 120
 PHYS = "HDMI-1"
@@ -112,6 +113,9 @@ def main():
             if before_ms is None:
                 emit("activity", event=kind, skipped="desktop never idle for 1.5 s")
                 continue
+            if kind != "motion":
+                pump_until(lambda: pointer_on(vprobe, W, H) is not None, 1)
+                require_pointer_on(vprobe, W, H, kind)
             if kind == "motion":
                 s.move_abs(vpath, 700, 520)
             elif kind == "axis_finger":

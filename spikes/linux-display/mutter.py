@@ -350,6 +350,31 @@ class Probe:
         return self.wait(5)
 
 
+class NotOnVirtualMonitor(RuntimeError):
+    pass
+
+
+def pointer_on(probe, width, height):
+    """The probe's latest cursor metadata if it is valid and inside the stream (device pixels), else None."""
+    cur = probe.of("cursor") if probe else []
+    c = cur[-1] if cur else None
+    if c and c.get("valid") and 0 <= c["x"] < width and 0 <= c["y"] < height:
+        return c
+    return None
+
+
+def require_pointer_on(probe, width, height, what):
+    """The input-safety guard: call it right before injecting scrolling or a key, so neither can reach a window
+    on the user's monitor. Raises (the experiment's `finally` then restores the pointer and the layout) unless
+    the virtual stream's cursor metadata puts the pointer inside the virtual monitor."""
+    c = pointer_on(probe, width, height)
+    if c is None:
+        cur = probe.of("cursor") if probe else []
+        raise NotOnVirtualMonitor(f"not sending {what}: pointer not on the virtual monitor "
+                                  f"(last cursor metadata: {cur[-1] if cur else None})")
+    return c
+
+
 def pw_node_info(node):
     """The node's properties and its EnumFormat params as pw-dump reports them."""
     out = subprocess.run(["pw-dump", str(node)], capture_output=True, text=True, timeout=10).stdout
