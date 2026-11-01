@@ -24,7 +24,7 @@ import Testing
                 c.acked(bytes: first.bytes, rttNs: first.ackAt - first.sentAt, at: first.ackAt)
                 inFlight.removeFirst()
             }
-            guard inFlight.count < maxInFlight else { held += 1; t += interval; continue }   // held back
+            guard inFlight.count < maxInFlight else { held += 1; c.heldBack(at: t); t += interval; continue }   // held back
             sent += 1
             let bytes = c.target / 8 / Int(fps)
             var sendStart = max(t, linkFreeAt)
@@ -79,6 +79,17 @@ import Testing
         // A few tiny refinement-sized acks, clear round trips: the link isn't busy, so no climb.
         for i in 0..<40 { c.acked(bytes: 5_000, rttNs: 8 * Self.ms, at: UInt64(i) * 150 * Self.ms) }
         #expect(c.target == 10_000_000)
+    }
+
+    /// Seen on the device: tiny frames at a few per second, one of them caught in a stall. The link delivers
+    /// far below the target only because there's little to send: nothing is held back, so it isn't saturated.
+    @Test func aQuietLinkWithAStallIsntSaturated() {
+        var c = BitrateController(start: 20_000_000)
+        for i in 0..<60 {
+            let rtt: UInt64 = i % 7 == 0 ? 120 : (i % 3 == 0 ? 25 : 10)
+            c.acked(bytes: 1_200, rttNs: rtt * Self.ms, at: UInt64(i) * 70 * Self.ms)
+        }
+        #expect(c.target == 20_000_000)
     }
 
     @Test func itNeverLeavesTheFloorAndCeiling() {

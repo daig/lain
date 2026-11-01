@@ -7,9 +7,11 @@
 ///   taken for congestion, while frames that keep arriving late are.
 /// - **Down**, quickly: queueing above `congestedMs` lowers the target to 90% of the measured delivery rate
 ///   (or by `decrease` if too few acks to measure), at most every `decreaseIntervalNs`, never below `floor`.
-///   With some queueing (above `clearMs`), a link delivering under 90% of the target is saturated too: the
-///   host's gate (two frames in flight) holds frames back before the queue grows, costing frame rate, so
-///   the target drops to 90% of the delivery rate. Fluidity first: smaller frames rather than fewer.
+///   With some queueing (above `clearMs`) and frames held back lately (`heldBack`), a link delivering under
+///   90% of the target is saturated too: the host's gate (two frames in flight) holds frames back before the
+///   queue grows, costing frame rate, so the target drops to 90% of the delivery rate. Fluidity first:
+///   smaller frames rather than fewer. Without held-back frames a low delivery rate only means there was
+///   little to send.
 /// - **Up**, slowly: queueing below `clearMs` for `increaseIntervalNs` while the link is actually busy
 ///   (delivering at least half the target) raises it by `increase`, up to `ceiling`. An idle link teaches
 ///   nothing, so the target stays where the last busy period left it.
@@ -28,6 +30,8 @@ public struct BitrateController: Sendable {
         public var recentWindowNs: UInt64 = 500_000_000
         public var deliveryWindowNs: UInt64 = 1_000_000_000
         public var minRttWindowNs: UInt64 = 10_000_000_000
+        /// Frames held back this recently mean the link is the limit.
+        public var heldBackWindowNs: UInt64 = 300_000_000
         public init() {}
     }
 
@@ -42,6 +46,7 @@ public struct BitrateController: Sendable {
     /// Per-second minima of the round trip, for the windowed best.
     private var minima: [(second: UInt64, rttNs: UInt64)] = []
     private var lastChangeNs: UInt64?
+    private var lastHeldBackNs: UInt64?
     private var clearSinceNs: UInt64?
 
     public init(config: Config = Config(), start: Int) {
@@ -67,6 +72,9 @@ public struct BitrateController: Sendable {
         let span = max(now &- first.at, config.deliveryWindowNs / 2)
         return Int(Double(window.reduce(0) { $0 + $1.bytes }) * 8 / (Double(span) / 1e9))
     }
+
+    /// The host's gate held a frame back (two already in flight): there's more to send than the link takes.
+    public mutating func heldBack(at now: UInt64) { lastHeldBackNs = now }
 
     /// One `FrameAck`: the frame's size and its send → ack round trip, acknowledged at `now`. Returns the new
     /// target when it changed.
@@ -98,8 +106,8 @@ public struct BitrateController: Sendable {
         }
         guard queueing < config.clearMs else {
             clearSinceNs = nil
-            guard since >= config.decreaseIntervalNs, let delivery = deliveryBps(at: now),
-                  Double(delivery) < Double(target) * 0.9 else { return nil }
+            guard since >= config.decreaseIntervalNs, let held = lastHeldBackNs, now &- held <= config.heldBackWindowNs,
+                  let delivery = deliveryBps(at: now), Double(delivery) < Double(target) * 0.9 else { return nil }
             return set(max(config.floor, Int(Double(delivery) * 0.9)), at: now)
         }
         let clearSince = clearSinceNs ?? now
