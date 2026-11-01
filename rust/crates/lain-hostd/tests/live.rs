@@ -23,7 +23,8 @@
 //! - usbmuxd: `Listen` on `/var/run/usbmuxd`, retried every second while it isn't running (connecting may start
 //!   the socket-activated daemon). With an iPad attached and lain open on it, a full session would start: the
 //!   reason to run these with no iPad attached.
-//! - After 5 s, SIGTERM; the test expects exit status 0 within 8 s.
+//! - After 5 s, SIGTERM; the test expects exit status 0 within 8 s, and the log to show a complete shutdown
+//!   (`shutdown complete`, and not main's `exiting anyway`).
 //!
 //! The Wi-Fi-on run adds: the listener reads every lain pairing secret from the Secret Service. If there is at
 //! least one, it listens on `[::]:<a free port>` on every interface (TLS-PSK only) and publishes `_lain._tcp`,
@@ -77,7 +78,11 @@ fn run_for_5s(config: &str) -> String {
     assert!(early.is_none(), "lain-hostd exited by itself: {early:?}");
     assert!(status.success(), "exit status {status:?}");
     assert!(log.contains("SIGTERM: stopping"), "no stop in the log");
-    assert!(log.contains("stopped"), "the shutdown didn't finish");
+    // Daemon::shutdown's own last line (the Wi-Fi status "Wi-Fi: off: stopped" would match a bare "stopped"),
+    // and main's budget wasn't what ended it.
+    assert!(log.contains("shutdown complete"), "the shutdown didn't finish");
+    assert!(!log.contains("exiting anyway"), "the shutdown overran its 5 s");
+    assert!(!log.contains("didn't stop within"), "the Wi-Fi half of the shutdown was cut short");
     assert!(log.contains("Waiting for iPad"), "no status line");
     log
 }

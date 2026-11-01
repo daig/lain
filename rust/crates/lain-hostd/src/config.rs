@@ -425,28 +425,73 @@ impl fmt::Display for Modifier {
     }
 }
 
+/// The keys of the inline tables and arrays open at the end of `before` (one line, up to a span), and the key
+/// whose value the span is, if it is a value: `a = { b = [{ c = ` gives `(["a", "b"], Some("c"))`, and
+/// `a = { ` gives `(["a"], None)` (the span is a key itself). Strings are skipped.
+fn open_keys(before: &str) -> (Vec<String>, Option<String>) {
+    let mut open = Vec::new();
+    let mut key = None;
+    let mut segment = String::new();
+    let mut quote = None;
+    for c in before.chars() {
+        if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            }
+            continue;
+        }
+        match c {
+            '"' | '\'' if key.is_some() => quote = Some(c),
+            '=' => {
+                key = Some(segment.trim().trim_matches(|c| c == '"' || c == '\'').to_owned());
+                segment.clear();
+            }
+            // A table or an array opened as a value: its contents are under its key.
+            '{' | '[' => {
+                if let Some(k) = key.take() {
+                    open.push(k);
+                }
+                segment.clear();
+            }
+            // An element of an array: the next one is no table's value yet.
+            ',' => {
+                key = None;
+                segment.clear();
+            }
+            '}' | ']' => {
+                open.pop();
+                key = None;
+                segment.clear();
+            }
+            _ if key.is_none() => segment.push(c),
+            _ => {}
+        }
+    }
+    (open, key)
+}
+
 /// The dotted key a parse error's span points at: the key itself (an unknown key), or the key whose value it
-/// is, under the table header above it. `None` if the line has no key.
+/// is, under the table header above it and the inline tables open on its line. `None` if the line has no key.
 fn key_at(text: &str, span: std::ops::Range<usize>) -> Option<String> {
     let start = span.start.min(text.len());
     let line_start = text[..start].rfind('\n').map_or(0, |i| i + 1);
-    let before = &text[line_start..start];
-    let token = |s: &str| {
-        s.rsplit(|c: char| c.is_whitespace() || matches!(c, '{' | ',' | '[' | ']'))
-            .find(|t| !t.is_empty())
-            .map(|t| t.trim_matches('"').to_owned())
-    };
-    let key = match before.rfind('=') {
-        Some(eq) => token(&before[..eq])?,
+    let (mut path, value_of) = open_keys(&text[line_start..start]);
+    match value_of {
+        Some(key) if !key.is_empty() => path.push(key),
+        Some(_) => return None,
         None => {
             let end = span.end.clamp(start, text.len());
             let own = text[start..end].trim().trim_matches('"');
-            if own.is_empty() || own.starts_with('[') {
-                return None;
+            // An element of an inline array (`[{ ... }]`) is named by the array's key; a table header is no key.
+            if !(own.starts_with('{') || own.starts_with('[')) && !own.is_empty() {
+                path.push(own.to_owned());
             }
-            own.to_owned()
         }
-    };
+    }
+    if path.is_empty() {
+        return None;
+    }
+    let key = path.join(".");
     let table = text[..line_start]
         .lines()
         .rev()
@@ -644,5 +689,24 @@ client_stop_delay_ms = 300
         assert!(e.contains("/x/lain/config.toml: "), "{e}");
         let e = refused("this isn't toml");
         assert!(e.starts_with("/x/lain/config.toml: "), "{e}");
+    }
+
+    #[test]
+    fn keys_inside_inline_tables_are_named_in_full() {
+        let e = refused("[input]\nmodifiers = { command = \"meta\" }\n");
+        assert!(e.contains("config.toml: input.modifiers.command: unknown variant `meta`"), "{e}");
+        let e = refused("[input]\nmodifiers = { shift = \"shift\", command = \"meta\" }\n");
+        assert!(e.contains(": input.modifiers.command: unknown variant `meta`"), "{e}");
+        let e = refused("[input]\nmodifiers = { hyper = \"super\" }\n");
+        assert!(e.contains(": input.modifiers.hyper: unknown field"), "{e}");
+        let e = refused("input = { scroll = { source = \"pad\" } }\n");
+        assert!(e.contains(": input.scroll.source: unknown variant `pad`"), "{e}");
+        let e = refused("input = { modifiers = { option = \"alt\" }, zoom = \"pinch\" }\n");
+        assert!(e.contains(": input.zoom: unknown variant `pinch`"), "{e}");
+        let e = refused("[input]\ncommand_shortcuts = [{ usage = 0x2B, hold = \"meta\" }]\n");
+        assert!(e.contains(": input.command_shortcuts.hold: unknown variant `meta`"), "{e}");
+        // A comma or a brace inside a string closes nothing.
+        let e = refused("[input]\ncommand_shortcuts = [{ usage = 0x2B, hold = \"a,}\" }]\n");
+        assert!(e.contains(": input.command_shortcuts.hold: unknown variant"), "{e}");
     }
 }
