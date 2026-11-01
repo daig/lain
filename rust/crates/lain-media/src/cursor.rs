@@ -93,6 +93,11 @@ impl CursorShapeTracker {
 /// Intended difference from Swift: no timer of its own. Like [`VideoPipeline`](crate::VideoPipeline) it is
 /// driven by its owner: [`start`](Self::start), then call [`on_timer`](Self::on_timer) at
 /// [`next_deadline`](Self::next_deadline) (re-read after every call). Time comes from the [`Clock`].
+///
+/// It owns its source and clock. `Platform::cursor()` and `Platform::clock()` lend them by reference, and
+/// `lain-platform` has no impls of `CursorSource` or `Clock` for `Arc<T>` or `&T`, so generic code over a
+/// `Platform` passes a newtype around `Arc<P>` that forwards to them (or `lain-platform` adds those impls).
+/// The same holds for [`VideoPipeline`](crate::VideoPipeline)'s clock.
 pub struct CursorMonitor<Src: CursorSource, C: Clock> {
     source: Src,
     clock: C,
