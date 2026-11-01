@@ -177,8 +177,10 @@ fn rightmost(others: &[Placed]) -> Option<Arrangement> {
 /// A full plan for lain's display: its new position and every other monitor's, normalized.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plan {
-    /// What was applied: the stored arrangement, or the fallback.
-    pub arrangement: Arrangement,
+    /// What was applied: the stored arrangement, or the fallback. `None` on a desktop with no physical monitor
+    /// (headless, its monitor unplugged): nothing anchors lain's display, so it stays where it is, and nothing is
+    /// recorded as the owner's arrangement.
+    pub arrangement: Option<Arrangement>,
     pub lain_at: (i32, i32),
     /// Every other logical monitor's new position, by its first monitor's spec.
     pub others_at: Vec<(MonitorSpec, (i32, i32))>,
@@ -220,16 +222,28 @@ fn close_gaps(others: &[Placed], old: &IRect, new: &IRect) -> Option<Vec<Placed>
 /// Plans lain's display at `size` (its logical size at the spec's scale): `stored` if it can be placed, else
 /// the fallback (where lain's display is now, else right of the rightmost physical monitor). Each one must
 /// give a layout Mutter takes (no overlaps, connected: [`close_gaps`]); `None` if none does.
+///
+/// With no physical monitor at all (a headless desktop: the developer's requirement that lain keep working
+/// once the monitor is unplugged after login), nothing can anchor lain's display: it is re-scaled where it is,
+/// at its top-left corner, with no arrangement.
 pub fn plan(stored: Option<&Arrangement>, others: &[Placed], lain_now: &IRect, size: (i32, i32)) -> Option<Plan> {
     let candidates = [stored.cloned(), derive(others, lain_now), rightmost(others)];
-    let (wanted, rect, moved) = candidates.into_iter().flatten().find_map(|a| {
+    let anchored = candidates.into_iter().flatten().find_map(|a| {
         // Overlaps are checked after the gaps are closed: a display growing in place pushes its neighbours.
         let rect = position(&a, others, size)?;
         let moved = close_gaps(others, lain_now, &rect)?;
-        Some((a, rect, moved))
-    })?;
+        Some((Some(a), rect, moved))
+    });
+    let (wanted, rect, moved) = match anchored {
+        Some(found) => found,
+        None if !others.iter().any(|p| p.physical) => {
+            let rect = IRect::new(lain_now.x, lain_now.y, size.0, size.1);
+            (None, rect, close_gaps(others, lain_now, &rect)?)
+        }
+        None => return None,
+    };
     // What the layout will show (the offset may have been clamped), so it isn't mistaken for the owner's.
-    let arrangement = derive(&moved, &rect).unwrap_or(wanted);
+    let arrangement = derive(&moved, &rect).or(wanted);
     let (sx, sy) = normalize(&moved, &rect);
     let others_at = moved.iter().map(|p| (p.spec.clone(), (p.rect.x + sx, p.rect.y + sy))).collect();
     Some(Plan { arrangement, lain_at: (rect.x + sx, rect.y + sy), others_at })
@@ -527,7 +541,7 @@ mod tests {
         let stored = Arrangement { anchor: hdmi(), edge: Edge::Left, offset: 0 };
         let now = IRect::new(3840, 0, 2752, 2064);
         let p = plan(Some(&stored), &others, &now, (1376, 1032)).unwrap();
-        assert_eq!(p, Plan { arrangement: stored, lain_at: (0, 0), others_at: vec![(hdmi(), (1376, 0))] });
+        assert_eq!(p, Plan { arrangement: Some(stored), lain_at: (0, 0), others_at: vec![(hdmi(), (1376, 0))] });
     }
 
     fn rects_after(p: &Plan, size: (i32, i32), others: &[Placed]) -> Vec<IRect> {
@@ -578,7 +592,7 @@ mod tests {
         let below_a = Arrangement { anchor: a.clone(), edge: Edge::Bottom, offset: 0 };
         let lain_now = IRect::new(1920, 0, 1376, 1032);
         let p = plan(Some(&below_a), &others, &lain_now, (1376, 1032)).unwrap();
-        assert_eq!(p.arrangement, Arrangement { anchor: a, edge: Edge::Right, offset: 0 });
+        assert_eq!(p.arrangement, Some(Arrangement { anchor: a, edge: Edge::Right, offset: 0 }));
         assert!(connected(&rects_after(&p, (1376, 1032), &others)));
     }
 
@@ -604,13 +618,46 @@ mod tests {
         let p = plan(None, &others, &lain, (1376, 1032)).unwrap();
         assert_eq!(p.lain_at, (3840, 0));
         assert_eq!(p.others_at, vec![(hdmi(), (0, 0))]);
-        assert_eq!(p.arrangement, Arrangement { anchor: hdmi(), edge: Edge::Right, offset: 0 });
+        assert_eq!(p.arrangement, Some(Arrangement { anchor: hdmi(), edge: Edge::Right, offset: 0 }));
         // A stored arrangement whose anchor is gone falls back too.
         let gone = Arrangement { anchor: MonitorSpec::new("DP-9", "X", "Y", "Z"), edge: Edge::Bottom, offset: 0 };
         assert_eq!(plan(Some(&gone), &others, &lain, (1376, 1032)).unwrap().lain_at, (3840, 0));
         // lain's display touching nothing (left alone at a gap) goes right of the rightmost physical monitor.
         let p = plan(None, &others, &IRect::new(9000, 9000, 2752, 2064), (1376, 1032)).unwrap();
         assert_eq!(p.lain_at, (3840, 0));
+    }
+
+    /// Headless (the bring-up, 2026-11-01): with the monitor unplugged, an iPad connecting made a display that
+    /// stayed at Mutter's scale 1, because no physical monitor could anchor its plan. It is re-scaled in place now,
+    /// with no arrangement recorded; a stored one waits for its monitor to come back.
+    #[test]
+    fn plan_with_no_physical_monitor_rescales_lain_in_place() {
+        let stored = Arrangement { anchor: hdmi(), edge: Edge::Right, offset: 0 };
+        for s in [None, Some(&stored)] {
+            let p = plan(s, &[], &IRect::new(0, 0, 2752, 2064), (1376, 1032)).unwrap();
+            assert_eq!(p, Plan { arrangement: None, lain_at: (0, 0), others_at: vec![] });
+        }
+        // Another remote-desktop client's virtual monitor right of lain's display: it follows the right edge in.
+        let virt = MonitorSpec::new("Meta-1", "X", "Y", "Z");
+        let others =
+            vec![Placed { spec: virt.clone(), rect: IRect::new(2752, 0, 1920, 1080), primary: false, physical: false }];
+        let p = plan(None, &others, &IRect::new(0, 0, 2752, 2064), (1376, 1032)).unwrap();
+        assert_eq!(p, Plan { arrangement: None, lain_at: (0, 0), others_at: vec![(virt, (1376, 0))] });
+    }
+
+    /// The tracker after a headless apply: nothing anchors lain's display, so a layout at the spec's scale is
+    /// left alone (no arrangement recorded), and the monitor coming back applies the stored one again.
+    #[test]
+    fn a_headless_apply_records_nothing_and_the_monitor_coming_back_reapplies() {
+        let headless = set(&["Meta-0"]);
+        let mut t = Tracker::new(Some(arr(0)));
+        let now = Instant::now();
+        assert_eq!(t.on_layout(now, view(&headless, 1.0, None)), Decision::Apply(Apply::Stored));
+        t.applied(headless.clone(), None, true);
+        assert_eq!(t.on_layout(now, view(&headless, 2.0, None)), Decision::Nothing);
+        assert_eq!(t.stored(), Some(&arr(0)));
+        let back = set(&["HDMI-1", "Meta-0"]);
+        assert_eq!(t.on_layout(now, view(&back, 2.0, None)), Decision::Apply(Apply::Stored));
     }
 
     fn view(set: &BTreeSet<MonitorSpec>, scale: f64, current: Option<Arrangement>) -> View {
