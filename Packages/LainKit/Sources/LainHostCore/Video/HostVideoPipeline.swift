@@ -220,7 +220,7 @@ public final class HostVideoPipeline: Sendable {
         }
         // Running: the display is the pipeline's now, and `stop()` removes it.
         starting.end()
-        log.notice("video: display \(display.displayID) \(display.pixelWidth)×\(display.pixelHeight), \(encoder.chroma == .yuv444 ? "4:4:4 10-bit" : "4:2:0") (client \(hello.decodeCapabilities.contains(.hevcMain44410Hardware) ? "decodes" : "lacks") hardware 4:4:4)")
+        log.notice("video: display \(display.displayID) \(display.pixelWidth)×\(display.pixelHeight), \(encoder.chroma == .yuv444 ? "4:4:4 10-bit" : "4:2:0", privacy: .public) (client \(hello.decodeCapabilities.contains(.hevcMain44410Hardware) ? "decodes" : "lacks", privacy: .public) hardware 4:4:4)")
         videoChannel.setHandler { [weak self] env in self?.handleVideo(env) }
         videoChannel.start()
         timer.resume()   // a `stop()` since has cancelled it: activating a cancelled source is fine
