@@ -760,6 +760,7 @@ version = "0.1.0"
 dependencies = [
  "lain-platform",
  "lain-proto",
+ "proptest",
  "tracing",
 ]
 
