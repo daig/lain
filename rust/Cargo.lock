@@ -757,6 +757,8 @@ dependencies = [
  "lain-platform",
  "lain-proto",
  "lain-usbmux",
+ "tokio",
+ "tracing",
 ]
 
 [[package]]

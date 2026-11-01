@@ -13,6 +13,13 @@ lain-link.workspace = true
 lain-usbmux.workspace = true
 lain-input.workspace = true
 lain-media.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "net"] }
+tracing.workspace = true
+
+[dev-dependencies]
+lain-platform = { workspace = true, features = ["fake"] }
+lain-usbmux = { workspace = true, features = ["fake"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros", "net", "io-util", "test-util"] }
 
 [lints]
 workspace = true
