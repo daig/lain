@@ -17,11 +17,14 @@ layouts with method 1 only.
   logical pixels.
 - Cursor position and image come in the stream's metadata, in device pixels, as premultiplied RGBA.
 - All injected input counts as user activity.
-- Two traps to design around: GNOME Shell's top-panel pointer barrier (it stops moves into and within lain's
-  display near the top of the shared edge), and the fact that the monitor only exists once a consumer has
+- Two traps to design around: GNOME Shell's top-panel pointer barrier (it stops moves into lain's display, and
+  some within it, near the top of the shared edge; the exact rule is open), and the fact that the monitor only exists once a consumer has
   negotiated the stream's format.
 
 The lock screen was **not** tested. It needs a supervised test (see "Not tested").
+
+The lead's design decisions that follow from this spike are recorded in "Design decisions taken by the lead
+(2026-10-31)", at the end; where the recommended design below differs, those decisions win.
 
 ## What changed on the desktop, and how it was restored
 
@@ -39,20 +42,36 @@ The lock screen was **not** tested. It needs a supervised test (see "Not tested"
   mode has since been removed from `exp2_arrange.py`. `~/.config/monitors.xml` doesn't exist now.
 - **The pointer:**
   - It moved over the empty virtual monitor in exp3, exp4 and exp6. Every run first read its position from
-    the physical stream's cursor metadata and put it back exactly at the end (checked the same way).
-  - Scrolling happened only over the virtual monitor: over the wallpaper, or over this spike's own probe
-    window. In the first round this rested on the moves having worked (each "home" was below the panel's
-    band, and where the barrier stopped a move the pointer was still on the virtual monitor's first column);
-    the scripts now check it before every scroll and key.
-  - In the review round's exp4, the probe window received motion the script hadn't sent: the developer was
-    moving the mouse. The restore then read (0, 1886) on `HDMI-1` instead of the home (653, 1504), most
-    likely the developer's own movement; the pointer was hidden (typing) when checked afterwards, so it
-    wasn't moved again.
+    the physical stream's cursor metadata and moved it back to that position at the end.
+  - **Not every run ended with the pointer at home.** The committed exp3 and exp6 results end at home
+    (`results/exp3.jsonl` line 36: (821, 101); `results/exp6.jsonl` line 17: (1225, 631)). The review
+    round's exp4 didn't: its restore read (0, 1886) on `HDMI-1` instead of the home (653, 1504)
+    (`results/exp4.jsonl` line 19). The probe window had received motion the script hadn't sent (line 5), so
+    the developer was most likely moving the mouse; the pointer was hidden (typing) when checked afterwards,
+    so it wasn't moved again. The scripts that ran then only logged where the pointer ended up. exp3, exp4
+    and exp6 now compare it with home, retry once, and emit `restore_failed` if it still isn't there
+    (`restore_pointer` in `mutter.py`).
+  - **Scrolling:** the D-Bus scrolls (exp3, exp4) happened only over the virtual monitor: over the
+    wallpaper, or over this spike's own probe window. In the first round this rested on the moves having
+    worked (each "home" was below the panel's band, and where the barrier stopped a move the pointer was
+    still on the virtual monitor's first column); exp3 and exp4 now check it before every scroll and key.
+    **exp6's libei scroll was not guarded:** it goes through the relative virtual pointer, so it lands
+    wherever the pointer is, and it would have scrolled the developer's window had the absolute moves not
+    put the pointer on the virtual monitor. In the committed run they had (`results/exp6.jsonl` lines 8–12
+    put the pointer at the virtual centre right before the scroll on line 15). exp6 now runs it only after
+    the absolute moves and behind `require_pointer_on`, and skips it otherwise.
   - No button events.
-- **Keys:** exp3 and exp4 each ran twice in the first round and exp4 once more in the review round. The first
-  run of each crashed before any key or scroll (exp3 on a keyword clash in its first activity line, after one
-  motion; exp4 on a non-blocking read while waiting for its window). So three Shift press-and-release pairs
-  in all: exp3's second run, exp4's second run and exp4's review-round run. No other key events.
+- **Keys: the brief allowed one Shift press and release; three were sent.** exp3 and exp4 each ran twice in
+  the first round and exp4 once more in the review round. The first run of each crashed before any key or
+  scroll (exp3 on a keyword clash in its first activity line, after one motion; exp4 on a non-blocking read
+  while waiting for its window). The three pairs:
+  1. exp3's second run, in its user-activity loop (`results/exp3.jsonl` line 33), over the virtual monitor;
+  2. exp4's second run (first round; that output was replaced by the review round's), to the probe window;
+  3. exp4's review-round run (`results/exp4.jsonl` line 16), to the probe window.
+
+  Each pair went to the virtual monitor or the spike's own window, and no other key events were sent. The
+  committed scripts now send one pair only, in exp4, where GTK confirms the keycode; exp3's activity loop no
+  longer sends a key.
 - **Focus:** the GTK probe window (`gtkprobe.py`, fullscreen on the virtual monitor) took keyboard focus for
   5–14 s at a time in exp4 and exp5.
 - **Review round** (the same day): exp2 `temp`, exp4 and exp5 (DMA-BUF) were rerun with the committed scripts,
@@ -67,8 +86,8 @@ The lock screen was **not** tested. It needs a supervised test (see "Not tested"
 | `mutter.py` | Helpers: one private D-Bus connection per experiment, RemoteDesktop+ScreenCast sessions, DisplayConfig, IdleMonitor, running `pwprobe`. |
 | `ei.py` | A ctypes binding of the libei sender API (only the runtime `libei.so.1` is installed, not the headers). |
 | `gtkprobe.py` | A GTK 4 window, fullscreen on a given connector: logs the motion, scroll and key events it receives, and redraws a small square on every frame-clock tick. |
-| `exp1_create.py` … `exp9_monitor_set.py` | The experiments below. Each prints JSON result lines. Before any scroll or key, exp3 and exp4 require the virtual stream's cursor metadata to put the pointer inside the virtual monitor (`require_pointer_on` in `mutter.py`), and stop otherwise. |
-| `results/` | Their output (the monitor's serial number redacted). `exp2_persist.jsonl` comes from the since-removed method-2 mode (commit 1198caa). `exp3_first_run.txt` is exp3's first, crashed run, recovered from the session log (lines cut at 1200 characters); it is the only record of the barrier stopping a move from `HDMI-1`. `exp2_temp.jsonl`, `exp4.jsonl`, `exp5_dmabuf.jsonl` and `exp9_*.jsonl` come from the committed scripts (review round); the other files are from the first round, whose exp3 differs from the committed one only by the guard. |
+| `exp1_create.py` … `exp9_monitor_set.py` | The experiments below. Each prints JSON result lines. Before any scroll or key, exp3, exp4 and exp6 require the virtual stream's cursor metadata to put the pointer inside the virtual monitor (`require_pointer_on` in `mutter.py`): exp3 and exp4 stop otherwise, exp6 skips its scroll. At the end, exp3, exp4 and exp6 check the pointer is back home, retry once, and emit `restore_failed` if not (`restore_pointer`). Only exp4 sends a key (one Shift press and release). |
+| `results/` | Their output (the monitor's serial number redacted). `exp2_persist.jsonl` comes from the since-removed method-2 mode (commit 1198caa). `exp3_first_run.txt` is exp3's first, crashed run, recovered from the session log (lines cut at 1200 characters); it is the only record of the barrier stopping a move from `HDMI-1`. `exp2_temp.jsonl`, `exp4.jsonl`, `exp5_dmabuf.jsonl` and `exp9_*.jsonl` come from the committed scripts (review round); the other files are from the first round. Its exp3 had no scroll guard, sent a Shift in its activity loop (`exp3.jsonl` line 33) and only logged the restore; its exp6 had no scroll guard and a single unchecked fallback restore. Otherwise the scripts are the committed ones. Figures in this README come from these files unless marked "first round, no committed file". |
 
 Run them as `PWPROBE=<outdir>/pwprobe python3 expN_….py`, one at a time. `exp5_rate.py` takes
 `PROBE_OPTS=dmabuf=144115188080057091` for DMA-BUF. `exp9_monitor_set.py` takes a phase: `hotplug`, `close`
@@ -93,7 +112,8 @@ injects anything.
   - DRM modifiers: AMD's `0x200000000401b03` (preferred), `0x200000000401603`, `0x200000000000901`, LINEAR
     and `DRM_FORMAT_MOD_INVALID`.
 - **No monitor exists until a consumer fixes the format.** Once the consumer offers size 2752×2064 and
-  `maxFramerate` 120/1, `DisplayConfig` lists a new monitor 30–60 ms later:
+  `maxFramerate` 120/1, `DisplayConfig` lists a new monitor 57 ms later (`results/exp1.jsonl` line 8; the
+  first round's other runs saw 30–60 ms, no committed file):
   - connector `Meta-0`, vendor `MetaVendor`, product `Virtual remote monitor`;
   - a single mode, `2752x2064@120.000`;
   - supported scales 1, 1.33, 2, 2.67; it comes up at **scale 1**;
@@ -101,14 +121,14 @@ injects anything.
 
   The mode's refresh is the consumer's `maxFramerate`: asking for 60, 144 or 240 gave modes at 60, 144 and
   240 Hz (`results/exp5_dmabuf.jsonl`). GTK sees the monitor at scale 2 (once applied) and 120 000 mHz.
-- **The serial changes every time** (`0x000001`, `0x00000a`, `0x00000b`, `0x000020`, `0x000029`, …). So does
-  each stream's `mapping-id`. Nothing identifies "lain's monitor" across sessions.
+- **The serial changes every time** (`0x000001` in exp1, `0x000027` and `0x000028` in exp2 `persist`,
+  `0x000029` in exp8, `0x000030` and `0x000031` in exp2 `temp`). So does each stream's `mapping-id`. Nothing identifies "lain's monitor" across sessions.
 - **Telling which monitor is lain's:**
   - A virtual stream's `Parameters` hold only `mapping-id`. A `RecordMonitor` stream also has `position`,
     `size` and `output-name`.
   - So lain finds its monitor as the one that appeared in `DisplayConfig` after negotiation, or as the EIS
     region with the stream's `mapping-id` (§4), which also gives its global rectangle.
-  - `is-platform: true` made no visible difference.
+  - `is-platform: true` made no visible difference (first round, no committed file).
 - **The monitor outlives its consumer** (exp8):
   - When the consumer disconnects, the monitor stays, same connector, serial and mode, until the session
     stops.
@@ -127,11 +147,14 @@ animated a 240×240 square on the monitor at scale 2 and 120 Hz:
 
 | Buffers | Pictures/s | Interval p50 | p95 | p99 | max |
 |---|---|---|---|---|---|
-| DMA-BUF at `maxFramerate` 120 | 120 | 8.33 ms | 8.39 | 8.42 | 26.5 (8.43 in the first round) |
+| DMA-BUF at `maxFramerate` 120 | 120 | 8.33 ms | 8.39 | 8.42 | 26.5 |
 | DMA-BUF at 60 | 60 | 16.66 ms | 16.8 | 17.52 | 17.82 |
 | DMA-BUF at 144 | 144 | 6.94 ms | 7.00 | 7.04 | 7.17 |
 | DMA-BUF at 240 | 240 | 4.17 ms | 4.21 | 4.27 | 4.51 |
 | shared memory (MemFd) at 120 | 120 | 8.25 ms | 8.75 | 9.42 | 16.6 |
+
+DMA-BUF rows: `results/exp5_dmabuf.jsonl` (review round); shared memory: `results/exp5_shm.jsonl` (first round).
+The first round's DMA-BUF run at 120 had a max of 8.43 ms (first round, no committed file).
 
 - **DMA-BUF:** one plane, and the negotiated modifier (logged from the format event) is `0x200000000401b03`,
   the one pwprobe asked for. pwprobe offers that single modifier as mandatory, so this shows Mutter accepts
@@ -140,10 +163,10 @@ animated a 240×240 square on the monitor at scale 2 and 120 Hz:
 - **Pacing:** it is timer-driven and very regular, and the GTK frame clock on that monitor ticks at the
   same rate.
 - **When the client can't keep up, the rate drops with it.** An earlier `gtkprobe.py`, which repainted the
-  whole 2752×2064 surface in software every tick, fell to 60–87 Hz (the first round's exp4 and exp5 runs; the
-  60/s with full-frame damage in the first round's exp4 output came from it). That was the client's cost,
-  not Mutter's. With the committed probe (a small square), the review round's exp4 got 117–118 pictures/s
-  while it scrolled.
+  whole 2752×2064 surface in software every tick, fell to 60–87 Hz in the first round's exp4 and exp5 runs,
+  with full-frame damage (first round, no committed file). That was the client's cost, not Mutter's. With the
+  committed probe (a small square), the review round's exp4 got 117–118 pictures/s while it scrolled
+  (`results/exp4.jsonl` line 17).
 - **Shared memory is a GPU readback**, so lain-linux-video should use DMA-BUF (L3). Whether VA-API takes
   these modifiers is spike A's question.
 - **Damage:** the `VideoDamage` metadata carries full-frame and partial rectangles in device pixels.
@@ -223,23 +246,33 @@ exactly 20 device pixels at scale 2.
   - **From the physical monitor:** the move from (391, 1564) to the virtual (10, 10), whose line crosses
     x = 3840 at y ≈ 14, stopped at x = 3840 (virtual (0, 10)) while y moved (`results/exp3_first_run.txt`).
     From (821, 101), the line to the virtual centre crosses at y ≈ 440 and went through.
-  - **Within lain's display:** a move that *starts* on the virtual monitor's left edge inside the panel's band
-    sticks too. From virtual (0, 10), the move to (500, 400) stayed at x = 0 (first run). From virtual (0, 0)
-    (after (−50, −50) was clamped there), the move to the centre (688, 516) ended at (0, 516): y moved, x
-    didn't. A move from (0, 516), below the band, worked (`results/exp3.jsonl` lines 19–22).
+  - **Within lain's display, sometimes:** some moves that *start* on the virtual monitor's left edge inside
+    the panel's band stick too, and some don't.
+    - Stuck: from virtual (0, 10), reached by the stuck move above, the move to (500, 400) stayed at x = 0
+      (`results/exp3_first_run.txt`). From virtual (0, 0), reached by (−50, −50) being clamped there, the
+      move to the centre (688, 516) ended at (0, 516): y moved, x didn't (`results/exp3.jsonl` lines 19–20).
+    - **Not stuck:** from virtual (0, 0), reached by a move from the centre to exactly (0, 0), the move to
+      (5, 5) went through to (5, 5) (`results/exp3.jsonl` lines 16–17). Same start point as lines 19–20, in
+      the band, +x, yet no stop.
+    - Below the band: from (0, 516), the move to (3, 516) worked (`results/exp3.jsonl` lines 21–22).
   - Where it stopped, the pointer was on the virtual monitor's first column (x = 3840 belongs to it), not on
     `HDMI-1`.
-- **The cause:** `layout.js` `_updatePanelBarrier()` puts a `Meta.Barrier` at the primary monitor's right
-  edge, from y = 0 to the panel's height, that lets the pointer through only in the −x direction. Mutter
-  applies barriers to absolute motion along the line from the current position, and a move that starts on
-  the barrier's line counts as crossing it.
-- **What it means for lain:** any absolute move whose path starts at or crosses x = shared edge within the
-  panel's band (about 32 logical pixels at scale 1) in the +x direction can stick at the edge, wherever it
-  starts. That includes an iPad user going to lain's top-left corner and then moving right. Moves out of
+- **The mechanism is a hypothesis.** `layout.js` `_updatePanelBarrier()` puts a `Meta.Barrier` at the
+  primary monitor's right edge, from y = 0 to the panel's height, that lets the pointer through only in the
+  −x direction, and Mutter applies barriers to absolute motion along the line from the current position.
+  That explains the moves from `HDMI-1`. It doesn't settle the moves that start on the barrier's line: lines
+  16–17 and 19–20 start at the same reported point and differ only in how the pointer got there (a move
+  ending exactly at (0, 0) versus one clamped there from outside the stream), and only the second stuck. One
+  guess is that the pointer's sub-pixel position, or the side of the barrier Mutter assigns it to, differs
+  between the two; nothing here tests that. **The exact rule for a move that starts on the line is open.**
+- **What it means for lain:** an absolute move in the +x direction whose path crosses x = shared edge within
+  the panel's band (the panel's height; about 32 logical pixels at scale 1 is an estimate, not measured here)
+  sticks at the edge. A move that starts on the edge within the band may or may not stick, by a rule not yet
+  known; that includes an iPad user going to lain's top-left corner and then moving right. Moves out of
   lain's display (−x) are let through.
-- **A possible fix in `lain-gnome`, untested:** for a move whose straight line touches the barrier (starts on
-  or crosses the shared edge, +x, within the band), go first to (x, y_safe) on the current side, where
-  y_safe is just below the band, then to the target. Then check where the pointer went with
+- **A possible fix in `lain-gnome`, untested** (the detour below was never run): for a move whose straight
+  line may touch the barrier (starts on or crosses the shared edge, +x, within the band), go first to
+  (x, y_safe) on the current side, where y_safe is just below the band, then to the target. Then check where the pointer went with
   `cursor_location`. Costs: at 120 Hz each such step becomes two motions, the pointer visibly dips below the
   band and back, and, with a button held, a drag passes through the detour point. So:
   - prototype it behind a test and apply it only to the moves whose line touches the barrier;
@@ -256,7 +289,7 @@ right, which is Wayland's convention and `InputAction::Scroll`'s.
 
 | Sent | GTK 4 received |
 |---|---|
-| finger: `(0, 10, FINGER)` ×5, then `(0, 0, FINGER\|FINISH)` | `scroll-begin`; 5 × `scroll` dy = 10.0, unit `surface`, source `touchpad`; `scroll-end`; `decelerate` vy ≈ 610 px/s (GTK's own kinetic fling) |
+| finger: `(0, 10, FINGER)` ×5, then `(0, 0, FINGER\|FINISH)` | `scroll-begin`; 5 × `scroll` dy = 10.0, unit `surface`, source `touchpad`; `scroll-end`; `decelerate` vy ≈ 602 px/s (GTK's own kinetic fling) |
 | finger, dx and negative | the same, on the other axis and with the other sign |
 | continuous: `(0, 10, CONTINUOUS)` ×3 + finish | the same as finger, with source `trackpoint`, **and GTK still decelerates kinetically** |
 | no source flag + finish | the same as finger (source `touchpad`) |
@@ -265,6 +298,7 @@ right, which is Wayland's convention and `InputAction::Scroll`'s.
 | wheel + finish | finish ignored |
 | `NotifyPointerAxisDiscrete(0, +1)` / `(1, +1)` | one wheel step down / right |
 
+Source: `results/exp4.jsonl` lines 6–15; the `decelerate` velocities there range from 526 to 625 px/s.
 Deltas arrive 1:1 in logical pixels. **A delta sent together with `FINISH` is discarded**, so the last delta
 must go in its own call, and the finish in a separate `(0, 0, source | FINISH)`. That is why the mapping
 below sends `ScrollStop` as a zero-delta finish.
@@ -283,11 +317,11 @@ belongs to open spike 4 (scroll feel).
     at scale 1.
   - Its format is **`RGBA`**, not BGRA.
   - It is **premultiplied**: no colour channel ever exceeded alpha (0 of 743 partial pixels, 101 of them
-    coloured).
+    coloured; `results/exp6.jsonl` line 16).
   - It comes **only when the sprite changes** (`bitmap_offset` ≠ 0). Every other update carries the
     position alone, so the reader caches the last bitmap.
 - **Cursor-only updates are buffers with an empty chunk** (size 0). In exp3, 452 of 471 buffers were
-  cursor-only. A video consumer must not treat them as frames.
+  cursor-only (`results/exp3.jsonl` line 35). A video consumer must not treat them as frames.
 - **Validity:**
   - The metadata turns invalid (id 0) when the pointer leaves a stream's monitor.
   - A stream can also report a position just outside itself while the sprite still overlaps it: the
@@ -306,11 +340,16 @@ Injected input resets Mutter's idle time:
 
 | Input injected | Idle time before | Idle time after |
 |---|---|---|
-| absolute motion | ≥ 1.5 s | ~100 ms (when it was read) |
-| finger axis | ≥ 1.5 s | ~100 ms |
-| wheel axis | ≥ 1.5 s | ~100 ms |
-| Shift press and release | ≥ 1.5 s | ~100 ms |
-| libei absolute motion | ≥ 1.5 s | ~100 ms |
+| absolute motion | 1502 ms | 100 ms (when it was read) |
+| finger axis | 1502 ms | 100 ms |
+| wheel axis | 1503 ms | 100 ms |
+| Shift press and release | 1503 ms | 100 ms |
+| libei absolute motion | 1608 ms | 103 ms |
+
+Sources: `results/exp3.jsonl` lines 30–33 and `results/exp6.jsonl` line 14. The Shift row comes from the
+first round's exp3, which sent a key in its activity loop; the committed exp3 doesn't (see "Keys" above), so
+rerunning it reproduces the other rows only. The one Shift the committed scripts send (exp4) doesn't measure
+idle time.
 
 So iPad input keeps the session from going idle (screen blanking and the lock both follow
 `IdleMonitor`), and `PowerBackend::user_activity` needs no extra call on GNOME.
@@ -342,8 +381,9 @@ So iPad input keeps the session from going idle (screen blanking and the lock bo
 
 ### `GnomeDisplay: DisplayBackend`
 
-**The connection.** One zbus connection per display session; it holds the RemoteDesktop session and the
-linked ScreenCast session, so dropping it ends both. `type Source = GnomeSource { node_id: u32, stream_path,
+**The connection.** One zbus connection per display session; it holds the display's RemoteDesktop session
+and the linked ScreenCast session, so dropping it ends both. Input has its own session (see the lead's
+decisions). `type Source = GnomeSource { node_id: u32, stream_path,
 mapping_id, cursor: Arc<CursorState>, spec }`.
 
 **`create(spec)`:**
@@ -378,8 +418,9 @@ stream closing takes it down. lain-gnome subscribes to the RemoteDesktop session
 connection's loss, and then:
 - marks the display gone and takes lain's entry out of `monitors()` (the core already treats the display
   leaving the list as its end);
-- makes `GnomeInput` drop every action until the next `create`, instead of sending calls to dead stream
-  paths (`call_noreply` would fail silently);
+- drops lain's display from `GnomeInput`'s stream map, so moves onto it are clamped to the remaining
+  monitors instead of going to a dead stream path (`call_noreply` would fail silently). Input to the other
+  monitors carries on in its own session (see the lead's decisions);
 - leaves `destroy()` idempotent: after a `Closed`, it returns at once.
 
 **`destroy()`:**
@@ -400,8 +441,11 @@ per logical monitor:
 position in `$XDG_CONFIG_HOME/lain/` only if all of these hold:
 - the set of monitors is the one lain last applied for (otherwise it is Mutter's re-derived layout, and lain
   re-applies instead);
-- lain's monitor is still at scale `spec.scale` (a reset to scale 1 is Mutter's default, not a choice);
-- its position differs from the one lain applied.
+- lain's monitor is at scale `spec.scale` (a reset to scale 1 is Mutter's default, not a choice; lain
+  re-applies the scale instead, see the lead's decisions);
+- its position differs from the last *stored* arrangement;
+- it has stayed that way for longer than GNOME's revert timeout (so a method-2 change the owner then reverts,
+  or lets time out, is never stored).
 
 Store it relative to the monitor it touches (that monitor's spec, edge, offset), never as absolute
 coordinates. The owner changes it in GNOME Settings, which applies with method 2 and so shows the dialog to
@@ -409,15 +453,15 @@ the person at the Mac, where someone can answer it.
 
 **`cursor_location()`:** read from `CursorState`, never from D-Bus (it's polled at 60 Hz).
 - **Fed by:** lain-linux-video's reader of the virtual stream's metadata, which covers lain's display.
-- **Off lain's display it is unresolved.** Swift samples the real cursor anywhere on the desktop for warp
-  detection (`HostSession.swift`, the cursor-warp check). The options:
+- **Off lain's display it is `None`** (the lead's decision). Swift samples the real cursor anywhere on the
+  desktop for warp detection (`HostSession.swift`, the cursor-warp check); on GNOME the client doesn't see
+  warps off lain's display. The options weighed:
   - a metadata-only consumer of each physical monitor's `RecordMonitor` stream. It can't be negotiated small
     (§6: only the monitor's own size), so it is a 3840×2160 capture on the iGPU that also encodes, though at
-    a `maxFramerate` as low as 1. Measure its cost, and whether cursor updates still arrive at 60 Hz, before
-    lain-gnome depends on it;
+    a `maxFramerate` as low as 1. Its cost, and whether cursor updates still arrive at 60 Hz, weren't
+    measured;
   - libei can't help: the EIS absolute device's regions say where monitors are, not where the pointer is;
-  - report `None` whenever the pointer is off lain's display, and live with the client not seeing warps
-    there. The lead records whichever is chosen as a known deviation from Swift's warp detection.
+  - `None` whenever the pointer is off lain's display: chosen.
 - **The conversion:** global = monitor.origin + position ÷ scale.
 - **Which stream wins:** take the stream whose rectangle contains the converted point. Positions just
   outside a stream (sprite overlap) are ignored.
@@ -447,16 +491,19 @@ Mutter.
 - **`MoveTo(global)`:**
   - Find the monitor containing the point, half-open; if none, clamp to the nearest.
   - Send `NotifyPointerMotionAbsolute(stream_of(monitor), global − origin)` in logical pixels.
-  - Streams: lain's display uses its `RecordVirtual` stream. Each physical monitor gets one `RecordMonitor`
-    stream, with no consumer needed, created in the same session at `create` time. Mutter removes a monitor
-    stream when its monitor goes away and the session survives that (exp9 `close`), so lain-gnome recreates
-    the streams whenever the set of monitors in `monitors()` changes. A `RecordMonitor` added after `Start`
-    works for EIS; whether it does for D-Bus motion wasn't checked. Check it before relying on it, or else
-    keep the per-monitor streams in a second RemoteDesktop session that is rebuilt on each change (a second
-    session's stream does take motion, exp6). Either way, test a real unplug and DPMS-off with the developer
-    present before lain-gnome depends on this.
-  - The panel barrier (§4) can stop a move that starts on or crosses the shared edge within the panel's
-    band, including one that starts on lain's display. Whether to route around it, and how, is open (§4).
+  - Streams: input's own RemoteDesktop session (the lead's decision) holds a consumer-less `RecordMonitor`
+    stream for every monitor, lain's `Meta-*` connector included, so a move onto lain's display doesn't go
+    through the display session's `RecordVirtual` stream. Mutter removes a monitor stream when its monitor
+    goes away and the session survives that (exp9 `close`), so lain-gnome recreates the streams whenever the
+    set of monitors in `monitors()` changes. A `RecordMonitor` added after `Start` works for EIS; whether it
+    does for D-Bus motion wasn't checked, so either check it or rebuild the input session on each change (a
+    second session's consumer-less stream does take motion, exp6). Not tested either: a `RecordMonitor`
+    stream of lain's virtual monitor taking motion (exp9 `close` recorded a second virtual monitor this way,
+    but sent no motion to it). Test a real unplug and DPMS-off with the developer present before lain-gnome
+    depends on this.
+  - The panel barrier (§4) stops a move that crosses the shared edge within the panel's band, and can stop
+    one that starts on it, including on lain's display (the rule for those is open). Whether to route around
+    it, and how, is open (§4).
     Where a move sticks, the pointer is left short of the target, on lain's display.
 - **`Key { code, down }`:** `NotifyKeyboardKeycode(code, down)`, evdev as is.
 - **`Button { code, down }`:** `NotifyPointerButton(code as i32, down)`, an evdev button code (not tested
@@ -515,6 +562,30 @@ It replaces the `Arc` only when a new bitmap arrives, which is when Mutter sets 
 - **The session ending on Mutter's side:** `DisplayBackend` has no error channel for it. The design above
   signals it by taking lain's entry out of `monitors()`, which the core already handles; say so in the
   contract's doc.
-- **`cursor_location` off lain's display** may have to be `None` on GNOME (see `cursor_location()` above): a
-  known deviation from Swift's warp detection, to be recorded by the lead.
+- **`cursor_location` off lain's display** is `None` on GNOME (the lead's decision, below): a documented
+  difference from the Mac host's warp detection.
 - **No changes needed** to the rest: `monitors`, `InputBackend` and `CursorSource` fit.
+
+## Design decisions taken by the lead (2026-10-31)
+
+Taken from the results above, without new experiments. They override the recommended design where the two
+differ.
+
+1. **Input gets its own RemoteDesktop session, independent of the display's `create` and `destroy`.** It
+   holds a consumer-less `RecordMonitor` stream for every monitor, lain's `Meta-*` connector included, and
+   `NotifyPointerMotionAbsolute` goes to those streams (§4: a stream needs no consumer, and a second
+   session's stream takes motion, exp6). So input keeps working in an input-only session, when video fails,
+   or when the owner stops the display's capture from GNOME Shell's sharing indicator. The input session's
+   streams follow the set of monitors as described under `MoveTo`.
+2. **lain uses `ApplyMonitorsConfig` method 1 only.** Never method 2: it shows GNOME Shell's "Keep these
+   display settings?" dialog, which nobody at the iPad can answer (§3).
+3. **lain stores the owner's arrangement only after it has been stable for longer than GNOME's revert
+   timeout, comparing with the last stored arrangement.** A change the owner makes in GNOME Settings (method
+   2) that is reverted, or left to time out, is never stored; a layout equal to the stored one isn't
+   rewritten.
+4. **lain re-applies the spec's scale whenever lain's display is at another scale** (with method 1, keeping
+   its position), whether Mutter reset it on `create`, after a change in the set of monitors, or for any
+   other reason. A scale other than `spec.scale` is never stored as the owner's choice.
+5. **`cursor_location` is `None` while the pointer is off lain's display.** It is a documented difference
+   from the Mac host, whose warp detection samples the cursor anywhere on the desktop: on GNOME, the client
+   doesn't see warps that happen off lain's display.

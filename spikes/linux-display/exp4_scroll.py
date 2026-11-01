@@ -4,8 +4,9 @@ at 120 Hz with changing content.
 
 Creates the virtual monitor (2752x2064@120, scale 2, right of the physical monitor, temporarily), opens
 gtkprobe.py fullscreen on it (it animates every frame and logs the input it gets), moves the pointer over it
-and scrolls with each combination of flags. One Shift press and release goes to the probe window. The pointer
-goes back where it was at the end. Before the first scroll, before every scroll case and before the Shift, the
+and scrolls with each combination of flags. One Shift press and release goes to the probe window: the only key
+event any committed script sends. The pointer goes back where it was at the end, checked against the physical
+stream's metadata, with one retry and a `restore_failed` line if it still isn't there. Before the first scroll, before every scroll case and before the Shift, the
 virtual stream's cursor metadata must put the pointer inside the virtual monitor (require_pointer_on);
 otherwise the run stops there.
 
@@ -18,7 +19,7 @@ import subprocess
 import time
 
 from mutter import (AXIS_CONTINUOUS, AXIS_FINGER, AXIS_FINISH, AXIS_WHEEL, HERE, KEY_LEFTSHIFT, DisplayConfig,
-                    Probe, Session, emit, log, pump, pump_until, require_pointer_on)
+                    Probe, Session, emit, pump, pump_until, require_pointer_on, restore_pointer)
 
 W, H, FPS = 2752, 2064, 120
 PHYS = "HDMI-1"
@@ -146,9 +147,7 @@ def main():
             gtk.proc.terminate()
             gtk.proc.wait(5)
         if home and home.get("valid"):
-            s.move_abs(ppath, float(home["x"]), float(home["y"]))
-            pump(0.2)
-            emit("restored", physical_meta=pprobe.of("cursor")[-1], target=[home["x"], home["y"]])
+            restore_pointer(s, ppath, pprobe, home)
         for p in (vprobe, pprobe):
             if p:
                 p.stop()

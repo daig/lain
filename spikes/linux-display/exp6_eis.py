@@ -9,16 +9,21 @@ the IdleMonitor before and after an EIS motion. Cursor bitmaps are checked for p
 
 Restoring the pointer is the second test: session B (another connection) has a RecordMonitor stream for the
 physical monitor with no PipeWire consumer, and its NotifyPointerMotionAbsolute puts the pointer back; session
-A's physical-stream metadata checks it. If that fails, session A's own stream does it.
+A's physical-stream metadata checks it against home. If that fails, session A's own stream does it, checked the
+same way with one retry, and a `restore_failed` line if the pointer still isn't home.
 
-Input safety: motion and scrolling only over the virtual monitor; no keys and no buttons.
+Input safety: motion only over the virtual monitor. The EIS scroll goes through the relative virtual pointer,
+so it lands wherever the pointer is: it runs only if the absolute moves onto the virtual monitor ran, and only
+if the virtual stream's cursor metadata puts the pointer inside the virtual monitor right before it
+(require_pointer_on); otherwise it is skipped. No keys and no buttons.
 """
 
 import os
 import time
 
 from ei import Ei
-from mutter import DisplayConfig, Idle, Probe, Session, emit, pump, pump_until
+from mutter import (DisplayConfig, Idle, NotOnVirtualMonitor, Probe, Session, at_home, emit, pointer_on, pump,
+                    pump_until, require_pointer_on, restore_pointer)
 
 W, H, FPS = 2752, 2064, 120
 PHYS = "HDMI-1"
@@ -32,6 +37,7 @@ def main():
     emit("before", layout=before)
     vprobe = pprobe = ei = b = None
     home = None
+    abs_moves_ran = False
     try:
         vpath = a.record_virtual()
         ppath = a.record_monitor(PHYS)
@@ -96,6 +102,7 @@ def main():
                 lib.ei_device_pointer_motion_absolute(absdev, vr["x"] + 688.0, vr["y"] + 516.0)
                 ei.frame(absdev)
                 pump(0.2)
+                abs_moves_ran = True
 
                 # user activity through EIS
                 t0 = time.monotonic()
@@ -111,6 +118,16 @@ def main():
                 ei.dispatch(0)
 
         scrolldev = ei.device_with("scroll")
+        if scrolldev and not abs_moves_ran:
+            emit("eis_scroll", skipped="the absolute moves onto the virtual monitor didn't run")
+            scrolldev = None
+        if scrolldev:
+            pump_until(lambda: pointer_on(vprobe, W, H) is not None, 1)
+            try:
+                require_pointer_on(vprobe, W, H, "EIS scroll")
+            except NotOnVirtualMonitor as e:
+                emit("eis_scroll", skipped=str(e))
+                scrolldev = None
         if scrolldev:
             from ei import lib
             ei.start(scrolldev)
@@ -137,15 +154,12 @@ def main():
                 n = len(pprobe.of("cursor"))
                 b.move_abs(bpath, float(home["x"]), float(home["y"]))
                 pump(0.4)
-                last = pprobe.of("cursor")[-1]
-                restored = last.get("valid") and last["x"] == home["x"] and last["y"] == home["y"]
+                last, restored = at_home(pprobe, home)
                 emit("restore_via_unconsumed_stream", ok=restored, meta=last, changes=len(pprobe.of("cursor")) - n)
             except Exception as e:
                 emit("restore_via_unconsumed_stream", ok=False, error=str(e))
             if not restored:
-                a.move_abs(ppath, float(home["x"]), float(home["y"]))
-                pump(0.3)
-                emit("restore_via_session_a", meta=pprobe.of("cursor")[-1], target=[home["x"], home["y"]])
+                restore_pointer(a, ppath, pprobe, home)
         if ei:
             ei.close()
         if b:
