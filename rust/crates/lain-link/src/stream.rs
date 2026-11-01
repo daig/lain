@@ -93,16 +93,27 @@ impl ByteStream for Box<dyn ByteStream> {
 /// (Wi-Fi TLS-PSK, §7.7 D29), with the path it runs over. [`LinkAcceptor`](crate::LinkAcceptor) takes only
 /// that secret's `ChannelHello` on it. `lain-wifi` wraps its `tokio_openssl::SslStream<TcpStream>` in one,
 /// with the secret its PSK identity proved; tests wrap a `DuplexStream`. Swift: a `PairingBoundStream`
-/// (`NetworkStream` with its `psk`).
+/// (`NetworkStream` with its `pskIdentity`).
+///
+/// Difference from Swift: Swift's `NetworkStream` compares PSK identities (`WiFiPSK(secret:).identity ==
+/// pskIdentity`); this holds the secret the identity named (`lain-wifi` looks it up in its identity → secret
+/// map) and compares secrets. The same pairing passes either way, short of an identity collision (64 bits).
 pub struct BoundStream<S> {
     inner: S,
-    secret: Vec<u8>,
+    secret: Option<Vec<u8>>,
     transport: LinkTransport,
 }
 
 impl<S> BoundStream<S> {
+    /// Bound to `secret`, the pairing the transport authenticated.
     pub fn new(inner: S, secret: impl Into<Vec<u8>>, transport: LinkTransport) -> Self {
-        Self { inner, secret: secret.into(), transport }
+        Self { inner, secret: Some(secret.into()), transport }
+    }
+
+    /// Only the path, no binding: TLS didn't say which pairing it authenticated (Swift: a `NetworkStream`
+    /// whose `pskIdentity` is nil, bound to every secret).
+    pub fn unbound(inner: S, transport: LinkTransport) -> Self {
+        Self { inner, secret: None, transport }
     }
 
     pub fn get_ref(&self) -> &S {
@@ -150,7 +161,7 @@ impl<S: AsyncWrite + Unpin> AsyncWrite for BoundStream<S> {
 /// the socket before wrapping it.
 impl<S: AsyncRead + AsyncWrite + Unpin + Send + 'static> ByteStream for BoundStream<S> {
     fn pairing_secret(&self) -> Option<&[u8]> {
-        Some(&self.secret)
+        self.secret.as_deref()
     }
     fn link_transport(&self) -> LinkTransport {
         self.transport.clone()
