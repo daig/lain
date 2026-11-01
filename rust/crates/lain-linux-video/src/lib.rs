@@ -17,4 +17,6 @@ pub mod frame;
 pub mod gbm;
 pub mod gl;
 pub mod gpu;
+#[cfg(test)]
+mod gpu_tests;
 pub mod va;

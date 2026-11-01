@@ -354,6 +354,11 @@ impl SequenceHeaders {
 /// the parameter sets only when a packed slice header comes with them (radeonsi's `radeon_vcn_enc_encode_headers`
 /// returns early without one), and it parses this header for the slice's values (`e2e.c`).
 pub fn slice_header(idr: bool, poc: u32) -> Vec<u8> {
+    slice_header_qp(idr, poc, 0)
+}
+
+/// [`slice_header`] with `slice_qp_delta` (the slice's QP is 26 + `qp_delta`).
+pub fn slice_header_qp(idr: bool, poc: u32, qp_delta: i32) -> Vec<u8> {
     let mut w = BitWriter::new();
     w.put(1, 1); // first_slice_segment_in_pic_flag
     if idr {
@@ -371,7 +376,7 @@ pub fn slice_header(idr: bool, poc: u32) -> Vec<u8> {
         w.put(0, 1); // num_ref_idx_active_override_flag
         w.ue(0); // five_minus_max_num_merge_cand
     }
-    w.se(0); // slice_qp_delta
+    w.se(qp_delta); // slice_qp_delta
     w.put(1, 1); // slice_loop_filter_across_slices_enabled_flag
     w.put(1, 1); // byte_alignment(): a one, then zeros
     w.align_zero();
@@ -656,6 +661,23 @@ pub(crate) mod tests {
             }
             assert_eq!((r.se(), r.flag()), (0, true));
             assert!(r.trailing(), "byte_alignment()");
+        }
+    }
+
+    #[test]
+    fn a_refinement_slice_carries_its_qp() {
+        for (idr, delta) in [(false, -4), (true, -4), (false, 5)] {
+            let (_, mut r) = BitReader::from_nal(&slice_header_qp(idr, 7, delta));
+            assert!(r.flag());
+            if idr {
+                assert!(!r.flag());
+            }
+            let _ = (r.ue(), r.ue());
+            if !idr {
+                let _ = (r.u(8), r.flag(), r.ue(), r.ue(), r.ue(), r.flag(), r.flag(), r.ue());
+            }
+            assert_eq!(r.se(), delta);
+            assert!(r.flag() && r.trailing());
         }
     }
 
