@@ -1,0 +1,52 @@
+# lain-hostd's settings: copy to ~/.config/lain/config.toml ($XDG_CONFIG_HOME/lain/config.toml) and
+# uncomment what you change. Every key is optional; the values shown are the defaults. The daemon refuses to
+# start (exit status 2) on a key it doesn't know or a value out of bounds, and says which.
+
+# Listen for the iPad over Wi-Fi and advertise this computer on the local network (Bonjour, through Avahi).
+# Wi-Fi needs one USB pairing first. USB always works and wins over Wi-Fi.
+# wifi = true
+
+# The video bitrate in Mb/s, from 1 to 200 (also what the iPad is told).
+# bitrate_mbps = 60
+
+# GNOME Shell's top-bar pointer barrier: pointer moves that would cross it into lain's display from the
+# primary monitor go around it. The band is the top bar's height in logical pixels, from 0 to 200.
+# [barrier]
+# detour = true
+# band = 32.0
+
+# The iPad's keyboard and trackpad.
+# [input]
+# What a pinch step does: "ctrl-wheel" (Ctrl held over a wheel notch, zooms around the pointer, any keyboard
+# layout) or "ctrl-keys" (Ctrl+equals and Ctrl+minus, as the Mac host's Cmd+equals and Cmd+minus).
+# zoom = "ctrl-wheel"
+# How far a pinch goes per zoom step, as a scale factor: above 1, at most 4.
+# pinch_threshold = 1.25
+# Swap the keys left of 1 and right of left Shift on an ISO keyboard, as Linux's hid-apple driver does.
+# swap_iso_keys = false
+# Pass Power, Sleep, screen lock and Eject on to the desktop (the Mac host never does).
+# allow_system_keys = false
+# Command combinations that hold another desktop modifier while Command is down. A usage is a HID keyboard
+# usage (0x2B is Tab, 0x35 the key left of 1); the defaults make Cmd-Tab and Cmd-backtick GNOME's switchers
+# (Alt held). An empty list turns them off.
+# command_shortcuts = [{ usage = 0x2B, hold = "alt" }, { usage = 0x35, hold = "alt" }]
+
+# Which desktop modifier each of the iPad's modifier keys holds: "shift", "control", "alt", "super", "altgr"
+# or "none". Command is Ctrl by default, where Linux keeps the shortcuts the Mac has on Command.
+# [input.modifiers]
+# shift = "shift"
+# control = "control"
+# option = "alt"
+# command = "control"
+# function = "none"
+
+# Trackpad scrolling.
+# [input.scroll]
+# Whose fling follows a trackpad scroll: "desktop" (the toolkit's own, from the last deltas) or "client"
+# (the iPad's momentum, passed through).
+# momentum = "desktop"
+# What trackpad scrolls are sent as: "finger", "continuous" or "wheel".
+# source = "finger"
+# With the client's momentum: how long after the last scroll the end of the scroll goes out, from 0 to 2000
+# ms (above GTK's 150 ms, so the toolkit doesn't fling as well).
+# client_stop_delay_ms = 200
