@@ -112,10 +112,18 @@ impl UnitFile {
              \n\
              [Install]\n\
              WantedBy={SESSION_TARGET}\n",
-            description = self.description.replace(['\n', '\r'], " ").replace('%', "%%"),
+            description = description(&self.description),
             exec = exec.join(" "),
         )
     }
+}
+
+/// The `Description=` value: one line (control characters become spaces), `%` specifiers doubled to stay
+/// literal, and no trailing backslash, which `systemd.syntax(7)` would join with the next line (swallowing
+/// `PartOf=`).
+fn description(text: &str) -> String {
+    let line: String = text.chars().map(|c| if c.is_control() { ' ' } else { c }).collect();
+    line.trim_end_matches(|c: char| c == '\\' || c.is_whitespace()).replace('%', "%%")
 }
 
 /// One `ExecStart` word, quoted per `systemd.syntax(7)` and `systemd.service(5)`: `%` specifiers and `$`
@@ -217,6 +225,10 @@ impl Autostart {
     }
 
     /// Installs (or updates) the unit and enables it, so it starts with the next session. Doesn't start it.
+    ///
+    /// Our copy, in `$XDG_CONFIG_HOME/systemd/user`, takes precedence over one of the same name elsewhere
+    /// on the search path (a package's); systemd refuses (`force` is false) if the target's `.wants` link
+    /// already points at that other copy. Which unit is canonical is open (see the crate report).
     pub async fn enable(&self, unit: &UnitFile) -> Result<()> {
         self.install(unit).await?;
         let manager = self.manager().await?;
@@ -229,24 +241,32 @@ impl Autostart {
         Ok(())
     }
 
-    /// Disables the unit (it no longer starts with the session); leaves the file. Succeeds if it isn't
-    /// installed.
+    /// Disables the unit (it no longer starts with the session); leaves the file. Succeeds if systemd has no
+    /// such unit.
+    ///
+    /// systemd is always asked, by unit name, so a unit installed anywhere on the manager's search path
+    /// (`~/.local/share/systemd/user`, `/usr/lib/systemd/user`, …), not only in our unit directory, is
+    /// disabled too.
     pub async fn disable(&self) -> Result<()> {
-        if !self.unit_path().exists() {
-            self.remember(&AutostartState::NotInstalled);
-            return Ok(());
-        }
         let manager = self.manager().await?;
-        let changes = timed(manager.disable_unit_files(&[self.unit_name.as_str()], false))
-            .await
-            .map_err(|e| systemd_error("DisableUnitFiles", e))?;
-        debug!(?changes, "disabled the autostart unit");
-        self.reload().await?;
-        self.remember(&AutostartState::Disabled);
-        Ok(())
+        match timed(manager.disable_unit_files(&[self.unit_name.as_str()], false)).await {
+            Ok(changes) => {
+                debug!(?changes, "disabled the autostart unit");
+                self.reload().await?;
+                self.remember(&AutostartState::Disabled);
+                Ok(())
+            }
+            Err(e) if is_no_such_unit(&e) => {
+                debug!(error = %e, "no autostart unit to disable");
+                self.remember(&AutostartState::NotInstalled);
+                Ok(())
+            }
+            Err(e) => Err(systemd_error("DisableUnitFiles", e)),
+        }
     }
 
-    /// Disables the unit and removes its file.
+    /// Disables the unit and removes its file from our unit directory. A copy installed elsewhere (by a
+    /// package, say) stays, disabled; [`state`](Self::state) then reads `Disabled`.
     pub async fn uninstall(&self) -> Result<()> {
         self.disable().await?;
         let path = self.unit_path();
@@ -259,26 +279,28 @@ impl Autostart {
         if removed {
             self.reload().await?;
         }
-        self.remember(&AutostartState::NotInstalled);
+        // Asked again rather than assumed: another copy of the unit may remain.
+        self.state().await;
         Ok(())
     }
 
     /// The unit's state, from systemd (and so the cache for [`start_at_login`](Self::start_at_login)).
+    ///
+    /// Asked by unit name (Swift reads `SMAppService.status` live too), so a unit installed anywhere on the
+    /// manager's search path counts, not only one in our unit directory. `NotInstalled` is systemd's own
+    /// answer that it has no such unit file.
     pub async fn state(&self) -> AutostartState {
-        let state = if !self.unit_path().exists() {
-            AutostartState::NotInstalled
-        } else {
-            match self.manager().await {
-                Err(e) => AutostartState::Unknown(e.to_string()),
-                Ok(manager) => match timed(manager.get_unit_file_state(&self.unit_name)).await {
-                    Ok(state) => match state.as_str() {
-                        "enabled" | "enabled-runtime" => AutostartState::Enabled,
-                        "disabled" => AutostartState::Disabled,
-                        _ => AutostartState::Other(state),
-                    },
-                    Err(e) => AutostartState::Unknown(systemd_error("GetUnitFileState", e).to_string()),
+        let state = match self.manager().await {
+            Err(e) => AutostartState::Unknown(e.to_string()),
+            Ok(manager) => match timed(manager.get_unit_file_state(&self.unit_name)).await {
+                Ok(state) => match state.as_str() {
+                    "enabled" | "enabled-runtime" => AutostartState::Enabled,
+                    "disabled" => AutostartState::Disabled,
+                    _ => AutostartState::Other(state),
                 },
-            }
+                Err(e) if is_no_such_unit(&e) => AutostartState::NotInstalled,
+                Err(e) => AutostartState::Unknown(systemd_error("GetUnitFileState", e).to_string()),
+            },
         };
         self.remember(&state);
         state
@@ -296,6 +318,15 @@ async fn timed<T>(call: impl Future<Output = zbus::Result<T>>) -> zbus::Result<T
 
 async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T> + Send + 'static) -> Result<T> {
     tokio::task::spawn_blocking(f).await.map_err(|e| PlatformError::Failed(format!("file task: {e}")))?
+}
+
+/// systemd's answer that it has no unit file of that name: `GetUnitFileState` replies
+/// `org.freedesktop.DBus.Error.FileNotFound` (seen with systemd 259, 2026-11-01); `DisableUnitFiles` replies
+/// `org.freedesktop.systemd1.NoSuchUnit` ("Unit file … does not exist.", from systemd's
+/// `install_changes_dump`; not run here, since it is a write) or the same `FileNotFound`.
+fn is_no_such_unit(e: &zbus::Error) -> bool {
+    matches!(e, zbus::Error::MethodError(name, _, _)
+        if matches!(name.as_str(), "org.freedesktop.DBus.Error.FileNotFound" | "org.freedesktop.systemd1.NoSuchUnit"))
 }
 
 fn systemd_error(what: &str, e: zbus::Error) -> PlatformError {
