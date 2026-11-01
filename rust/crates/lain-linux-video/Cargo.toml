@@ -21,6 +21,7 @@ tracing.workspace = true
 [dev-dependencies]
 # The packed-header round trip through lain-media's parameter-set extraction (the core's reader).
 lain-media.workspace = true
+lain-platform = { workspace = true, features = ["fake"] }
 tempfile.workspace = true
 tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 
