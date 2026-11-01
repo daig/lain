@@ -1,0 +1,21 @@
+=== vpp-idle-full: vpp/vpp --in-std bt709 --src gbm --fps 0 --seconds 3 --check 1 (21:51:23)
+loadavg before: 0.45 0.60 0.45 2/1461 151295; gpu_busy before: 99%
+loadavg before: 0.45 0.60 0.45 10/1476 151346
+device /dev/dri/by-path/pci-0000:79:00.0-render (/dev/dri/renderD130): VA-API 1.23, Mesa Gallium driver 26.0.8-1ubuntu0.3 for AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic)
+  vpp surface formats: NV12 YV12 I420 P010 P016 P012 Y800 UYVY YUY2 422V 444P RGBA BGRA RGBX BGRX ARGB AB30 AR30 XB30 XR30 [mem 0x68000001]
+  gbm bo: modifier 0x0200000000401b03, 1 plane(s), stride 11264, offset 0
+filled 8 BGRx gbm surfaces in 64 ms
+  NV12 output surface: modifier 0x0200000000401b03, Y pitch 2816, UV pitch 3072
+  pipeline caps: input standards 0 0 0 0; output standards 1 2 1 0; pipeline_flags 0x0 filter_flags 0x0
+config: src gbm, filter default, in-std bt709, out-std bt709, range full, siting center, sync surface, inflight 1, fps 0
+check frame 0: Y max 0 mean 0.0000 | Cb max 1 mean 0.0091 | Cr max 1 mean 0.0418 (|err| 0/1/2/>2: Y 5680128/0/0/0 Cb 1407109/12923/0/0 Cr 1360728/59304/0/0)
+    background pixel (0,0): Y 21 Cb 140 Cr 134 (reference 21 140 134)
+check overall (1 frames): Y max 0 mean 0.0000 | Cb max 1 mean 0.0091 | Cr max 1 mean 0.0418
+gpu_busy_percent during the run: mean 99%, max 100% (562 samples)
+run: 1323 conversions in 3.00 s = 441.0 conversions/s (0 ticks skipped); cpu 6.1% of one core
+  vaEndPicture -> sync (per conversion): n=1323 p50=1.988 p95=3.568 p99=4.260 max=6.237 mean=2.209 ms
+  CPU submit (map params + Begin/Render/End): n=1323 p50=0.053 p95=0.083 p99=0.101 max=0.153 mean=0.058 ms
+loadavg after: 0.41 0.59 0.44 1/1485 151441
+nvidia-guard: no non-AMD GPU node was opened
+gpu_busy during: mean 96%, max 100%, 32 samples
+loadavg after: 0.41 0.59 0.44 1/1468 151448; gpu_busy after: 0%; exit 0

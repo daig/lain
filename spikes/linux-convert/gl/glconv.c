@@ -461,6 +461,7 @@ int main(int argc, char **argv) {
         glUniform2i(0, BX, BY); // location 0: the only uniform
         int gx = (BX + cases[c].wx - 1) / cases[c].wx, gy = (BY + cases[c].wy - 1) / cases[c].wy;
         GLenum e;
+        uint64_t run0 = 0;
         // Warm-up (first dispatch compiles the variant's final ISA state).
         for (int f = -8; f < frames; f++) {
             int ri = (f + 8) % ring_n, oi = (f + 8) % NOUT;
@@ -475,6 +476,7 @@ int main(int argc, char **argv) {
                 }
             }
             uint64_t ts = now_ns();
+            if (f == 0) run0 = ts;
             if (cases[c].input == 0) {
                 glActiveTexture(GL_TEXTURE0);
                 glBindTexture(GL_TEXTURE_2D, intex[ri]);
@@ -514,6 +516,8 @@ int main(int argc, char **argv) {
             if (f >= 0) { gpu[f] = b - a; cpu_t[f] = te - ts; }
         }
         if ((e = glGetError())) DIE("GL error 0x%x", e);
+        double run_s = (now_ns() - run0) / 1e9;
+        printf("    run: %d conversions in %.2f s = %.1f conversions/s\n", frames, run_s, frames / run_s);
         stats("GPU (timer queries)", gpu, frames);
         stats("CPU dispatch->fence", cpu_t, frames);
         stats("CPU dispatch->flush", sub, frames);

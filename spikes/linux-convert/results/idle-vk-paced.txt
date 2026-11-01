@@ -1,0 +1,23 @@
+=== vk-idle-paced: vk/target/release/vkconvert --out vk-tiled --wx 16 --wy 8 --check 3 --frames 1200 --fps 120 (21:50:35)
+loadavg before: 0.57 0.65 0.45 1/1173 149444; gpu_busy before: 0%
+device: AMD Ryzen 9 9950X 16-Core Processor (RADV RAPHAEL_MENDOCINO) (RADV Mesa 26.0.8-1ubuntu0.3), render 226:130, queue family 1 (compute-only), timestamp period 10 ns
+shader: storage images, workgroup 16x8, one 2x2 block per invocation, 931 SPIR-V words
+input: GBM XRGB8888 modifier 0x200000000401b03, stride 11264, offset 0, 24510464 bytes
+filled 8 input frames in 93.738908ms
+libva: Mesa Gallium driver 26.0.8-1ubuntu0.3 for AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic)
+Vulkan tiled NV12: Y SubresourceLayout { offset: 0, size: 6488064, row_pitch: 2816, array_pitch: 0, depth_pitch: 0 }, CbCr SubresourceLayout { offset: 6488064, size: 3538944, row_pitch: 3072, array_pitch: 0, depth_pitch: 0 }, 10027008 bytes; vaCreateSurfaces status 0
+dispatch: 86x129 workgroups for 2752x2064
+check frame 0 (read back via libva, 0.654 ms GPU): Y: max 0 mean 0.00000 (>1: 0) CbCr: max 0 mean 0.00000 (>1: 0)
+check frame 0 (read back via vulkan, 0.654 ms GPU): Y: max 0 mean 0.00000 (>1: 0) CbCr: max 0 mean 0.00000 (>1: 0)
+check frame 2 (read back via libva, 1.343 ms GPU): Y: max 0 mean 0.00000 (>1: 0) CbCr: max 0 mean 0.00000 (>1: 0)
+check frame 2 (read back via vulkan, 1.343 ms GPU): Y: max 0 mean 0.00000 (>1: 0) CbCr: max 0 mean 0.00000 (>1: 0)
+check frame 5 (read back via libva, 1.322 ms GPU): Y: max 0 mean 0.00000 (>1: 0) CbCr: max 0 mean 0.00000 (>1: 0)
+check frame 5 (read back via vulkan, 1.322 ms GPU): Y: max 0 mean 0.00000 (>1: 0) CbCr: max 0 mean 0.00000 (>1: 0)
+correctness: worst max abs error Y 0 CbCr 0 -> PASS
+timed: 1200 frames in 9.99 s (120.1 fps), pacing 120 Hz
+GPU (timestamps): n 1200 mean 1.162 p50 1.172 p95 1.332 p99 1.343 max 2.824 ms
+submit -> fence: n 1200 mean 2.129 p50 2.126 p95 2.425 p99 2.482 max 3.855 ms
+effective bandwidth at GPU p50: 26.7 GB/s (31.2 MB per frame)
+nvidia-guard: no non-AMD GPU node was opened
+gpu_busy during: mean 29%, max 99%, 101 samples
+loadavg after: 0.48 0.63 0.45 1/1173 149722; gpu_busy after: 0%; exit 0

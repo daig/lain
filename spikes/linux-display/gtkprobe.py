@@ -1,7 +1,10 @@
 #!/usr/bin/env python3
 """A GTK 4 window, fullscreen on one monitor, that reports the input it receives and animates every frame.
 
-Usage: gtkprobe.py <connector> <seconds>
+Usage: gtkprobe.py <connector> <seconds> [full]
+With "full" (added by the conversion spike, spikes/linux-convert) the whole window changes every frame: a
+background alternating between two shades, under 64 bars that move, drawn as GSK colour nodes (no cairo
+upload), so Mutter composites and streams full-frame damage at the monitor's rate.
 Prints JSON lines on stdout: ready (window size and the monitor's geometry and refresh as GTK sees them),
 motion, scroll (with unit and source device), scroll-begin/end, decelerate (kinetic flings), key, and once a
 second the frame clock's rate. Exits after <seconds>. Used by exp4 to observe what Mutter's injected events
@@ -16,9 +19,30 @@ import gi
 
 gi.require_version("Gtk", "4.0")
 gi.require_version("Gdk", "4.0")
-from gi.repository import Gdk, GLib, Gtk  # noqa: E402
+gi.require_version("Graphene", "1.0")
+from gi.repository import Gdk, GLib, Graphene, Gtk  # noqa: E402
 
 CONNECTOR, SECONDS = sys.argv[1], float(sys.argv[2])
+FULL = len(sys.argv) > 3 and sys.argv[3] == "full"
+
+
+class FullDamage(Gtk.Widget):
+    """Changes every pixel's frame each tick: alternating background plus 64 moving bars."""
+
+    def __init__(self):
+        super().__init__(hexpand=True, vexpand=True)
+        self.n = 0
+        self.bg = [Gdk.RGBA(red=0.10, green=0.06, blue=0.16, alpha=1), Gdk.RGBA(red=0.11, green=0.06, blue=0.17, alpha=1)]
+        self.fg = [Gdk.RGBA(red=r, green=g, blue=b, alpha=1) for r, g, b in
+                   ((0.9, 0.9, 0.9), (0.47, 0.86, 0.47), (0.98, 0.78, 0.31), (0.43, 0.67, 0.98), (0.94, 0.43, 0.55))]
+
+    def do_snapshot(self, snap):
+        w, h = self.get_width(), self.get_height()
+        self.n += 1
+        snap.append_color(self.bg[self.n & 1], Graphene.Rect().init(0, 0, w, h))
+        for i, y in enumerate(range(0, h, 32)):
+            x = (self.n * 13 + i * 157) % max(w, 1)
+            snap.append_color(self.fg[i % 5], Graphene.Rect().init(x, y + 9, 420, 14))
 
 
 def out(ev, **kw):
@@ -54,9 +78,12 @@ class Probe(Gtk.Application):
         self.monitor = monitor
         win = Gtk.ApplicationWindow(application=app, title="lain spike B probe")
         # a small animated square in the middle: cheap to redraw, so the client keeps up with any refresh rate
-        area = Gtk.DrawingArea(width_request=240, height_request=240, halign=Gtk.Align.CENTER,
-                               valign=Gtk.Align.CENTER)
-        area.set_draw_func(self.draw)
+        if FULL:
+            area = FullDamage()
+        else:
+            area = Gtk.DrawingArea(width_request=240, height_request=240, halign=Gtk.Align.CENTER,
+                                   valign=Gtk.Align.CENTER)
+            area.set_draw_func(self.draw)
         win.set_child(area)
         self.area = area
 

@@ -1,0 +1,54 @@
+{"result": "before", "same_as_brief": true, "layout": {"monitors": [{"connector": "HDMI-1", "vendor": "SAM", "product": "Odyssey G95NC", "current_mode": "3840x2160@60.000"}], "logical_monitors": [{"x": 0, "y": 0, "scale": 1.0, "transform": 0, "primary": true, "connectors": ["HDMI-1"]}], "layout_mode": 1}}
+{"result": "virtual", "connector": "Meta-0", "mode": "2752x2064@120.000"}
+=== gl-load-paced: gl/glconv --wg 16x8 --frames 1200 --pace 120 --verify 1 (22:04:39)
+loadavg before: 0.41 0.38 0.37 1/1439 163938; gpu_busy before: 58%
+loadavg before: 0.41 0.38 0.37 1/1444 163979
+gpu_busy_percent before: 99
+device /dev/dri/by-path/pci-0000:79:00.0-render (/dev/dri/renderD130), gbm backend drm
+EGL 1.5 Mesa Project 1.5
+GL 4.6 (Core Profile) Mesa 26.0.8-1ubuntu0.3 | AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic) | AMD
+GL_EXT_EGL_image_storage 1, GL_OES_EGL_image 1, GL_ARB_timer_query 1 (core in 3.3), EGL_ANDROID_native_fence_sync 1
+VA 1.23 Mesa Gallium driver 26.0.8-1ubuntu0.3 for AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic)
+VA surface export: NV12 2752x2064, 1 objects, 2 layers
+Y texture internal format 0x8229, UV 0x822b
+input BO: XR24 2752x2064, modifier 0x0200000000401b03, 1 plane(s), stride 11264
+filled 8 input BOs in 161 ms (input texture internal format 0x8051)
+note: the imported XR24 texture is GL_RGB8, which is not an image-unit format: --input image|u32 read garbage (verification fails); use --input texel
+case wg 16x8 input texelFetch, 1200 frames, pace 120 Hz, sync glClientWaitSync
+  shader 16x8 texel compiled+linked in 3.3 ms
+    run: 1200 conversions in 10.00 s = 120.0 conversions/s
+    GPU (timer queries)    p50 0.947  p95 3.072  p99 3.109  max 3.249  mean 1.690 ms
+    CPU dispatch->fence    p50 1.333  p95 4.121  p99 4.210  max 4.260  mean 2.306 ms
+    CPU dispatch->flush    p50 0.065  p95 0.087  p99 0.105  max 0.268  mean 0.066 ms
+    verify ring frame 1 via VA surface 0: Y max 0 mean 0.00000 | CbCr max 0 mean 0.00000 (CbCr off by 1: 0, >1: 0)
+gpu_busy_percent after: 99
+loadavg after: 0.34 0.36 0.37 1/1446 164205
+nvidia-guard: no non-AMD GPU node was opened
+gpu_busy during: mean 56%, max 100%, 101 samples
+loadavg after: 0.34 0.36 0.37 2/1424 164210; gpu_busy after: 0%; exit 0
+=== gl-load-full: gl/glconv --wg 16x8 --frames 1200 --pace 0 --verify 1 (22:04:53)
+loadavg before: 0.31 0.36 0.37 1/1415 164230; gpu_busy before: 0%
+loadavg before: 0.31 0.36 0.37 3/1418 164271
+gpu_busy_percent before: 85
+device /dev/dri/by-path/pci-0000:79:00.0-render (/dev/dri/renderD130), gbm backend drm
+EGL 1.5 Mesa Project 1.5
+GL 4.6 (Core Profile) Mesa 26.0.8-1ubuntu0.3 | AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic) | AMD
+GL_EXT_EGL_image_storage 1, GL_OES_EGL_image 1, GL_ARB_timer_query 1 (core in 3.3), EGL_ANDROID_native_fence_sync 1
+VA 1.23 Mesa Gallium driver 26.0.8-1ubuntu0.3 for AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic)
+VA surface export: NV12 2752x2064, 1 objects, 2 layers
+Y texture internal format 0x8229, UV 0x822b
+input BO: XR24 2752x2064, modifier 0x0200000000401b03, 1 plane(s), stride 11264
+filled 8 input BOs in 163 ms (input texture internal format 0x8051)
+note: the imported XR24 texture is GL_RGB8, which is not an image-unit format: --input image|u32 read garbage (verification fails); use --input texel
+case wg 16x8 input texelFetch, 1200 frames, pace 0 Hz, sync glClientWaitSync
+  shader 16x8 texel compiled+linked in 2.6 ms
+    run: 1200 conversions in 1.21 s = 993.4 conversions/s
+    GPU (timer queries)    p50 0.639  p95 2.595  p99 2.642  max 2.793  mean 0.839 ms
+    CPU dispatch->fence    p50 0.712  p95 2.675  p99 2.726  max 2.864  mean 1.006 ms
+    CPU dispatch->flush    p50 0.046  p95 0.060  p99 0.078  max 0.575  mean 0.047 ms
+    verify ring frame 1 via VA surface 0: Y max 0 mean 0.00000 | CbCr max 0 mean 0.00000 (CbCr off by 1: 0, >1: 0)
+gpu_busy_percent after: 100
+loadavg after: 0.31 0.36 0.37 1/1438 164319
+nvidia-guard: no non-AMD GPU node was opened
+gpu_busy during: mean 86%, max 100%, 16 samples
+loadavg after: 0.31 0.36 0.37 1/1416 164326; gpu_busy after: 0%; exit 0
