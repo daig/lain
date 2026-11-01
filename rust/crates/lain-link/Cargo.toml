@@ -9,6 +9,19 @@ publish.workspace = true
 [dependencies]
 lain-proto.workspace = true
 lain-platform.workspace = true
+futures.workspace = true
+hmac.workspace = true
+rand.workspace = true
+sha2.workspace = true
+socket2.workspace = true
+thiserror.workspace = true
+tokio = { workspace = true, features = ["rt", "sync", "time", "io-util", "net", "macros"] }
+tracing.workspace = true
+
+[dev-dependencies]
+hex.workspace = true
+lain-platform = { workspace = true, features = ["fake"] }
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "io-util", "net", "macros", "test-util"] }
 
 [lints]
 workspace = true
