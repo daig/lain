@@ -118,7 +118,7 @@ final class HostController {
     private(set) var wifiLine = HostWiFiStatus.starting.title
     private(set) var hasAccessibility = InputInjector.hasAccess
     private(set) var loginAgent = LoginAgent.state
-    /// The live session's video numbers (or why it has none), refreshed once a second.
+    /// The live session's video format (or why it has none): fixed for a session.
     private(set) var videoLines: [String]?
     /// lain on the iPad runs an older protocol version (it works): what updating it adds.
     private(set) var peerVersionNote: String?
@@ -132,8 +132,6 @@ final class HostController {
 
     @ObservationIgnored private var session: HostSession?
     @ObservationIgnored private var accessPoll: Task<Void, Never>?
-    /// lain's menu is open: the once-a-second refresh leaves what it shows alone.
-    @ObservationIgnored private var menuIsOpen = false
 
     init() {
         guard !LainHostEntry.isTestHost else { return }
@@ -171,8 +169,8 @@ final class HostController {
                 try? await Task.sleep(for: .seconds(1))
                 // A grant, a display attached: the iPad hears about it (if its version has HostSetup).
                 session.setupChanged()
-                // Any change to what the menu shows rebuilds it, closing an open submenu: none while it's open.
-                guard self?.menuIsOpen == false else { continue }
+                // Each assignment below that changes a value rebuilds the menu (closing an open submenu), so
+                // the menu shows only what stays put during a session.
                 let granted = InputInjector.hasAccess
                 if self?.hasAccessibility != granted { self?.hasAccessibility = granted }
                 let agent = LoginAgent.state
@@ -185,12 +183,6 @@ final class HostController {
                 if self?.peerVersionNote != note { self?.peerVersionNote = note }
                 let stopped = session.isVideoStoppedOnTheMac
                 if self?.videoStoppedOnTheMac != stopped { self?.videoStoppedOnTheMac = stopped }
-            }
-        }
-        // The menu bar menu is an NSMenu: its tracking brackets the time it is open.
-        for (name, open) in [(NSMenu.didBeginTrackingNotification, true), (NSMenu.didEndTrackingNotification, false)] {
-            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
-                MainActor.assumeIsolated { self?.menuIsOpen = open }
             }
         }
     }
@@ -220,16 +212,13 @@ final class HostController {
 
     private static func videoLines(_ session: HostSession) -> [String]? {
         guard session.status.isConnected else { return nil }
-        guard let v = session.videoStats else {
+        guard let d = session.streamedDisplay, let v = session.videoStats else {
             return ["No video: \(session.videoError ?? "starting")"]
         }
-        func ms(_ x: Double?) -> String { x.map { String(format: "%.1f", $0) } ?? "–" }
+        // Fixed for the session: live numbers would rebuild the menu every second (the iPad's HUD has them).
         return [
-            "Video \(v.pixelWidth)×\(v.pixelHeight) \(v.chroma == .yuv444 ? "4:4:4 10-bit" : "4:2:0")",
-            String(format: "%.1f Mb/s, %d sent, %d keyframes, %d refinements", v.bytesPerSecond * 8 / 1e6, v.sent,
-                   v.keyframes, v.refinements),
-            "Encode p50 \(ms(v.encodeMsP50)) / p95 \(ms(v.encodeMsP95)) ms, ack RTT p50 \(ms(v.ackRttMsP50)) ms",
-            "Dropped before encode \(v.droppedBeforeEncode), in flight \(v.inFlight) (peak \(v.peakInFlight))",
+            "Video \(d.pixelWidth)×\(d.pixelHeight) px, \(v.chroma == .yuv444 ? "4:4:4 10-bit" : "4:2:0"), \(d.refreshRate) Hz",
+            "lain display \(Int(d.bounds.width))×\(Int(d.bounds.height)) points",
         ]
     }
 
