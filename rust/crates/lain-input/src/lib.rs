@@ -13,8 +13,9 @@
 //! - [`InputRouter`]: all of it, plus key repeats dropped and release-all.
 //!
 //! A session's use: one [`InputRouter`] per link; for each realtime message, clear a reused buffer, call
-//! [`InputRouter::handle`], and pass the buffer to `InputBackend::apply` if it isn't empty; when the link
-//! ends, [`InputRouter::release_all`] the same way.
+//! [`InputRouter::handle`], and pass the buffer to `InputBackend::apply` if it isn't empty; call
+//! [`InputRouter::poll`] the same way from a timer (about 60 Hz, or at [`InputRouter::next_deadline`]), which
+//! only [`Momentum::Client`] needs; when the link ends, [`InputRouter::release_all`] the same way.
 
 pub mod evdev;
 pub mod keymap;
@@ -23,7 +24,7 @@ mod pinch;
 mod router;
 pub mod scroll;
 
-pub use modifiers::{LinuxModifier, ModifierMap, ModifierSet};
+pub use modifiers::{CommandShortcut, LinuxModifier, ModifierMap, ModifierSet};
 pub use pinch::PinchZoomMapper;
 pub use router::{InputConfig, InputRouter, Outcome, WHEEL_DETENT, ZoomAction};
 pub use scroll::{Momentum, ScrollConfig};

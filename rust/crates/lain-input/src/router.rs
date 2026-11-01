@@ -3,10 +3,10 @@
 
 use crate::evdev::{BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, KEY_EQUAL, KEY_MINUS};
 use crate::keymap::{self, KEYBOARD_PAGE};
-use crate::modifiers::{LinuxModifier, ModifierMap, ModifierSet};
+use crate::modifiers::{CommandShortcut, LinuxModifier, ModifierMap, ModifierSet};
 use crate::pinch::PinchZoomMapper;
 use crate::scroll::{ScrollConfig, ScrollPolicy};
-use lain_platform::{InputAction, PointF, ScrollSource};
+use lain_platform::{InputAction, PointF, ScrollSource, clock};
 use lain_proto::{
     Gesture, GestureKind, GesturePhase, KeyEvent, KeyboardType, Message, ModifierFlags, MouseButton, PointerButton,
     PointerMove,
@@ -43,6 +43,12 @@ pub struct InputConfig {
     /// an Apple ISO keyboard's usages already corrected is unconfirmed (Swift leaves it to macOS, by setting
     /// the event source's keyboard type).
     pub swap_iso_keys: bool,
+    /// Command combinations that hold another desktop modifier ([`CommandShortcut`]); empty to turn them off.
+    /// Default: [`CommandShortcut::DEFAULTS`].
+    pub command_shortcuts: &'static [CommandShortcut],
+    /// Send the [`keymap::SYSTEM_KEYS`] (Power, Sleep, screen lock, Eject) to the desktop. Off by default, as
+    /// Swift never posts them.
+    pub allow_system_keys: bool,
 }
 
 impl Default for InputConfig {
@@ -53,6 +59,8 @@ impl Default for InputConfig {
             zoom: ZoomAction::default(),
             pinch_threshold: PinchZoomMapper::DEFAULT_THRESHOLD,
             swap_iso_keys: false,
+            command_shortcuts: CommandShortcut::DEFAULTS,
+            allow_system_keys: false,
         }
     }
 }
@@ -116,18 +124,27 @@ impl HeldKeys {
 /// Turns the client's decoded input messages into [`InputAction`]s (§5.5). Swift: `HostInputRouter`, with the
 /// held-state tracking of `InputInjector`.
 ///
-/// Pure and synchronous, for the realtime connection's reader (invariant 3: never queued, never awaits).
+/// Synchronous, for the realtime connection's reader (invariant 3: never queued, never awaits).
 /// [`handle`](Self::handle) appends to the caller's buffer and allocates nothing once that buffer has capacity
-/// (a few dozen actions; a pinch crossing many zoom factors at once needs more).
+/// (a few dozen actions; a pinch crossing many zoom factors at once needs more). The only time-dependent part
+/// is [`Momentum::Client`](crate::Momentum::Client)'s held-back scroll stop: [`handle_at`](Self::handle_at)
+/// and [`poll`](Self::poll) take the time explicitly, and the session calls `poll` from a timer (its 60 Hz
+/// cursor sampler will do) or at [`next_deadline`](Self::next_deadline).
 ///
 /// Intended differences from Swift, all because Linux input events carry no modifier flags or positions:
 /// - Modifier keys are never sent as themselves. The desktop's modifier keys follow each key or button
 ///   event's `ModifierFlags` through the [`ModifierMap`], pressed and released explicitly (left-hand keys, as
-///   the client synthesizes them); a change of map does the same.
+///   the client synthesizes them); a change of map does the same. Modifiers are pressed and released in a
+///   fixed order ([`ModifierSet::iter`]), not Swift's reverse press order.
+/// - A few Command combinations the client sends through its hold remap hold another modifier
+///   ([`CommandShortcut`]): Cmd-Tab is Alt+Tab, GNOME's app switcher.
 /// - Key repeats are dropped: the desktop repeats held keys itself. (Swift posts repeats of held keys.)
-/// - A button press or release first moves the pointer to the event's position if the last commanded
-///   position differs (a `CGEvent` click carries its position). Click counts are left to the desktop, which
-///   counts with the same double-click interval the client was given.
+/// - The [`keymap::SYSTEM_KEYS`] are dropped unless configured, which matches Swift's behaviour (it has no
+///   code for them).
+/// - Every button press or release with a finite position first moves the pointer there, as a `CGEvent`
+///   click carries its position: something else (the local mouse, an app's warp, the panel barrier) may have
+///   moved the pointer since the client's last move. Click counts are left to the desktop, which counts with
+///   the same double-click interval the client was given.
 /// - Scrolls follow [`ScrollConfig`] (see [`crate::scroll`]); pinches follow [`ZoomAction`], with Ctrl held
 ///   once around all the steps of one gesture event (Swift presses Command for each step).
 #[derive(Debug, Clone)]
@@ -142,7 +159,8 @@ pub struct InputRouter {
     held_keys: HeldKeys,
     /// Bit n: the [`MouseButton`] with raw value n is held.
     held_buttons: u8,
-    last_pointer: Option<PointF>,
+    /// What Command holds while a [`CommandShortcut`] is active (until Command is released).
+    command_hold: Option<LinuxModifier>,
     logged_rotate: bool,
     /// Page-7 usages already logged as unknown.
     logged_usages: [u64; 4],
@@ -168,7 +186,7 @@ impl InputRouter {
             held_modifiers: ModifierSet::EMPTY,
             held_keys: HeldKeys::new(),
             held_buttons: 0,
-            last_pointer: None,
+            command_hold: None,
             logged_rotate: false,
             logged_usages: [0; 4],
             logged_other_page: false,
@@ -230,36 +248,47 @@ impl InputRouter {
         self.sync_modifiers(self.modifiers, out);
     }
 
-    /// Handles one message, appending what the desktop must do to `out` (which the caller clears and passes to
-    /// `InputBackend::apply`). Swift: `HostInputRouter.handle`.
+    /// Handles one message now ([`clock::now_ns`]), appending what the desktop must do to `out` (which the
+    /// caller clears and passes to `InputBackend::apply`). Swift: `HostInputRouter.handle`.
     pub fn handle(&mut self, message: &Message, out: &mut Vec<InputAction>) -> Outcome {
+        self.handle_at(message, clock::now_ns(), out)
+    }
+
+    /// [`handle`](Self::handle) at `now_ns` (monotonic nanoseconds, as [`clock::now_ns`]). An input message
+    /// first sends a held-back scroll stop that is due ([`poll`](Self::poll)); the outcome describes the
+    /// message only.
+    pub fn handle_at(&mut self, message: &Message, now_ns: u64, out: &mut Vec<InputAction>) -> Outcome {
+        let is_input = matches!(
+            message,
+            Message::KeyEvent(_)
+                | Message::PointerMove(_)
+                | Message::PointerButton(_)
+                | Message::Scroll(_)
+                | Message::Gesture(_)
+                | Message::ReleaseAll(_)
+        );
+        if is_input {
+            self.scroll.poll(now_ns, out);
+        }
+        let start = out.len();
         match message {
             Message::KeyEvent(e) => {
-                self.scroll.before_other_input(out);
-                let start = out.len();
                 self.key(e, out);
                 Self::outcome(out, start, None)
             }
-            Message::PointerMove(m) => {
-                self.scroll.before_other_input(out);
-                self.pointer_move(m, out)
-            }
+            Message::PointerMove(m) => self.pointer_move(m, out),
             Message::PointerButton(b) => {
-                self.scroll.before_other_input(out);
-                let start = out.len();
                 let pointer = self.button(b, out);
                 Self::outcome(out, start, pointer)
             }
             Message::Scroll(s) => {
-                if self.scroll.scroll(s, out) {
+                if self.scroll.scroll(s, now_ns, out) {
                     Outcome::Injected { pointer: None }
                 } else {
                     Outcome::Ignored
                 }
             }
             Message::Gesture(g) => {
-                self.scroll.before_other_input(out);
-                let start = out.len();
                 self.gesture(g, out);
                 Self::outcome(out, start, None)
             }
@@ -271,10 +300,22 @@ impl InputRouter {
         }
     }
 
-    /// Invariant 4, host side: ends an open scroll sequence (the client can't once the link is gone), then
-    /// releases every held key (regular keys first, newest first, then modifiers) and button, and forgets the
-    /// pinch and the client's modifiers. For `ReleaseAll` and for a link that ends. Swift:
-    /// `HostInputRouter.releaseAll` and `InputInjector.releaseAll`.
+    /// The timer side of [`Momentum::Client`](crate::Momentum::Client): sends the held-back scroll stop if it
+    /// is due at `now_ns`. Returns whether it appended anything. Cheap; does nothing in the default mode.
+    pub fn poll(&mut self, now_ns: u64, out: &mut Vec<InputAction>) -> bool {
+        self.scroll.poll(now_ns, out)
+    }
+
+    /// When [`poll`](Self::poll) next has something to do, if ever (monotonic nanoseconds).
+    pub fn next_deadline(&self) -> Option<u64> {
+        self.scroll.deadline()
+    }
+
+    /// Invariant 4, host side: ends an open scroll sequence at once (the client can't once the link is gone),
+    /// then releases every held key (regular keys first, newest first, then modifiers in a fixed order:
+    /// AltGr, Super, Shift, Alt, Ctrl) and button, and forgets the pinch and the client's modifiers. For
+    /// `ReleaseAll` and for a link that ends. Swift: `HostInputRouter.releaseAll` and
+    /// `InputInjector.releaseAll` (which releases modifiers in reverse press order).
     pub fn release_all(&mut self, out: &mut Vec<InputAction>) {
         self.scroll.end(out);
         for &code in self.held_keys.as_slice().iter().rev() {
@@ -293,6 +334,7 @@ impl InputRouter {
         self.held_buttons = 0;
         self.pinch.reset();
         self.modifiers = ModifierFlags::EMPTY;
+        self.command_hold = None;
     }
 
     fn outcome(out: &[InputAction], start: usize, pointer: Option<PointF>) -> Outcome {
@@ -304,6 +346,13 @@ impl InputRouter {
     fn key(&mut self, e: &KeyEvent, out: &mut Vec<InputAction>) {
         if e.is_repeat {
             return;
+        }
+        if e.is_down
+            && e.usage_page == KEYBOARD_PAGE
+            && e.modifiers.contains(ModifierFlags::COMMAND)
+            && let Some(s) = self.config.command_shortcuts.iter().find(|s| s.usage == e.usage)
+        {
+            self.command_hold = Some(s.hold);
         }
         self.sync_modifiers(e.modifiers, out);
         if keymap::modifier_flag(e.usage_page, e.usage).is_some() {
@@ -330,22 +379,31 @@ impl InputRouter {
             (true, 0x64) => 0x35,
             (_, usage) => usage,
         };
-        let code = keymap::evdev_key(usage);
+        let code =
+            keymap::evdev_key(usage).filter(|c| self.config.allow_system_keys || !keymap::SYSTEM_KEYS.contains(c));
         if code.is_none() && usage < 256 {
             let (word, bit) = (usize::from(usage / 64), 1u64 << (usage % 64));
             if self.logged_usages[word] & bit == 0 {
                 self.logged_usages[word] |= bit;
-                tracing::info!(usage, "ignoring a key with no Linux key code (logged once per usage)");
+                tracing::info!(usage, "ignoring a key with no Linux key code, or a system key (logged once per usage)");
             }
         }
         code
     }
 
-    /// Presses and releases desktop modifier keys until those held are what `flags` hold under the map:
-    /// releases first (newest first), then presses.
+    /// Presses and releases desktop modifier keys until those held are what `flags` hold under the map (with
+    /// an active [`CommandShortcut`]'s modifier for Command): releases first, then presses, each in the fixed
+    /// order of [`ModifierSet::iter`].
     fn sync_modifiers(&mut self, flags: ModifierFlags, out: &mut Vec<InputAction>) {
         self.modifiers = flags;
-        let want = self.config.modifiers.apply(flags);
+        if !flags.contains(ModifierFlags::COMMAND) {
+            self.command_hold = None;
+        }
+        let mut map = self.config.modifiers;
+        if let Some(hold) = self.command_hold {
+            map.command = Some(hold);
+        }
+        let want = map.apply(flags);
         for m in self.held_modifiers.iter().rev() {
             if !want.contains(m) {
                 out.push(InputAction::Key { code: m.key(), down: false });
@@ -364,23 +422,21 @@ impl InputRouter {
     fn pointer_move(&mut self, m: &PointerMove, out: &mut Vec<InputAction>) -> Outcome {
         let Some(p) = finite_point(m.x, m.y) else { return Outcome::Ignored };
         out.push(InputAction::MoveTo(p));
-        self.last_pointer = Some(p);
         Outcome::Injected { pointer: Some(p) }
     }
 
-    /// Returns the commanded position.
+    /// Returns the commanded position. The pointer is moved to the event's position before every button
+    /// change, even when the client's pointer hasn't moved, since the desktop's may have (Swift posts every
+    /// click at its position). A duplicate press or orphan release changes nothing, so it sends nothing.
     fn button(&mut self, b: &PointerButton, out: &mut Vec<InputAction>) -> Option<PointF> {
         self.sync_modifiers(b.modifiers, out);
         let p = finite_point(b.x, b.y);
-        if let Some(p) = p
-            && self.last_pointer != Some(p)
-        {
-            out.push(InputAction::MoveTo(p));
-            self.last_pointer = Some(p);
-        }
         let bit = Self::button_bit(b.button);
         let held = self.held_buttons & bit != 0;
         if b.is_down != held {
+            if let Some(p) = p {
+                out.push(InputAction::MoveTo(p));
+            }
             self.held_buttons ^= bit;
             out.push(InputAction::Button { code: Self::button_code(b.button), down: b.is_down });
         }
@@ -424,7 +480,21 @@ impl InputRouter {
 
     /// `steps` zoom steps (positive: in), with Ctrl pressed around them unless the client already holds it,
     /// so the desktop ends at the client's own modifiers. Swift: `HostInputRouter.pressWithCommand`.
+    ///
+    /// A [`ZoomAction::CtrlWheel`] step goes out inside an open `Finger` scroll sequence without ending it,
+    /// unlike a wheel scroll from the client: the client recognizes its pan and pinch together, so a pinch
+    /// usually comes with small pan deltas, and ending the pan for every zoom step would stop it (and, by
+    /// default, fling) mid-gesture. How GTK takes a wheel event inside a finger sequence is for open spike 4.
+    ///
+    /// With [`ZoomAction::CtrlKeys`], a zoom key the client holds is released first (and forgotten, so the
+    /// client's own release later is an orphan): the desktop never sees a second press of a held key.
     fn zoom(&mut self, steps: i32, out: &mut Vec<InputAction>) {
+        if self.config.zoom == ZoomAction::CtrlKeys {
+            let code = if steps > 0 { KEY_EQUAL } else { KEY_MINUS };
+            if self.held_keys.remove(code) {
+                out.push(InputAction::Key { code, down: false });
+            }
+        }
         let ctrl = LinuxModifier::Control.key();
         let press_ctrl = !self.held_modifiers.contains(LinuxModifier::Control);
         if press_ctrl {

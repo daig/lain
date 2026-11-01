@@ -12,19 +12,18 @@ use lain_proto::{
 };
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
-use std::sync::atomic::{AtomicUsize, Ordering};
 
 struct Counting;
 
-static ALLOCATIONS: AtomicUsize = AtomicUsize::new(0);
-
 thread_local! {
     static ARMED: Cell<bool> = const { Cell::new(false) };
+    /// Per thread, so that a test allocating on another thread while this one is armed doesn't count here.
+    static ALLOCATIONS: Cell<usize> = const { Cell::new(0) };
 }
 
 fn note() {
     if ARMED.with(Cell::get) {
-        ALLOCATIONS.fetch_add(1, Ordering::Relaxed);
+        ALLOCATIONS.with(|n| n.set(n.get() + 1));
     }
 }
 
@@ -52,11 +51,11 @@ static GLOBAL: Counting = Counting;
 
 /// Counts the allocations `f` makes on this thread.
 fn allocations(f: impl FnOnce()) -> usize {
-    let before = ALLOCATIONS.load(Ordering::Relaxed);
+    let before = ALLOCATIONS.with(Cell::get);
     ARMED.with(|a| a.set(true));
     f();
     ARMED.with(|a| a.set(false));
-    ALLOCATIONS.load(Ordering::Relaxed) - before
+    ALLOCATIONS.with(Cell::get) - before
 }
 
 fn key(usage: u16, is_down: bool, is_repeat: bool, modifiers: M) -> Message {
@@ -132,6 +131,8 @@ fn handling_input_allocates_nothing() {
                     for m in &messages {
                         out.clear();
                         router.handle(m, &mut out);
+                        out.clear();
+                        router.poll(u64::MAX, &mut out); // sends a held-back stop
                     }
                     out.clear();
                     router.set_modifier_map(ModifierMap { command: None, ..ModifierMap::default() }, &mut out);
