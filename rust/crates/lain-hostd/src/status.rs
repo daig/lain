@@ -37,7 +37,10 @@ pub fn video_lines(status: &HostStatus, stats: Option<HostVideoStats>, error: Op
             ms(v.encode_ms_p95),
             ms(v.ack_rtt_ms_p50)
         ),
-        format!("Dropped before encode {}, in flight {} (peak {})", v.dropped_before_encode, v.in_flight, v.peak_in_flight),
+        format!(
+            "Dropped before encode {}, in flight {} (peak {})",
+            v.dropped_before_encode, v.in_flight, v.peak_in_flight
+        ),
     ])
 }
 
@@ -100,10 +103,7 @@ mod tests {
         assert_eq!(video_lines(&HostStatus::WaitingForIPad, None, None), None);
         let connected = HostStatus::connected_usb("iPad16,6");
         assert_eq!(video_lines(&connected, None, None), Some(vec!["No video: starting".to_owned()]));
-        assert_eq!(
-            video_lines(&connected, None, Some("no GPU".into())),
-            Some(vec!["No video: no GPU".to_owned()])
-        );
+        assert_eq!(video_lines(&connected, None, Some("no GPU".into())), Some(vec!["No video: no GPU".to_owned()]));
         let stats = HostVideoStats {
             chroma: Some(ChromaFormat::Yuv420),
             pixel_width: 2752,

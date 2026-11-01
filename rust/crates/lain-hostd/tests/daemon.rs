@@ -38,8 +38,7 @@ async fn video_flows<S: SecretStore + Clone>(rig: &Rig<S>, link: &mut ClientLink
     let session = rig.platform.video().last_session().expect("video started");
     assert_eq!(session.config().chroma, Chroma::Yuv420);
     session.capture();
-    let Some(Message::VideoConfig(config)) = link.first_video(T, |m| matches!(m, Message::VideoConfig(_))).await
-    else {
+    let Some(Message::VideoConfig(config)) = link.first_video(T, |m| matches!(m, Message::VideoConfig(_))).await else {
         panic!("no VideoConfig")
     };
     assert_eq!((config.width, config.height, config.chroma), (2752, 2064, ChromaFormat::Yuv420));
@@ -80,7 +79,10 @@ async fn a_usb_session_end_to_end() {
     let mut link = rig.usb.next_link(T).await.expect("the daemon dials the iPad");
     let ack = link.hello_ack().await.expect("HelloAck");
     assert_eq!((ack.host_id.as_str(), ack.host_name.as_str()), (identity().id.as_str(), identity().name.as_str()));
-    assert_eq!((ack.codec, ack.chroma, ack.bit_depth, ack.bitrate), (VideoCodec::Hevc, ChromaFormat::Yuv420, 8, 60_000_000));
+    assert_eq!(
+        (ack.codec, ack.chroma, ack.bit_depth, ack.bitrate),
+        (VideoCodec::Hevc, ChromaFormat::Yuv420, 8, 60_000_000)
+    );
     assert_eq!((ack.display_point_width, ack.display_point_height), (1376, 1032));
     assert_eq!(ack.mac_input_source, "xkb:us+colemak");
     let Some(Message::DisplayLayout(layout)) = link.first(T, |m| matches!(m, Message::DisplayLayout(_))).await else {
