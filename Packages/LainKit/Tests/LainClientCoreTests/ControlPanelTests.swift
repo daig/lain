@@ -18,7 +18,7 @@ import Testing
     }
 
     @Test func rowsAreTheHostsThenTheOptions() {
-        let options: [ControlPanel.Row] = [.pointerSpeed, .scrollSpeed, .scrollDirection]
+        let options: [ControlPanel.Row] = [.pointerSpeed, .scrollSpeed, .scrollDirection, .wifiPath, .radioPriority]
         #expect(ControlPanel.rows(hosts: hosts()) == [.host(nil), .host("A"), .host("B")] + options)
         #expect(ControlPanel.rows(hosts: hosts(onCable: true)) == options, "no switching on the cable")
         #expect(ControlPanel.rows(hosts: ClientSession.HostList()) == options)
@@ -57,6 +57,22 @@ import Testing
         #expect(panel.key(Self.enter, hosts: h, preferences: p) == .setPreferences(reversed))
     }
 
+    @Test func pathAndPriorityCycle() {
+        var panel = ControlPanel()
+        let h = hosts(onCable: true), p = ClientPreferences()
+        for _ in 0..<3 { _ = panel.key(Self.down, hosts: h, preferences: p) }   // the Wi-Fi path row
+        var direct = p
+        direct.wifiPath = .direct
+        #expect(panel.key(Self.right, hosts: h, preferences: p) == .setPreferences(direct))
+        var network = p
+        network.wifiPath = .network
+        #expect(panel.key(Self.left, hosts: h, preferences: p) == .setPreferences(network), "wraps around")
+        _ = panel.key(Self.down, hosts: h, preferences: p)
+        var video = p
+        video.radioPriority = .interactiveVideo
+        #expect(panel.key(Self.enter, hosts: h, preferences: p) == .setPreferences(video))
+    }
+
     @Test func aClickActsOnItsRow() {
         var panel = ControlPanel()
         #expect(panel.click(row: 2, hosts: hosts(), preferences: ClientPreferences()) == .selectHost("B"))
@@ -71,7 +87,7 @@ import Testing
         let headings = lines.filter { $0.style == .heading }.map(\.text)
         #expect(headings == ["STREAM", "HOSTS", "OPTIONS", "SHORTCUTS"])
         let rows = lines.filter { $0.row != nil }
-        #expect(rows.count == 6)
+        #expect(rows.count == 8)
         #expect(rows[0].isSelected && rows[0].text.hasPrefix("○ Automatic"))
         #expect(rows[1].text.hasPrefix("◉ Mac mini") && rows[1].text.hasSuffix("connected"))
         #expect(rows[2].text.hasSuffix("in reach"))
@@ -82,7 +98,8 @@ import Testing
         let cabled = panel.lines(info: nil, video: VideoStats(), host: nil, hosts: hosts(onCable: true),
                                  preferences: ClientPreferences())
         #expect(cabled.contains { $0.text.hasPrefix("the cable is in") })
-        #expect(cabled.filter { $0.row != nil }.count == 3, "the hosts are listed, not selectable")
+        #expect(cabled.filter { $0.row != nil }.count == 5, "the hosts are listed, not selectable")
+        #expect(rows[6].text.contains("Automatic") && rows[7].text.contains("Standard"))
     }
 
     @Test func theHostLineSaysWhyItHasNoNumbers() {

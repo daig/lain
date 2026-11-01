@@ -35,6 +35,8 @@ public struct ClientWiFiConfig: Sendable {
     /// The id of the Mac last connected, preferred when several paired Macs are visible, and each Mac's
     /// service that last answered, dialed first among its services.
     public var lastHost: LastConnectedHost
+    /// Which way to reach a Mac over Wi-Fi (the panel's Wi-Fi path).
+    public var path = WiFiPath.automatic
     /// Tests only: wraps each attempt's dialer (to hold a dial, or watch its streams).
     var interpose: (@Sendable (any StreamDialer) -> any StreamDialer)?
 
@@ -44,6 +46,16 @@ public struct ClientWiFiConfig: Sendable {
         self.options = options
         self.lastHost = lastHost
     }
+}
+
+/// Which way the iPad reaches a host over Wi-Fi.
+public enum WiFiPath: String, Sendable, CaseIterable {
+    /// Whichever the system picks: direct (AWDL) or through the network.
+    case automatic
+    /// Peer-to-peer only (AWDL): works with no Wi-Fi network at all.
+    case direct
+    /// Through the Wi-Fi network only (the router).
+    case network
 }
 
 /// Where the client remembers the Mac it last connected to and, per Mac, the Wi-Fi service that last
@@ -150,10 +162,19 @@ struct WiFiDialPlan: Equatable {
     init() {}
 
     /// `secret` reads an account of the client's store; `versions` nil: `VersionList.offered`.
-    /// `only`: the host the owner picked (nil: automatic, every paired Mac in sight).
-    init(hosts: [DiscoveredHost], preferring lastHostId: String?, only: String? = nil, versions: VersionList? = nil,
-         secret: (String) -> [UInt8]?) {
-        for host in hosts where PairingAccounts.isCanonicalHostId(host.hostId) && (only == nil || host.hostId == only) {
+    /// `only`: the host the owner picked (nil: automatic, every paired Mac in sight). `path`: services seen
+    /// on a peer-to-peer interface (direct) or on the network (network) only.
+    init(hosts: [DiscoveredHost], preferring lastHostId: String?, only: String? = nil, path: WiFiPath = .automatic,
+         versions: VersionList? = nil, secret: (String) -> [UInt8]?) {
+        let reachable = { (h: DiscoveredHost) -> Bool in
+            switch path {
+            case .automatic: true
+            case .direct: h.peerToPeerInterface != nil
+            case .network: h.isOnNetwork
+            }
+        }
+        for host in hosts where PairingAccounts.isCanonicalHostId(host.hostId) && (only == nil || host.hostId == only)
+            && reachable(host) {
             let stored = secret(PairingAccounts.mac(host.hostId))
             if let gap = VersionGap(local: versions, advertised: host.versions) {
                 otherVersion.append(OtherVersion(host: host, gap: gap, paired: stored != nil))
@@ -255,7 +276,8 @@ final class WiFiLoop {
         }
     }
 
-    let config: ClientWiFiConfig
+    /// Path and radio priority change at run time (`SessionCore.setNetwork`).
+    var config: ClientWiFiConfig
     var discovery: (any HostDiscovery)?
     /// Numbers discoveries, so a replaced one's late reports are ignored.
     var discoverySerial: UInt64 = 0
@@ -402,7 +424,7 @@ extension SessionCore {
         updateDiscovery(now: now)
         w.plan = current == nil && w.discovery != nil
             ? WiFiDialPlan(hosts: w.hosts, preferring: w.config.lastHost.get(), only: w.config.lastHost.selected(),
-                           versions: versions, secret: storedSecret)
+                           path: w.config.path, versions: versions, secret: storedSecret)
                 .ordered(lastGood: w.config.lastHost.service, lastTried: { w.services[$0]?.lastAttemptAt ?? now })
             : WiFiDialPlan()
         guard current == nil, w.dialing == nil, !w.paused, !w.plan.candidates.isEmpty else { return }
@@ -536,8 +558,13 @@ extension SessionCore {
         w.services[host.endpoint, default: w.newService(seenAt: now)].lastAttemptAt = now
         // One pairing secret for the TLS PSK and the ChannelHello HMAC: the host refuses a hello under
         // another pairing than its TLS key proved.
+        let route: WiFiLinkDialer.Route = switch w.config.path {
+        case .automatic: .automatic
+        case .direct: host.peerToPeerInterface.map { .direct($0) } ?? .automatic
+        case .network: .network
+        }
         var dialer: any StreamDialer = WiFiLinkDialer(endpoint: host.endpoint, psk: WiFiPSK(secret: secret),
-                                                      options: w.config.options, timeout: w.config.dialTimeout)
+                                                      options: w.config.options, route: route, timeout: w.config.dialTimeout)
         if let interpose = w.config.interpose { dialer = interpose(dialer) }
         let links = LinkDialer(dialer: dialer, label: "lain.client.wifi", versions: versions)
         log.notice("Wi-Fi: dialing \(host.description, privacy: .public)")

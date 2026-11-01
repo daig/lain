@@ -1,4 +1,5 @@
 import Foundation
+import LainTransport
 
 /// The owner's host settings (rust/HOST-PARITY.md §1–§4), from the menu, kept in the app's defaults.
 public struct HostPreferences: Sendable, Equatable {
@@ -19,6 +20,8 @@ public struct HostPreferences: Sendable, Equatable {
     public var systemKey = true
     /// The stream's chroma. Applies to the next session (the menu reconnects).
     public var colorFormat = ColorFormat.full
+    /// How the Mac's side of Wi-Fi connections asks the radio for airtime (D34).
+    public var radioPriority = NetworkStreamOptions.RadioPriority.standard
 
     public enum ColorFormat: String, Sendable, CaseIterable {
         /// 4:4:4 10-bit where the iPad decodes it in hardware, else 4:2:0.
@@ -56,6 +59,7 @@ public struct HostPreferences: Sendable, Equatable {
         static let resume = "resumeAfterStop"
         static let systemKey = "systemKey"
         static let colorFormat = "colorFormat"
+        static let radioPriority = "radioPriority"
     }
 
     /// The stored settings (each one missing takes its default).
@@ -66,6 +70,9 @@ public struct HostPreferences: Sendable, Equatable {
         if defaults.object(forKey: Key.resume) != nil { p.resumeAfterStop = defaults.bool(forKey: Key.resume) }
         if defaults.object(forKey: Key.systemKey) != nil { p.systemKey = defaults.bool(forKey: Key.systemKey) }
         if let raw = defaults.string(forKey: Key.colorFormat), let f = ColorFormat(rawValue: raw) { p.colorFormat = f }
+        if let raw = defaults.string(forKey: Key.radioPriority), let r = NetworkStreamOptions.RadioPriority(rawValue: raw) {
+            p.radioPriority = r
+        }
         return p
     }
 
@@ -75,5 +82,6 @@ public struct HostPreferences: Sendable, Equatable {
         defaults.set(resumeAfterStop, forKey: Key.resume)
         defaults.set(systemKey, forKey: Key.systemKey)
         defaults.set(colorFormat.rawValue, forKey: Key.colorFormat)
+        defaults.set(radioPriority.rawValue, forKey: Key.radioPriority)
     }
 }

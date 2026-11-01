@@ -145,6 +145,12 @@ public final class ClientSession: Sendable {
         core.queue.async { [core] in core.selectHost(id) }
     }
 
+    /// The Wi-Fi path and radio priority (the panel). A Wi-Fi link closes and redials at once to take them;
+    /// a USB link is left alone.
+    public func setNetwork(path: WiFiPath, radioPriority: NetworkStreamOptions.RadioPriority) {
+        core.queue.async { [core] in core.setNetwork(path: path, radioPriority: radioPriority) }
+    }
+
     /// The Mac's latest `HostStats` (v5) on the current link, while they're asked for
     /// (`setHostStatsInterval`); nil before the first, and with a Mac on an older version.
     public var hostStats: HostStats? { core.hostStats.withLock { $0.stats } }
@@ -510,15 +516,34 @@ final class SessionCore: @unchecked Sendable {
         w.config.lastHost.setSelected(id)
         log.notice("host picked: \(id ?? "automatic", privacy: .public)")
         // A Wi-Fi link to another Mac makes way at once; the cable always stays.
-        if let id, let c = current, !c.via.isUSB, c.hostId != id {
-            current = nil
-            input.disconnect()
-            video?.disconnect()
-            c.link.close()
-            release(c.link)
-            log.notice("Wi-Fi link closed to switch hosts")
-        }
-        // An explicit switch waits for no grace or backoff.
+        if let id, let c = current, !c.via.isUSB, c.hostId != id { redialWiFi(because: "to switch hosts") }
+        redialNow()
+    }
+
+    func setNetwork(path: WiFiPath, radioPriority: NetworkStreamOptions.RadioPriority) {
+        guard let w = wifi, !stopped else { return }
+        guard w.config.path != path || w.config.options.radioPriority != radioPriority else { return }
+        w.config.path = path
+        w.config.options.radioPriority = radioPriority
+        log.notice("Wi-Fi: path \(path.rawValue, privacy: .public), radio priority \(radioPriority.rawValue, privacy: .public)")
+        if let c = current, !c.via.isUSB { redialWiFi(because: "for the new path and radio priority") }
+        redialNow()
+    }
+
+    /// Closes the current (Wi-Fi) link at once, as `closed` would, without its backoff.
+    private func redialWiFi(because why: String) {
+        guard let c = current else { return }
+        current = nil
+        input.disconnect()
+        video?.disconnect()
+        c.link.close()
+        release(c.link)
+        log.notice("Wi-Fi link closed \(why, privacy: .public)")
+    }
+
+    /// An explicit switch waits for no grace or backoff.
+    private func redialNow() {
+        guard let w = wifi else { return }
         w.graceUntil = 0
         w.backoffUntil = 0
         evaluateWiFi()

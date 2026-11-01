@@ -54,6 +54,11 @@ public struct DiscoveredHost: Sendable, Hashable, CustomStringConvertible {
     /// The interfaces it was seen on (e.g. en0 and awdl0).
     public var interfaceNames: [String]
     public var isBench: Bool
+    /// The peer-to-peer interface it was seen on (awdl0, llw0), if any: what a Direct dial requires.
+    public var peerToPeerInterface: NWInterface?
+
+    /// Seen on the Wi-Fi network (or Ethernet): an interface that isn't peer-to-peer.
+    public var isOnNetwork: Bool { interfaceNames.contains { !NetworkPath.isPeerToPeer($0) } || interfaceNames.isEmpty }
 
     public init(hostId: String, name: String, versions: [UInt8], endpoint: NWEndpoint,
                 interfaceNames: [String] = [], isBench: Bool = false) {
@@ -90,6 +95,7 @@ public struct DiscoveredHost: Sendable, Hashable, CustomStringConvertible {
         let txt: [String: String]
         if case .bonjour(let record) = result.metadata { txt = record.dictionary } else { txt = [:] }
         self.init(endpoint: result.endpoint, txt: txt, interfaceNames: result.interfaces.map(\.name))
+        peerToPeerInterface = result.interfaces.first { NetworkPath.isPeerToPeer($0.name) }
     }
 }
 

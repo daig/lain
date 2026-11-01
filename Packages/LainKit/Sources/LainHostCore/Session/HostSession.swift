@@ -449,6 +449,15 @@ public final class HostSession: Sendable {
         return true
     }
 
+    /// The Wi-Fi listener's radio priority (D34): it restarts with it, and a live Wi-Fi session reconnects so
+    /// its connections take it.
+    public func setRadioPriority(_ priority: NetworkStreamOptions.RadioPriority) {
+        guard var options = deps.wifi?.options, let listener = state.withLock({ $0.wifiListener }) else { return }
+        options.radioPriority = priority
+        listener.setOptions(options)
+        if case .wifi? = state.withLock({ $0.live?.owner }) { reconnect() }
+    }
+
     /// Ends the live session so that the iPad reconnects into a new one, which picks up settings read at
     /// a session's start (the display's scale, the system key). false: no session.
     @discardableResult

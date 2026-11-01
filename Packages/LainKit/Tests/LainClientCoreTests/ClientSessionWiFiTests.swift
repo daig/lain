@@ -1131,6 +1131,27 @@ func isPong(_ message: Message, _ id: UInt32) -> Bool {
 
     /// Among one Mac's services: the one that last answered first, then the least recently tried (ties
     /// in discovery order); Macs keep their order.
+    /// The panel's Wi-Fi path: Direct dials only services seen on a peer-to-peer interface, Network only
+    /// those seen on the network.
+    @Test func thePathPicksWhichServicesCount() {
+        func host(_ id: String, _ interfaces: [String]) -> DiscoveredHost {
+            DiscoveredHost(hostId: id, name: id, versions: VersionList.offered.versions,
+                           endpoint: .service(name: id, type: "_lain._tcp", domain: "local.", interface: nil),
+                           interfaceNames: interfaces)
+        }
+        let lan = host("0B5D5C4E-6A1F-4E53-9C2D-7F3A8E91B264", ["en1"])
+        var both = host("1B5D5C4E-6A1F-4E53-9C2D-7F3A8E91B264", ["en1"])
+        both.interfaceNames = ["en1", "awdl0"]
+        let secret: (String) -> [UInt8]? = { _ in [1] }
+        let ids = { (p: WiFiPath) in
+            WiFiDialPlan(hosts: [lan, both], preferring: nil, path: p, secret: secret).candidates.map(\.host.hostId)
+        }
+        #expect(ids(.automatic) == [lan.hostId, both.hostId])
+        #expect(ids(.network) == [lan.hostId, both.hostId])
+        #expect(ids(.direct) == [], "no peer-to-peer interface handle was seen (tests can't make one)")
+        #expect(!host("x", ["awdl0"]).isOnNetwork && host("x", ["en0", "awdl0"]).isOnNetwork)
+    }
+
     @Test func oneMacsServicesAreTriedLastAnsweredFirstThenInTurn() {
         let x = UUID().uuidString, y = UUID().uuidString
         func host(_ id: String, _ name: String, port: UInt16) -> DiscoveredHost {
