@@ -78,6 +78,13 @@ struct LainHostApp: App {
                     }
                 }
             }
+            Menu("Color") {
+                ForEach(HostPreferences.ColorFormat.allCases, id: \.self) { format in
+                    Button((host.preferences.colorFormat == format ? "✓ " : "") + format.title) {
+                        host.update { $0.colorFormat = format }
+                    }
+                }
+            }
             Menu("Keep Display After Disconnect") {
                 ForEach(HostPreferences.keepAliveChoices, id: \.self) { seconds in
                     Button((host.preferences.displayKeepAliveSeconds == seconds ? "✓ " : "") + HostController.keepAliveTitle(seconds)) {
@@ -149,7 +156,8 @@ final class HostController {
         let preferences = livePreferences, keeper = keeper
         let session = HostSession(dependencies: .init(sink: InputInjector(),
                                                       video: { HostVideoPipeline.live(keeper: keeper,
-                                                                                      scale: preferences.value.displayScale) },
+                                                                                      scale: preferences.value.displayScale,
+                                                                                      colorFormat: preferences.value.colorFormat) },
                                                       identity: identity,
                                                       wifi: identity.map { _ in HostWiFiConfig(advertise: true) },
                                                       setup: Self.probeSetup,
@@ -223,7 +231,7 @@ final class HostController {
     }
 
     /// Changes a setting: saved, and applied to the live session where it can't wait for the next one
-    /// (the scale and the system key reconnect it; the keep-alive applies to the next display kept).
+    /// (the scale, the color format and the system key reconnect it; the keep-alive applies to the next display kept).
     func update(_ change: (inout HostPreferences) -> Void) {
         var new = preferences
         change(&new)
@@ -233,7 +241,9 @@ final class HostController {
         new.save()
         livePreferences.value = new
         keeper.keepFor = .seconds(new.displayKeepAliveSeconds)
-        if new.displayScale != old.displayScale || new.systemKey != old.systemKey { session?.reconnect() }
+        if new.displayScale != old.displayScale || new.systemKey != old.systemKey || new.colorFormat != old.colorFormat {
+            session?.reconnect()
+        }
     }
 
     func resumeVideo() {

@@ -17,6 +17,22 @@ public struct HostPreferences: Sendable, Equatable {
     public var resumeAfterStop = true
     /// Right Option is lain's system key (`SystemKey`). Applies to the next session.
     public var systemKey = true
+    /// The stream's chroma. Applies to the next session (the menu reconnects).
+    public var colorFormat = ColorFormat.full
+
+    public enum ColorFormat: String, Sendable, CaseIterable {
+        /// 4:4:4 10-bit where the iPad decodes it in hardware, else 4:2:0.
+        case full = "444"
+        /// 4:2:0 8-bit always: smaller frames (measured: −30% typical, −8% for big scroll frames).
+        case reduced = "420"
+
+        public var title: String {
+            switch self {
+            case .full: "4:4:4 10-bit"
+            case .reduced: "4:2:0 8-bit"
+            }
+        }
+    }
 
     public init() {}
 
@@ -39,6 +55,7 @@ public struct HostPreferences: Sendable, Equatable {
         static let scale = "displayScale"
         static let resume = "resumeAfterStop"
         static let systemKey = "systemKey"
+        static let colorFormat = "colorFormat"
     }
 
     /// The stored settings (each one missing takes its default).
@@ -48,6 +65,7 @@ public struct HostPreferences: Sendable, Equatable {
         if defaults.object(forKey: Key.scale) != nil { p.displayScale = defaults.double(forKey: Key.scale) }
         if defaults.object(forKey: Key.resume) != nil { p.resumeAfterStop = defaults.bool(forKey: Key.resume) }
         if defaults.object(forKey: Key.systemKey) != nil { p.systemKey = defaults.bool(forKey: Key.systemKey) }
+        if let raw = defaults.string(forKey: Key.colorFormat), let f = ColorFormat(rawValue: raw) { p.colorFormat = f }
         return p
     }
 
@@ -56,5 +74,6 @@ public struct HostPreferences: Sendable, Equatable {
         defaults.set(displayScale, forKey: Key.scale)
         defaults.set(resumeAfterStop, forKey: Key.resume)
         defaults.set(systemKey, forKey: Key.systemKey)
+        defaults.set(colorFormat.rawValue, forKey: Key.colorFormat)
     }
 }

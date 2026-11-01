@@ -66,6 +66,8 @@ public final class HostVideoPipeline: Sendable {
         /// How often the idle check runs.
         public var idleCheckMs = 10
         public var cursorHz = 60.0
+        /// The owner's choice (`HostPreferences.colorFormat`): 4:4:4 where the iPad decodes it, or 4:2:0 always.
+        public var allows444 = true
         public init() {}
     }
 
@@ -148,9 +150,10 @@ public final class HostVideoPipeline: Sendable {
     public var chroma: ChromaFormat? { state.withLock { $0.chroma } }
     public var isRunning: Bool { state.withLock { $0.phase == .running } }
 
-    /// 4:4:4 only when the client hardware-decodes it (S3c); the encoder may still fall back to 4:2:0.
-    public static func requestedChroma(for hello: Hello) -> ChromaFormat {
-        hello.decodeCapabilities.contains(.hevcMain44410Hardware) ? .yuv444 : .yuv420
+    /// 4:4:4 only when the client hardware-decodes it (S3c) and the owner allows it; the encoder may still
+    /// fall back to 4:2:0.
+    public static func requestedChroma(for hello: Hello, allows444: Bool = true) -> ChromaFormat {
+        allows444 && hello.decodeCapabilities.contains(.hevcMain44410Hardware) ? .yuv444 : .yuv420
     }
 
     /// Creates the display, the encoder and the capture, and starts streaming on `videoChannel`
@@ -178,7 +181,7 @@ public final class HostVideoPipeline: Sendable {
             guard state.withLock({ $0.phase == .starting }) else { throw HostVideoError.stopped }
 
             var wanted = VideoEncoder.Settings(width: display.pixelWidth, height: display.pixelHeight)
-            wanted.chroma = Self.requestedChroma(for: hello)
+            wanted.chroma = Self.requestedChroma(for: hello, allows444: options.allows444)
             wanted.frameRate = hello.maxRefreshRate > 0 ? min(options.frameRate, Int(hello.maxRefreshRate)) : options.frameRate
             wanted.averageBitRate = options.averageBitRate
             settings = wanted
@@ -540,7 +543,10 @@ extension HostVideoPipeline {
     /// The production wiring: the iPad-geometry virtual display (Extend mode, origin left to macOS),
     /// ScreenCaptureKit, and `NSCursor.currentSystem`. Needs Screen Recording; creating it touches nothing.
     public static func live(options: Options = Options(), keeper: DisplayKeeper? = nil,
-                            scale: Double = HostPreferences.defaultScale) -> HostVideoPipeline {
+                            scale: Double = HostPreferences.defaultScale, colorFormat: HostPreferences.ColorFormat = .full)
+        -> HostVideoPipeline {
+        var options = options
+        options.allows444 = colorFormat == .full
         var spec = VirtualDisplay.Spec()
         spec.scale = scale
         return HostVideoPipeline(display: VirtualStreamedDisplayProvider(spec: spec, refreshRate: options.frameRate, keeper: keeper),
