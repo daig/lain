@@ -414,6 +414,33 @@ async fn an_ad_made_while_the_server_registers_waits_for_it() {
     registered_as(&advertiser, Some("Desk")).await;
 }
 
+/// A restarted avahi-daemon first probes its host name: the service waits for its `Running`, which must
+/// come through the signal stream of the new daemon, not the old one.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_restarted_daemon_that_starts_registering_gets_the_service_once_running() {
+    let Some(bus) = TestBus::start().await else { return };
+    let world = new_world();
+    let avahi = fake_avahi(&bus, &world).await;
+    let advertiser = AvahiAdvertiser::new(bus.connect().await);
+    advertiser.advertise(ad("Desk", 4242)).await.unwrap();
+    registered_as(&advertiser, Some("Desk")).await;
+    drop(avahi);
+    registered_as(&advertiser, None).await;
+
+    let restarted = new_world();
+    restarted.lock().unwrap().server_state = server_state::REGISTERING;
+    let avahi = fake_avahi(&bus, &restarted).await;
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert!(published(&restarted).is_empty());
+    restarted.lock().unwrap().server_state = server_state::RUNNING;
+    avahi
+        .emit_signal(None::<()>, "/", "org.freedesktop.Avahi.Server", "StateChanged", &(server_state::RUNNING, ""))
+        .await
+        .unwrap();
+    registered_as(&advertiser, Some("Desk")).await;
+    assert_eq!(published(&restarted).len(), 1);
+}
+
 #[tokio::test(flavor = "multi_thread")]
 async fn dropping_the_advertiser_frees_the_group() {
     let Some(bus) = TestBus::start().await else { return };
@@ -496,8 +523,13 @@ async fn live_advertise_and_browse_back() {
             eprintln!("resolved: {resolved:?}");
             assert_eq!(resolved.name, registered);
             assert_eq!(resolved.port, 9);
-            // DNS-SD keeps the entries in the order published.
-            assert_eq!(resolved.txt, expected_txt);
+            // Order isn't compared: Avahi 0.8's ResolveService answers the entries reversed (`id`, `vs`, `v`;
+            // seen 2026-10-31), and DNS-SD readers (Swift's `NWTXTRecord` dictionary) don't depend on it.
+            let mut got = resolved.txt.clone();
+            got.sort();
+            let mut want = expected_txt.clone();
+            want.sort();
+            assert_eq!(got, want);
         }
     }
 
