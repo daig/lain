@@ -156,15 +156,16 @@ async fn run(args: Args) -> ExitCode {
     let secrets = Arc::new(SystemSecretStore::open(&dir).await);
     info!("pairing secrets: {}", secrets.describe());
 
-    let gnome = match Gnome::with_connection(conn.clone(), GnomeConfig { barrier: config.barrier(), arrangement_path: None })
-        .await
-    {
-        Ok(gnome) => gnome,
-        Err(e) => {
-            error!("GNOME: {e}");
-            return ExitCode::FAILURE;
-        }
-    };
+    let gnome =
+        match Gnome::with_connection(conn.clone(), GnomeConfig { barrier: config.barrier(), arrangement_path: None })
+            .await
+        {
+            Ok(gnome) => gnome,
+            Err(e) => {
+                error!("GNOME: {e}");
+                return ExitCode::FAILURE;
+            }
+        };
     let autostart = Autostart::new(conn.clone(), &user_unit_dir(&config_home), UNIT_NAME);
     let platform = LinuxPlatform::new(gnome, LinuxVideo::new(LinuxVideoConfig::default()), autostart, secrets);
 

@@ -17,9 +17,7 @@ use lain_platform::fake::{
     FakeAdvertiser, FakeClock, FakeCursor, FakeDisplay, FakeInput, FakePlatform, FakePower, FakeSettings, FakeSetup,
     FakeVideo, MemorySecretStore,
 };
-use lain_platform::{
-    HostIdentity, InputAction, InputSettings, Platform, RequirementState, SecretStore, ServiceAd,
-};
+use lain_platform::{HostIdentity, InputAction, InputSettings, Platform, RequirementState, SecretStore, ServiceAd};
 use lain_proto::*;
 use lain_usbmux::fake::{FakeDevice, FakeTarget, FakeUsbMuxd};
 use lain_wifi::{LainTxt, WiFiDialer, WiFiListenerOptions, WiFiStatus};
@@ -457,7 +455,9 @@ impl<S: SecretStore + Clone> Rig<S> {
     pub async fn listening(&self) -> u16 {
         let mut status = self.handle.wifi_status();
         let listening = reaches(&mut status, |s| matches!(s, WiFiStatus::Listening { .. })).await;
-        listening.and_then(|s| s.port()).unwrap_or_else(|| panic!("not listening: {:?}", self.handle.wifi_status().borrow()))
+        listening
+            .and_then(|s| s.port())
+            .unwrap_or_else(|| panic!("not listening: {:?}", self.handle.wifi_status().borrow()))
     }
 
     pub async fn connected(&self, via: LinkTransport) -> bool {

@@ -261,10 +261,7 @@ async fn watch_setup<P: Platform>(
         if now != last {
             info!(
                 "setup: start at login {:?}, other display {}",
-                now.items
-                    .iter()
-                    .find(|(r, _)| *r == lain_platform::Requirement::StartAtLogin)
-                    .map(|(_, s)| *s),
+                now.items.iter().find(|(r, _)| *r == lain_platform::Requirement::StartAtLogin).map(|(_, s)| *s),
                 now.has_other_display
             );
             last = now;

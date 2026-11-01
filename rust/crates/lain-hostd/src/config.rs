@@ -320,7 +320,10 @@ impl Config {
         for (i, s) in self.input.command_shortcuts.iter().enumerate() {
             let key = format!("input.command_shortcuts[{i}]");
             if lain_input::keymap::evdev_key(s.usage).is_none() {
-                return bad(&format!("{key}.usage"), format!("{:#04X} is no key lain maps on the HID keyboard page", s.usage));
+                return bad(
+                    &format!("{key}.usage"),
+                    format!("{:#04X} is no key lain maps on the HID keyboard page", s.usage),
+                );
             }
             if s.hold == Modifier::None {
                 return bad(&format!("{key}.hold"), "must name a modifier (shift, control, alt, super, altgr)".into());
@@ -421,9 +424,12 @@ fn key_at(text: &str, span: std::ops::Range<usize>) -> Option<String> {
             own.to_owned()
         }
     };
-    let table = text[..line_start].lines().rev().map(str::trim).find(|l| l.starts_with('[')).map(|l| {
-        l.trim_start_matches('[').split(']').next().unwrap_or_default().trim().to_owned()
-    });
+    let table = text[..line_start]
+        .lines()
+        .rev()
+        .map(str::trim)
+        .find(|l| l.starts_with('['))
+        .map(|l| l.trim_start_matches('[').split(']').next().unwrap_or_default().trim().to_owned());
     Some(match table {
         Some(t) if !t.is_empty() => format!("{t}.{key}"),
         _ => key,
@@ -597,10 +603,15 @@ client_stop_delay_ms = 300
         let e = refused("[input.scroll]\nmomentum = 1\n");
         assert!(e.contains("input.scroll.momentum: wanted string"), "{e}");
         let e = refused("[input]\ncommand_shortcuts = [{ usage = 0x2B, hold = \"none\" }]\n");
-        assert_eq!(e, "/x/lain/config.toml: input.command_shortcuts[0].hold: must name a modifier (shift, control, alt, super, altgr)");
+        assert_eq!(
+            e,
+            "/x/lain/config.toml: input.command_shortcuts[0].hold: must name a modifier (shift, control, alt, super, altgr)"
+        );
         let e = refused("[input]\ncommand_shortcuts = [{ usage = 0x00, hold = \"alt\" }]\n");
         assert!(e.contains("input.command_shortcuts[0].usage: 0x00 is no key"), "{e}");
-        let e = refused("[input]\ncommand_shortcuts = [{ usage = 0x2B, hold = \"alt\" }, { usage = 0x2B, hold = \"super\" }]\n");
+        let e = refused(
+            "[input]\ncommand_shortcuts = [{ usage = 0x2B, hold = \"alt\" }, { usage = 0x2B, hold = \"super\" }]\n",
+        );
         assert!(e.contains("input.command_shortcuts[1].usage: 0x2B is listed twice"), "{e}");
         let e = refused("[input]\ncommand_shortcuts = [{ usage = 70000, hold = \"alt\" }]\n");
         assert!(e.contains("usage: "), "{e}");

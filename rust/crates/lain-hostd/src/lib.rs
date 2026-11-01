@@ -6,7 +6,7 @@
 //! Swift reference (behaviour): `Apps/Host/LainHostApp.swift` (`LainHostEntry`, `HostController`),
 //! `Packages/LainKit/Sources/LainHostCore/HostStatus.swift`. Brief: `docs/LINUX-HOST-PLAN.md`, `lain-hostd`.
 //!
-//! - [`Config`]: `config.toml`.
+//! - [`Config`], the settings in `config.toml`.
 //! - [`Daemon`] and [`DaemonHandle`]: the running host over any `Platform` (fakes in the tests).
 //! - [`DaemonSetup`]: the `SetupSource`, the platform's report plus Start at Login.
 //! - [`LinuxPlatform`]: the real composition's platform (built by the binary only).
