@@ -1,12 +1,14 @@
 //! Bonjour advertising through Avahi's D-Bus API on the system bus (Swift: the Wi-Fi listener's Bonjour
 //! service, `NetworkStreamListener.Advertisement` in `LainTransport`, with the TXT record of `LainTXT`).
 //!
-//! One entry group per advertiser: `EntryGroupNew`, `AddService`, `Commit`, then `StateChanged`. On a name
-//! collision the instance is renamed with `GetAlternativeServiceName` (`Desk` → `Desk #2`) and re-added, as
-//! Bonjour renames a Mac's service. The group is re-created after avahi-daemon restarts
-//! (`NameOwnerChanged`) and after the server's own host-name collision, and withdrawn with `Reset`. Avahi
-//! frees the group when our D-Bus connection closes, so a dropped advertiser (or a crashed daemon) leaves
-//! nothing behind.
+//! One entry group per publish: `EntryGroupNew`, `AddService`, `Commit`, then `StateChanged`; the previous
+//! group is freed first. A fresh group (rather than `Reset` and reuse) means a state change still queued
+//! for the previous ad goes with the previous group's signal stream, so it can't be taken for the new ad's.
+//! On a name collision the instance is renamed with `GetAlternativeServiceName` (`Desk` → `Desk #2`) and
+//! published again, as Bonjour renames a Mac's service. The service is published again after avahi-daemon
+//! restarts (`NameOwnerChanged`) and after the server's own host-name collision, and withdrawn with `Free`.
+//! Avahi frees the group when our D-Bus connection closes, so a dropped advertiser (or a crashed daemon)
+//! leaves nothing behind.
 
 use std::time::Duration;
 
@@ -163,9 +165,16 @@ impl AvahiAdvertiser {
 
 impl Advertiser for AvahiAdvertiser {
     /// Publishes `ad`, replacing any earlier one. Returns once Avahi has the service (committed, still
-    /// probing the name), or straight away if Avahi's server isn't running yet. An error means it isn't
-    /// published now (no avahi-daemon, an invalid ad); the advertiser keeps the ad all the same and publishes
-    /// it when avahi-daemon appears or restarts, until [`withdraw`](Advertiser::withdraw).
+    /// probing the name), or straight away if Avahi's server isn't running yet.
+    ///
+    /// - An invalid ad (a TXT key that isn't printable ASCII without `=`, a repeated key, an entry over 255
+    ///   bytes) is refused before anything changes: the earlier ad, if any, stays published and is still
+    ///   the one kept.
+    /// - The same ad as the last one, while it is published, changes nothing (no withdrawal and re-probe,
+    ///   and a name renamed after a collision stays), as Swift's listener keeps its Bonjour service.
+    /// - Any other error means the ad isn't published now (no avahi-daemon, say); the advertiser keeps it
+    ///   all the same and publishes it when avahi-daemon appears or restarts, until
+    ///   [`withdraw`](Advertiser::withdraw).
     async fn advertise(&self, ad: ServiceAd) -> Result<()> {
         let (reply, result) = oneshot::channel();
         self.commands
@@ -191,7 +200,9 @@ struct Group {
 struct Driver {
     bus: zbus::Connection,
     registered: watch::Sender<Option<String>>,
-    /// What the owner asked for, with the name as renamed after collisions.
+    /// What the owner asked for, as given (the name only cut to a DNS label).
+    requested: Option<ServiceAd>,
+    /// `requested`, with the name as renamed after collisions.
     desired: Option<ServiceAd>,
     group: Option<Group>,
     /// Renames since the last `advertise`.
@@ -224,7 +235,22 @@ fn platform_error(e: zbus::Error) -> PlatformError {
 
 impl Driver {
     fn new(bus: zbus::Connection, registered: watch::Sender<Option<String>>) -> Driver {
-        Driver { bus, registered, desired: None, group: None, renames: 0, committed: false }
+        Driver { bus, registered, requested: None, desired: None, group: None, renames: 0, committed: false }
+    }
+
+    /// The `Advertise` command: see [`AvahiAdvertiser::advertise`].
+    async fn advertise(&mut self, mut ad: ServiceAd) -> Result<()> {
+        ad.name = instance_name(&ad.name);
+        // Refused before anything changes, so the earlier ad stays published and kept.
+        txt_entries(&ad.txt)?;
+        if self.committed && self.requested.as_ref() == Some(&ad) {
+            debug!(name = %ad.name, "the same ad again; nothing to change");
+            return Ok(());
+        }
+        self.requested = Some(ad.clone());
+        self.desired = Some(ad);
+        self.renames = 0;
+        self.publish().await
     }
 
     async fn run(mut self, mut commands: mpsc::UnboundedReceiver<Command>) {
@@ -250,15 +276,13 @@ impl Driver {
         loop {
             tokio::select! {
                 command = commands.recv() => match command {
-                    Some(Command::Advertise(mut ad, reply)) => {
-                        ad.name = instance_name(&ad.name);
-                        self.desired = Some(ad);
-                        self.renames = 0;
-                        let _ = reply.send(self.publish().await);
+                    Some(Command::Advertise(ad, reply)) => {
+                        let _ = reply.send(self.advertise(ad).await);
                     }
                     Some(Command::Withdraw(reply)) => {
+                        self.requested = None;
                         self.desired = None;
-                        self.unpublish(false).await;
+                        self.unpublish().await;
                         let _ = reply.send(());
                     }
                     None => break,
@@ -294,7 +318,7 @@ impl Driver {
                 }
             }
         }
-        self.unpublish(true).await;
+        self.unpublish().await;
     }
 
     async fn server_state_changed(&mut self, state: i32) {
@@ -307,8 +331,8 @@ impl Driver {
             // The host name is being (re)probed: Avahi's documentation says to reset the group and add the
             // services again once the server runs.
             server_state::REGISTERING | server_state::COLLISION if self.committed => {
-                debug!(state, "Avahi's server is re-registering; resetting the group");
-                self.unpublish(false).await;
+                debug!(state, "Avahi's server is re-registering; withdrawing the group");
+                self.unpublish().await;
             }
             _ => {}
         }
@@ -330,6 +354,8 @@ impl Driver {
             group_state::FAILURE => {
                 warn!(name = %ad.name, %error, "Avahi failed to publish the service");
                 self.registered.send_replace(None);
+                // Not published: the same ad again, or the server running again, retries.
+                self.committed = false;
             }
             group_state::UNCOMMITED | group_state::REGISTERING => {}
             _ => debug!(state, "an unknown entry group state"),
@@ -376,24 +402,17 @@ impl Driver {
         let server = AvahiServerProxy::new(&self.bus).await?;
         if timed(server.get_state()).await? != server_state::RUNNING {
             debug!("Avahi's server isn't running yet; publishing when it is");
-            self.unpublish(false).await;
+            self.unpublish().await;
             return Ok(());
         }
-        let group = match self.group.take() {
-            Some(group) => {
-                timed(group.proxy.reset()).await?;
-                group
-            }
-            None => {
-                let path = timed(server.entry_group_new()).await?;
-                let proxy = AvahiEntryGroupProxy::builder(&self.bus).path(path)?.build().await?;
-                // Subscribed before Commit, so no state change is missed.
-                let signals = proxy.receive_state_changed().await?;
-                Group { proxy, signals }
-            }
-        };
-        self.registered.send_replace(None);
-        self.committed = false;
+        // A fresh group: the old one's queued signals (say, a COLLISION for the previous name) are dropped
+        // with its stream instead of being applied to this ad.
+        self.unpublish().await;
+        let path = timed(server.entry_group_new()).await?;
+        let proxy = AvahiEntryGroupProxy::builder(&self.bus).path(path)?.build().await?;
+        // Subscribed before Commit, so no state change is missed.
+        let signals = proxy.receive_state_changed().await?;
+        let group = Group { proxy, signals };
         let added = async {
             timed(group.proxy.add_service(
                 IF_UNSPEC,
@@ -417,17 +436,13 @@ impl Driver {
         Ok(())
     }
 
-    /// Withdraws the service: `Reset` keeps the group for the next `advertise`, `Free` (when the advertiser
-    /// ends) drops it.
-    async fn unpublish(&mut self, free: bool) {
+    /// Withdraws the service by freeing the group (the next publish makes a new one), dropping its signals.
+    async fn unpublish(&mut self) {
         self.registered.send_replace(None);
         self.committed = false;
         let Some(group) = self.group.take() else { return };
-        let result = if free { timed(group.proxy.free()).await } else { timed(group.proxy.reset()).await };
-        match result {
-            Ok(()) if !free => self.group = Some(group),
-            Ok(()) => {}
-            Err(e) => debug!(error = %e, "withdrawing the entry group"),
+        if let Err(e) = timed(group.proxy.free()).await {
+            debug!(error = %e, "freeing the entry group");
         }
     }
 }

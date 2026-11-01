@@ -79,6 +79,9 @@ struct World {
     /// Names another host on the network has: a commit of one collides.
     taken_remote: BTreeSet<String>,
     groups_created: usize,
+    groups_freed: usize,
+    /// Commits on any group: each one is a (re)probe and announcement on the network.
+    commits: usize,
 }
 
 type Shared = Arc<Mutex<World>>;
@@ -89,6 +92,8 @@ fn new_world() -> Shared {
         published: vec![],
         taken_remote: BTreeSet::new(),
         groups_created: 0,
+        groups_freed: 0,
+        commits: 0,
     }))
 }
 
@@ -184,6 +189,7 @@ impl FakeGroup {
         Self::state_changed(&emitter, group_state::REGISTERING, "").await?;
         let collides = {
             let mut world = self.world.lock().unwrap();
+            world.commits += 1;
             let collides = self.pending.iter().any(|p| world.taken_remote.contains(&p.name));
             if !collides {
                 world.published.append(&mut self.pending);
@@ -203,6 +209,7 @@ impl FakeGroup {
     }
 
     async fn free(&mut self, #[zbus(object_server)] server: &zbus::ObjectServer) -> zbus::fdo::Result<()> {
+        self.world.lock().unwrap().groups_freed += 1;
         self.world.lock().unwrap().published.retain(|p| p.group != self.path);
         server.remove::<FakeGroup, _>(self.path.as_str()).await?;
         Ok(())
@@ -273,9 +280,9 @@ async fn a_name_another_host_has_is_renamed() {
     advertiser.advertise(ad("Desk", 4242)).await.unwrap();
     registered_as(&advertiser, Some("Desk #3")).await;
     assert_eq!(published(&world).iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Desk #3"]);
-    // A new advertise starts again from the name it is given.
+    // A different ad starts again from the name it is given (the same one again would change nothing).
     world.lock().unwrap().taken_remote.clear();
-    advertiser.advertise(ad("Desk", 4242)).await.unwrap();
+    advertiser.advertise(ad("Desk", 4243)).await.unwrap();
     registered_as(&advertiser, Some("Desk")).await;
 }
 
@@ -316,7 +323,9 @@ async fn advertise_replaces_and_withdraw_is_idempotent() {
     advertiser.advertise(ad("Desk", 3)).await.unwrap();
     registered_as(&advertiser, Some("Desk")).await;
     assert_eq!(published(&world).len(), 1);
-    assert_eq!(world.lock().unwrap().groups_created, 1, "one group, reset between uses");
+    let world = world.lock().unwrap();
+    assert_eq!(world.groups_created, 3, "a fresh group per publish");
+    assert_eq!(world.groups_freed, 2, "the earlier groups freed");
 }
 
 #[tokio::test(flavor = "multi_thread")]
@@ -439,6 +448,75 @@ async fn a_restarted_daemon_that_starts_registering_gets_the_service_once_runnin
         .unwrap();
     registered_as(&advertiser, Some("Desk")).await;
     assert_eq!(published(&restarted).len(), 1);
+}
+
+/// Review S2/R4: an ad refused before it reaches Avahi changes nothing: the earlier ad stays published,
+/// registered and desired.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_refused_ad_leaves_the_earlier_one_as_it_was() {
+    let Some(bus) = TestBus::start().await else { return };
+    let world = new_world();
+    let avahi = fake_avahi(&bus, &world).await;
+    let advertiser = AvahiAdvertiser::new(bus.connect().await);
+    advertiser.advertise(ad("Desk", 1)).await.unwrap();
+    registered_as(&advertiser, Some("Desk")).await;
+    let mut bad = ad("Desk", 2);
+    bad.txt.push(("a=b".into(), "c".into()));
+    assert!(advertiser.advertise(bad).await.is_err());
+    assert_eq!(*advertiser.registered_name().borrow(), Some("Desk".to_owned()));
+    assert_eq!(published(&world).iter().map(|p| (p.name.as_str(), p.port)).collect::<Vec<_>>(), [("Desk", 1)]);
+    // The earlier ad is still the one desired: re-publishing gives it back, not the refused one.
+    let emit = async |state: i32| {
+        world.lock().unwrap().server_state = state;
+        avahi.emit_signal(None::<()>, "/", "org.freedesktop.Avahi.Server", "StateChanged", &(state, "")).await.unwrap();
+    };
+    emit(server_state::REGISTERING).await;
+    registered_as(&advertiser, None).await;
+    emit(server_state::RUNNING).await;
+    registered_as(&advertiser, Some("Desk")).await;
+    assert_eq!(published(&world).iter().map(|p| p.port).collect::<Vec<_>>(), [1]);
+}
+
+/// Review S3/R3: a COLLISION signalled for the previous ad must not rename the next one. Each publish uses
+/// a fresh entry group, so the old group's queued signals go with it.
+#[tokio::test(flavor = "multi_thread")]
+async fn a_stale_collision_does_not_rename_the_next_ad() {
+    let Some(bus) = TestBus::start().await else { return };
+    let mut bad = vec![];
+    for run in 0..20 {
+        let world = new_world();
+        world.lock().unwrap().taken_remote.insert("Desk".into());
+        let avahi = fake_avahi(&bus, &world).await;
+        let advertiser = AvahiAdvertiser::new(bus.connect().await);
+        let _ = tokio::join!(advertiser.advertise(ad("Desk", 1)), advertiser.advertise(ad("Other", 2)));
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        let names: Vec<String> = published(&world).into_iter().map(|p| p.name).collect();
+        if names != ["Other"] || advertiser.registered_name().borrow().as_deref() != Some("Other") {
+            bad.push((run, names));
+        }
+        drop(advertiser);
+        drop(avahi);
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(bad.is_empty(), "renamed or lost the new ad: {bad:?}");
+}
+
+/// Review R5: the same ad again is a no-op: no withdrawal, no re-probe, and a renamed name stays.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_same_ad_twice_changes_nothing() {
+    let Some(bus) = TestBus::start().await else { return };
+    let world = new_world();
+    world.lock().unwrap().taken_remote.insert("Desk".to_owned());
+    let _avahi = fake_avahi(&bus, &world).await;
+    let advertiser = AvahiAdvertiser::new(bus.connect().await);
+    advertiser.advertise(ad("Desk", 1)).await.unwrap();
+    registered_as(&advertiser, Some("Desk #2")).await;
+    let before = world.lock().unwrap().commits;
+    advertiser.advertise(ad("Desk", 1)).await.unwrap();
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    assert_eq!(world.lock().unwrap().commits, before, "re-published");
+    assert_eq!(*advertiser.registered_name().borrow(), Some("Desk #2".to_owned()));
+    assert_eq!(published(&world).iter().map(|p| p.name.as_str()).collect::<Vec<_>>(), ["Desk #2"]);
 }
 
 #[tokio::test(flavor = "multi_thread")]
