@@ -1,0 +1,32 @@
+{"result": "before", "same_as_brief": true, "layout": {"monitors": [{"connector": "HDMI-1", "vendor": "SAM", "product": "Odyssey G95NC", "current_mode": "3840x2160@60.000"}], "logical_monitors": [{"x": 0, "y": 0, "scale": 1.0, "transform": 0, "primary": true, "connectors": ["HDMI-1"]}], "layout_mode": 1}}
+{"result": "virtual", "connector": "Meta-0", "mode": "2752x2064@120.000"}
+=== vpp-load-full-4s: vpp/vpp --in-std bt709 --src gbm --fps 0 --seconds 4 --check 1 (22:33:37)
+loadavg before: 0.63 0.73 0.48 1/1281 32086; gpu_busy before: 100%
+libva info: VA-API version 1.23.0
+libva info: User environment variable requested driver 'radeonsi'
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/radeonsi_drv_video.so
+libva info: Found init function __vaDriverInit_1_23
+libva info: va_openDriver() returns 0
+loadavg before: 0.63 0.73 0.48 1/1286 32127
+device /dev/dri/by-path/pci-0000:79:00.0-render (/dev/dri/renderD130): VA-API 1.23, Mesa Gallium driver 26.0.8-1ubuntu0.3 for AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic)
+  vpp surface formats: NV12 YV12 I420 P010 P016 P012 Y800 UYVY YUY2 422V 444P RGBA BGRA RGBX BGRX ARGB AB30 AR30 XB30 XR30 [mem 0x68000001]
+  gbm bo: modifier 0x0200000000401b03, 1 plane(s), stride 11264, offset 0
+filled 8 BGRx gbm surfaces in 63 ms
+  NV12 output surface: modifier 0x0200000000401b03, Y pitch 2816, UV pitch 3072
+  pipeline caps: input standards 0 0 0 0; output standards 1 2 1 0; pipeline_flags 0x0 filter_flags 0x0
+config: src gbm, filter default, in-std bt709, out-std bt709, range full, siting center, sync surface, inflight 1, fps 0
+check frame 0: Y max 0 mean 0.0000 | Cb max 1 mean 0.0091 | Cr max 1 mean 0.0418 (|err| 0/1/2/>2: Y 5680128/0/0/0 Cb 1407109/12923/0/0 Cr 1360728/59304/0/0)
+    background pixel (0,0): Y 21 Cb 140 Cr 134 (reference 21 140 134)
+check overall (1 frames): Y max 0 mean 0.0000 | Cb max 1 mean 0.0091 | Cr max 1 mean 0.0418
+gpu_busy_percent during the run: mean 99%, max 100% (751 samples)
+run: 1315 conversions in 4.00 s = 328.7 conversions/s (0 ticks skipped); cpu 5.8% of one core
+  vaEndPicture -> sync (per conversion): n=1315 p50=2.226 p95=4.618 p99=6.105 max=6.629 mean=2.968 ms
+  CPU submit (map params + Begin/Render/End): n=1315 p50=0.073 p95=0.099 p99=0.117 max=0.207 mean=0.074 ms
+loadavg after: 0.58 0.71 0.47 1/1304 32235
+nvidia-guard: no non-AMD GPU node was opened
+gpu_busy during: mean 97%, max 100%, 42 samples
+loadavg after: 0.58 0.71 0.47 1/1287 32241; gpu_busy after: 0%; exit 0
+{"result": "gtkprobe", "ticks_per_s": [119, 120, 121, 120, 120, 120, 120, 120, 120, 120, 119], "guard_rc": -15}
+{"result": "pwprobe", "pictures_per_s": [111, 120, 120, 120, 120, 120, 120, 120, 120, 120, 119, 43], "modifier": "0x200000000401b03"}
+session closed by Mutter
+{"result": "after", "same_as_before": true, "same_as_brief": true, "layout": {"monitors": [{"connector": "HDMI-1", "vendor": "SAM", "product": "Odyssey G95NC", "current_mode": "3840x2160@60.000"}], "logical_monitors": [{"x": 0, "y": 0, "scale": 1.0, "transform": 0, "primary": true, "connectors": ["HDMI-1"]}], "layout_mode": 1}}
