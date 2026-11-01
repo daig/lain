@@ -99,6 +99,15 @@ pub fn derive(others: &[Placed], lain: &IRect) -> Option<Arrangement> {
 /// isn't there (matched by spec, or the same device on another connector) or the result would overlap another
 /// monitor.
 pub fn place(arrangement: &Arrangement, others: &[Placed], size: (i32, i32)) -> Option<IRect> {
+    let rect = position(arrangement, others, size)?;
+    if others.iter().any(|p| p.rect.overlaps(&rect)) {
+        return None;
+    }
+    Some(rect)
+}
+
+/// [`place`] without the overlap check.
+fn position(arrangement: &Arrangement, others: &[Placed], size: (i32, i32)) -> Option<IRect> {
     let anchor = others
         .iter()
         .find(|p| p.spec == arrangement.anchor)
@@ -112,9 +121,6 @@ pub fn place(arrangement: &Arrangement, others: &[Placed], size: (i32, i32)) -> 
         Edge::Bottom => IRect::new(a.x + along(a.width, w), a.max_y(), w, h),
         Edge::Top => IRect::new(a.x + along(a.width, w), a.y - h, w, h),
     };
-    if others.iter().any(|p| p.rect.overlaps(&rect)) {
-        return None;
-    }
     Some(rect)
 }
 
@@ -126,38 +132,107 @@ pub fn normalize(others: &[Placed], lain: &IRect) -> (i32, i32) {
     (-min_x, -min_y)
 }
 
+/// Two rectangles share a stretch of edge (Mutter's `mtk_rectangle_is_adjacent_to`): touching at a corner
+/// doesn't count.
+pub fn adjacent(a: &IRect, b: &IRect) -> bool {
+    let v_overlap = a.y < b.max_y() && b.y < a.max_y();
+    let h_overlap = a.x < b.max_x() && b.x < a.max_x();
+    ((a.x == b.max_x() || b.x == a.max_x()) && v_overlap) || ((a.y == b.max_y() || b.y == a.max_y()) && h_overlap)
+}
+
+/// Every rectangle reachable from every other through shared edges: Mutter refuses any other layout ("Logical
+/// monitors not adjacent", Mutter 50.1 `meta_verify_logical_monitor_config_list`, `is_connected_to_all`).
+pub fn connected(rects: &[IRect]) -> bool {
+    let Some(first) = rects.first() else { return true };
+    let mut reached = vec![false; rects.len()];
+    reached[0] = true;
+    let mut todo = vec![*first];
+    while let Some(r) = todo.pop() {
+        for (i, other) in rects.iter().enumerate() {
+            if !reached[i] && adjacent(&r, other) {
+                reached[i] = true;
+                todo.push(*other);
+            }
+        }
+    }
+    reached.into_iter().all(|r| r)
+}
+
 /// The arrangement to fall back on when there's none stored, or its anchor is gone: where lain's display is
 /// now (Mutter's own placement, to the right of the layout, on `create`), else to the right of the rightmost
 /// physical monitor, top-aligned.
 pub fn fallback(others: &[Placed], lain: &IRect) -> Option<Arrangement> {
-    derive(others, lain).or_else(|| {
-        others.iter().filter(|p| p.physical).max_by_key(|p| p.rect.max_x()).map(|p| Arrangement {
-            anchor: p.spec.clone(),
-            edge: Edge::Right,
-            offset: 0,
-        })
+    derive(others, lain).or_else(|| rightmost(others))
+}
+
+/// lain's display to the right of the rightmost physical monitor, top-aligned.
+fn rightmost(others: &[Placed]) -> Option<Arrangement> {
+    others.iter().filter(|p| p.physical).max_by_key(|p| p.rect.max_x()).map(|p| Arrangement {
+        anchor: p.spec.clone(),
+        edge: Edge::Right,
+        offset: 0,
     })
 }
 
-/// A full plan for lain's display: its new position (after normalization) and every other monitor's shift.
+/// A full plan for lain's display: its new position and every other monitor's, normalized.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Plan {
     /// What was applied: the stored arrangement, or the fallback.
     pub arrangement: Arrangement,
     pub lain_at: (i32, i32),
-    /// Added to every other logical monitor's position.
-    pub shift: (i32, i32),
+    /// Every other logical monitor's new position, by its first monitor's spec.
+    pub others_at: Vec<(MonitorSpec, (i32, i32))>,
+}
+
+/// The other monitors for lain's display going from `old` to `new`: as they are if that leaves the layout
+/// connected; else, where lain's display changes size in place, with the monitors beyond its old right (bottom)
+/// edge moved by the change in its width (height), so a display between two monitors still touches both. `None`
+/// if neither gives a connected layout without overlaps.
+fn close_gaps(others: &[Placed], old: &IRect, new: &IRect) -> Option<Vec<Placed>> {
+    let fits = |moved: &[Placed]| {
+        let rects: Vec<IRect> = moved.iter().map(|p| p.rect).chain([*new]).collect();
+        let overlap = rects.iter().enumerate().any(|(i, a)| rects[i + 1..].iter().any(|b| a.overlaps(b)));
+        !overlap && connected(&rects)
+    };
+    if fits(others) {
+        return Some(others.to_vec());
+    }
+    if (new.x, new.y) != (old.x, old.y) {
+        return None;
+    }
+    let (dx, dy) = (new.max_x() - old.max_x(), new.max_y() - old.max_y());
+    let moved: Vec<Placed> = others
+        .iter()
+        .map(|p| {
+            let mut p = p.clone();
+            if p.rect.x >= old.max_x() {
+                p.rect.x += dx;
+            }
+            if p.rect.y >= old.max_y() {
+                p.rect.y += dy;
+            }
+            p
+        })
+        .collect();
+    fits(&moved).then_some(moved)
 }
 
 /// Plans lain's display at `size` (its logical size at the spec's scale): `stored` if it can be placed, else
-/// the fallback.
+/// the fallback (where lain's display is now, else right of the rightmost physical monitor). Each one must
+/// give a layout Mutter takes (no overlaps, connected: [`close_gaps`]); `None` if none does.
 pub fn plan(stored: Option<&Arrangement>, others: &[Placed], lain_now: &IRect, size: (i32, i32)) -> Option<Plan> {
-    let try_one = |a: &Arrangement| place(a, others, size).map(|r| (a.clone(), r));
-    let (wanted, rect) = stored.and_then(try_one).or_else(|| fallback(others, lain_now).as_ref().and_then(try_one))?;
+    let candidates = [stored.cloned(), derive(others, lain_now), rightmost(others)];
+    let (wanted, rect, moved) = candidates.into_iter().flatten().find_map(|a| {
+        // Overlaps are checked after the gaps are closed: a display growing in place pushes its neighbours.
+        let rect = position(&a, others, size)?;
+        let moved = close_gaps(others, lain_now, &rect)?;
+        Some((a, rect, moved))
+    })?;
     // What the layout will show (the offset may have been clamped), so it isn't mistaken for the owner's.
-    let arrangement = derive(others, &rect).unwrap_or(wanted);
-    let shift = normalize(others, &rect);
-    Some(Plan { arrangement, lain_at: (rect.x + shift.0, rect.y + shift.1), shift })
+    let arrangement = derive(&moved, &rect).unwrap_or(wanted);
+    let (sx, sy) = normalize(&moved, &rect);
+    let others_at = moved.iter().map(|p| (p.spec.clone(), (p.rect.x + sx, p.rect.y + sy))).collect();
+    Some(Plan { arrangement, lain_at: (rect.x + sx, rect.y + sy), others_at })
 }
 
 /// Why the tracker wants a layout applied.
@@ -195,15 +270,21 @@ pub struct View {
 /// The arrangement rules (lead's decisions 3 and 4), apart from D-Bus so they can be tested:
 /// - re-apply the stored arrangement after `create` and whenever the set of monitors differs from the one it
 ///   was last applied for;
-/// - re-apply the spec's scale whenever lain's display is at another one (once per layout, so a refusal can't
-///   loop);
+/// - re-apply the spec's scale whenever lain's display is at another one (once per drift: not again for the
+///   same layout until the spec's scale has been seen, so a refusal can't loop);
 /// - record an arrangement only once it has been stable for [`STABLE_FOR`], at the spec's scale, in the set
-///   last applied for, and different from both the stored one and the one lain itself last applied.
+///   last applied for, different from both the stored one and the one lain itself last applied, and only after
+///   lain's last apply in that set took effect: after a refusal the layout is Mutter's placement, not the
+///   owner's.
+///
+/// A spec scale of 0 counts as 1, as in `DisplaySpec::logical_size`.
 #[derive(Debug, Default)]
 pub struct Tracker {
     stored: Option<Arrangement>,
     applied_set: Option<BTreeSet<MonitorSpec>>,
     applied: Option<Arrangement>,
+    /// lain's last apply in `applied_set` was refused (or couldn't be planned).
+    refused: bool,
     candidate: Option<(Arrangement, Instant)>,
     scale_tried: Option<(BTreeSet<MonitorSpec>, Option<Arrangement>)>,
     last: Option<View>,
@@ -222,17 +303,26 @@ impl Tracker {
     pub fn reset(&mut self) {
         self.applied_set = None;
         self.applied = None;
+        self.refused = false;
         self.candidate = None;
         self.scale_tried = None;
         self.last = None;
     }
 
-    /// lain applied (or tried to apply) a layout for `set`, placing its display at `arrangement`. A refused
-    /// apply counts too, so a layout Mutter won't take isn't retried until the monitors change.
-    pub fn applied(&mut self, set: BTreeSet<MonitorSpec>, arrangement: Option<Arrangement>) {
+    /// lain applied (`accepted`) or tried to apply a layout for `set`, placing its display at `arrangement`. A
+    /// refused apply counts too, so a layout Mutter won't take isn't retried until the monitors change; but
+    /// nothing is recorded in `set` until an apply there is accepted (review A1).
+    pub fn applied(&mut self, set: BTreeSet<MonitorSpec>, arrangement: Option<Arrangement>, accepted: bool) {
         self.applied_set = Some(set);
         self.applied = arrangement;
+        self.refused = !accepted;
         self.candidate = None;
+    }
+
+    /// lain's last apply for the current set was refused: a re-scale should still aim for the stored
+    /// arrangement, which the layout doesn't show.
+    pub fn refused(&self) -> bool {
+        self.refused
     }
 
     /// The decision for a new layout.
@@ -242,7 +332,7 @@ impl Tracker {
             self.candidate = None;
             return Decision::Apply(Apply::Stored);
         }
-        if (view.scale - f64::from(view.spec_scale)).abs() > 1e-3 {
+        if (view.scale - f64::from(view.spec_scale.max(1))).abs() > 1e-3 {
             self.candidate = None;
             let key = (view.set.clone(), view.current.clone());
             if self.scale_tried.as_ref() == Some(&key) {
@@ -250,6 +340,12 @@ impl Tracker {
             }
             self.scale_tried = Some(key);
             return Decision::Apply(Apply::Scale);
+        }
+        // At the spec's scale: a later drift is a new one (review A2).
+        self.scale_tried = None;
+        if self.refused {
+            self.candidate = None;
+            return Decision::Nothing;
         }
         let Some(current) = view.current else {
             self.candidate = None;
@@ -431,7 +527,72 @@ mod tests {
         let stored = Arrangement { anchor: hdmi(), edge: Edge::Left, offset: 0 };
         let now = IRect::new(3840, 0, 2752, 2064);
         let p = plan(Some(&stored), &others, &now, (1376, 1032)).unwrap();
-        assert_eq!(p, Plan { arrangement: stored, lain_at: (0, 0), shift: (1376, 0) });
+        assert_eq!(p, Plan { arrangement: stored, lain_at: (0, 0), others_at: vec![(hdmi(), (1376, 0))] });
+    }
+
+    fn rects_after(p: &Plan, size: (i32, i32), others: &[Placed]) -> Vec<IRect> {
+        let mut rects: Vec<IRect> = p
+            .others_at
+            .iter()
+            .map(|(s, (x, y))| {
+                let r = others.iter().find(|o| o.spec == *s).unwrap().rect;
+                IRect::new(*x, *y, r.width, r.height)
+            })
+            .collect();
+        rects.push(IRect::new(p.lain_at.0, p.lain_at.1, size.0, size.1));
+        rects
+    }
+
+    /// Review A3: A | lain | B with lain at scale 1; re-scaling it in place left B 1376 px away, which Mutter
+    /// refuses ("Logical monitors not adjacent").
+    #[test]
+    fn rescaling_a_display_between_two_monitors_leaves_no_gap() {
+        let a = MonitorSpec::new("DP-1", "DEL", "U2720Q", "1");
+        let b = MonitorSpec::new("DP-2", "DEL", "U2720Q", "2");
+        let others = vec![
+            phys(a.clone(), IRect::new(0, 0, 1920, 1080), true),
+            phys(b.clone(), IRect::new(1920 + 2752, 0, 1920, 1080), false),
+        ];
+        let lain_now = IRect::new(1920, 0, 2752, 2064);
+        let p = plan(None, &others, &lain_now, (1376, 1032)).unwrap();
+        assert_eq!(p.lain_at, (1920, 0));
+        assert_eq!(p.others_at, vec![(a, (0, 0)), (b, (1920 + 1376, 0))]);
+        assert!(connected(&rects_after(&p, (1376, 1032), &others)));
+        // Growing in place pushes the neighbour instead of overlapping it.
+        let lain_now = IRect::new(1920, 0, 1376, 1032);
+        let others = vec![others[0].clone(), phys(others[1].spec.clone(), IRect::new(3296, 0, 1920, 1080), false)];
+        let p = plan(None, &others, &lain_now, (2752, 2064)).unwrap();
+        assert_eq!(p.others_at[1].1, (1920 + 2752, 0));
+        assert!(connected(&rects_after(&p, (2752, 2064), &others)));
+    }
+
+    /// The stored arrangement would cut the layout in two (lain was the only link): the fallback is used.
+    #[test]
+    fn a_stored_arrangement_that_disconnects_the_layout_falls_back() {
+        let a = MonitorSpec::new("DP-1", "DEL", "U2720Q", "1");
+        let b = MonitorSpec::new("DP-2", "DEL", "U2720Q", "2");
+        let others = vec![
+            phys(a.clone(), IRect::new(0, 0, 1920, 1080), true),
+            phys(b, IRect::new(1920 + 1376, 0, 1920, 1080), false),
+        ];
+        let below_a = Arrangement { anchor: a.clone(), edge: Edge::Bottom, offset: 0 };
+        let lain_now = IRect::new(1920, 0, 1376, 1032);
+        let p = plan(Some(&below_a), &others, &lain_now, (1376, 1032)).unwrap();
+        assert_eq!(p.arrangement, Arrangement { anchor: a, edge: Edge::Right, offset: 0 });
+        assert!(connected(&rects_after(&p, (1376, 1032), &others)));
+    }
+
+    #[test]
+    fn connectivity_and_adjacency() {
+        let a = IRect::new(0, 0, 10, 10);
+        assert!(adjacent(&a, &IRect::new(10, 5, 5, 5)));
+        assert!(adjacent(&a, &IRect::new(2, -3, 5, 3)));
+        assert!(!adjacent(&a, &IRect::new(10, 10, 5, 5)), "a corner isn't an edge");
+        assert!(!adjacent(&a, &IRect::new(11, 0, 5, 5)));
+        assert!(connected(&[a, IRect::new(10, 0, 5, 5), IRect::new(15, 0, 5, 5)]));
+        // Two pairs, each adjacent within itself, aren't connected.
+        assert!(!connected(&[a, IRect::new(10, 0, 5, 5), IRect::new(30, 0, 5, 5), IRect::new(35, 0, 5, 5)]));
+        assert!(connected(&[a]));
     }
 
     #[test]
@@ -442,7 +603,7 @@ mod tests {
         assert_eq!(lain, IRect::new(3840, 0, 2752, 2064));
         let p = plan(None, &others, &lain, (1376, 1032)).unwrap();
         assert_eq!(p.lain_at, (3840, 0));
-        assert_eq!(p.shift, (0, 0));
+        assert_eq!(p.others_at, vec![(hdmi(), (0, 0))]);
         assert_eq!(p.arrangement, Arrangement { anchor: hdmi(), edge: Edge::Right, offset: 0 });
         // A stored arrangement whose anchor is gone falls back too.
         let gone = Arrangement { anchor: MonitorSpec::new("DP-9", "X", "Y", "Z"), edge: Edge::Bottom, offset: 0 };
@@ -467,15 +628,15 @@ mod tests {
         let two = set(&["HDMI-1", "Meta-0", "DP-1"]);
         let mut t = Tracker::new(Some(arr(0)));
         assert_eq!(t.on_layout(t0, view(&one, 1.0, Some(arr(0)))), Decision::Apply(Apply::Stored));
-        t.applied(one.clone(), Some(arr(0)));
+        t.applied(one.clone(), Some(arr(0)), true);
         assert_eq!(t.on_layout(t0, view(&one, 2.0, Some(arr(0)))), Decision::Nothing);
         // A monitor appears: Mutter re-derives the layout, lain re-applies.
         assert_eq!(t.on_layout(t0, view(&two, 2.0, Some(arr(500)))), Decision::Apply(Apply::Stored));
-        t.applied(two.clone(), Some(arr(0)));
+        t.applied(two.clone(), Some(arr(0)), true);
         // And when it goes away again.
         assert_eq!(t.on_layout(t0, view(&one, 2.0, Some(arr(0)))), Decision::Apply(Apply::Stored));
         // A new display starts over.
-        t.applied(one.clone(), Some(arr(0)));
+        t.applied(one.clone(), Some(arr(0)), true);
         t.reset();
         assert_eq!(t.on_layout(t0, view(&one, 2.0, Some(arr(0)))), Decision::Apply(Apply::Stored));
     }
@@ -485,7 +646,7 @@ mod tests {
         let t0 = Instant::now();
         let one = set(&["HDMI-1", "Meta-0"]);
         let mut t = Tracker::new(None);
-        t.applied(one.clone(), Some(arr(0)));
+        t.applied(one.clone(), Some(arr(0)), true);
         assert_eq!(t.on_layout(t0, view(&one, 1.0, Some(arr(0)))), Decision::Apply(Apply::Scale));
         // Mutter refused, or reverted: not retried for the same layout...
         assert_eq!(t.on_layout(t0, view(&one, 1.0, Some(arr(0)))), Decision::Nothing);
@@ -494,12 +655,58 @@ mod tests {
         assert_eq!(t.on_tick(t0 + STABLE_FOR * 2), Decision::Nothing);
     }
 
+    /// Review A2: the guard covered the whole display's life, so a second drift to the same layout stayed.
+    #[test]
+    fn the_scale_is_reapplied_every_time_it_drifts_not_only_once() {
+        let t0 = Instant::now();
+        let one = set(&["HDMI-1", "Meta-0"]);
+        let mut t = Tracker::new(None);
+        t.applied(one.clone(), Some(arr(0)), true);
+        assert_eq!(t.on_layout(t0, view(&one, 1.0, Some(arr(0)))), Decision::Apply(Apply::Scale));
+        t.applied(one.clone(), Some(arr(0)), true);
+        assert_eq!(t.on_layout(t0, view(&one, 2.0, Some(arr(0)))), Decision::Nothing);
+        let later = t0 + Duration::from_secs(60);
+        assert_eq!(t.on_layout(later, view(&one, 1.0, Some(arr(0)))), Decision::Apply(Apply::Scale));
+    }
+
+    /// Review A4: `DisplaySpec` treats scale 0 as 1.
+    #[test]
+    fn spec_scale_zero_is_treated_as_one() {
+        let one = set(&["HDMI-1", "Meta-0"]);
+        let mut t = Tracker::new(None);
+        t.applied(one.clone(), Some(arr(0)), true);
+        let v = View { set: one, scale: 1.0, spec_scale: 0, current: Some(arr(0)) };
+        assert_eq!(t.on_layout(Instant::now(), v), Decision::Nothing);
+    }
+
+    /// Review A1: after a refused apply the layout shows Mutter's placement, which must not become the owner's.
+    #[test]
+    fn a_refused_apply_does_not_record_mutters_placement_as_the_owners() {
+        let t0 = Instant::now();
+        let one = set(&["HDMI-1", "Meta-0"]);
+        let stored = Arrangement { anchor: hdmi(), edge: Edge::Left, offset: 0 };
+        let mut t = Tracker::new(Some(stored.clone()));
+        assert_eq!(t.on_layout(t0, view(&one, 2.0, Some(arr(0)))), Decision::Apply(Apply::Stored));
+        t.applied(one.clone(), Some(stored.clone()), false);
+        assert!(t.refused());
+        let soon = t0 + Duration::from_millis(5);
+        assert_eq!(t.on_layout(soon, view(&one, 2.0, Some(arr(0)))), Decision::Nothing);
+        assert_eq!(t.on_tick(soon + STABLE_FOR), Decision::Nothing);
+        assert_eq!(t.stored(), Some(&stored));
+        // Still not retried in this set; a re-scale still asks (and aims for the stored arrangement).
+        assert_eq!(t.on_layout(soon, view(&one, 1.0, Some(arr(0)))), Decision::Apply(Apply::Scale));
+        // An accepted apply in the set lets recording resume.
+        t.applied(one.clone(), Some(stored.clone()), true);
+        assert!(!t.refused());
+        assert_eq!(t.on_layout(soon, view(&one, 2.0, Some(arr(300)))), Decision::WakeAt(soon + STABLE_FOR));
+    }
+
     #[test]
     fn records_only_after_the_revert_timeout() {
         let t0 = Instant::now();
         let one = set(&["HDMI-1", "Meta-0"]);
         let mut t = Tracker::new(None);
-        t.applied(one.clone(), Some(arr(0)));
+        t.applied(one.clone(), Some(arr(0)), true);
         // lain's own layout is never recorded.
         assert_eq!(t.on_layout(t0, view(&one, 2.0, Some(arr(0)))), Decision::Nothing);
         // The owner moves it (GNOME Settings, method 2): a candidate, not yet the owner's.
@@ -517,7 +724,7 @@ mod tests {
         let t0 = Instant::now();
         let one = set(&["HDMI-1", "Meta-0"]);
         let mut t = Tracker::new(Some(arr(0)));
-        t.applied(one.clone(), Some(arr(0)));
+        t.applied(one.clone(), Some(arr(0)), true);
         assert_eq!(t.on_layout(t0, view(&one, 2.0, Some(arr(300)))), Decision::WakeAt(t0 + STABLE_FOR));
         // GNOME reverts after its 20 s.
         let back = t0 + Duration::from_secs(20);
@@ -537,7 +744,7 @@ mod tests {
         let t0 = Instant::now();
         let one = set(&["HDMI-1", "Meta-0"]);
         let mut t = Tracker::new(None);
-        t.applied(one.clone(), Some(arr(0)));
+        t.applied(one.clone(), Some(arr(0)), true);
         assert_eq!(t.on_layout(t0, view(&one, 2.0, None)), Decision::Nothing);
         assert_eq!(t.on_tick(t0 + STABLE_FOR), Decision::Nothing);
         assert_eq!(t.on_layout(t0, view(&one, 1.0, Some(arr(300)))), Decision::Apply(Apply::Scale));

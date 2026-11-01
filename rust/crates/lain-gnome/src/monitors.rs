@@ -3,6 +3,7 @@
 //! re-scale, record), applying with method 1 only. Swift's counterpart is `DisplayLayoutProvider` over
 //! `CGGetActiveDisplayList`, which never applies anything.
 
+use std::collections::HashSet;
 use std::sync::Arc;
 
 use futures::StreamExt;
@@ -15,14 +16,21 @@ use crate::arrangement::{self, Apply, Decision, Store, Tracker, View};
 use crate::bus;
 use crate::cursor::{CursorState, StreamGeometry};
 use crate::desktop::{self, Desktop, IdMap};
-use crate::display_config::{self, DisplayState, RawState, apply_args, config_with, logical_size, parse_state};
+use crate::display_config::{
+    self, DisplayState, MonitorSpec, RawState, apply_args, config_with, logical_size, parse_state,
+};
 
 /// What the display tells the desktop task.
 #[derive(Debug)]
 pub enum Command {
-    /// lain's display is `connector`, to be kept at `spec_scale`: mark it, and arrange it now.
+    /// lain's display is being created; `known` are the monitors there before. Until `SetLain` or `ClearLain`,
+    /// a new virtual monitor is kept out of `monitors()`, so it is never listed as an ordinary monitor before
+    /// it is marked as lain's (review A5).
+    Creating { known: HashSet<MonitorSpec> },
+    /// lain's display is `connector`, to be kept at `spec_scale` (0 counts as 1): mark it, and arrange it now.
     SetLain { connector: String, spec_scale: u32 },
-    /// lain's display is gone (destroyed, or ended by Mutter): unmark it at once.
+    /// lain's display is gone (destroyed, ended by Mutter, or its creation given up): its entry leaves
+    /// `monitors()` at once, and stays out while Mutter still lists that monitor.
     ClearLain,
 }
 
@@ -51,6 +59,10 @@ struct Task {
     tracker: Tracker,
     store: Option<Store>,
     lain: Option<Lain>,
+    /// While lain's display is being created: the monitors there before.
+    creating: Option<HashSet<MonitorSpec>>,
+    /// lain's former displays, kept out of `monitors()` until Mutter drops them.
+    gone: HashSet<MonitorSpec>,
     state: Option<DisplayState>,
     wake: Option<Instant>,
     cursor: Arc<CursorState>,
@@ -95,6 +107,8 @@ pub async fn spawn(
         tracker: Tracker::new(stored),
         store,
         lain: None,
+        creating: None,
+        gone: HashSet::new(),
         state: Some(state),
         wake: None,
         cursor,
@@ -123,14 +137,24 @@ impl Task {
                 }
                 command = commands.recv() => match command {
                     None => break,
+                    Some(Command::Creating { known }) => {
+                        self.creating = Some(known);
+                        self.publish();
+                    }
                     Some(Command::SetLain { connector, spec_scale }) => {
-                        self.lain = Some(Lain { connector, spec_scale });
+                        self.creating = None;
+                        self.lain = Some(Lain { connector, spec_scale: spec_scale.max(1) });
                         self.tracker.reset();
                         self.wake = None;
                         self.refresh().await;
                     }
                     Some(Command::ClearLain) => {
-                        self.lain = None;
+                        self.creating = None;
+                        if let Some(lain) = self.lain.take()
+                            && let Some(m) = self.state.as_ref().and_then(|s| s.monitor(&lain.connector))
+                        {
+                            self.gone.insert(m.spec.clone());
+                        }
                         self.wake = None;
                         self.publish();
                     }
@@ -167,11 +191,12 @@ impl Task {
 
     fn publish(&mut self) {
         let Some(state) = self.state.as_ref() else { return };
+        self.gone.retain(|s| state.monitors.iter().any(|m| m.spec == *s));
         let lain = self.lain_connector().map(str::to_owned);
         let desktop = desktop::build(state, lain.as_deref(), &mut self.ids);
         let geometry = desktop.lain().map(|m| StreamGeometry { bounds: m.monitor.bounds, scale: m.scale });
         self.cursor.set_geometry(geometry);
-        let monitors = desktop.contract_monitors();
+        let monitors = listed(&desktop, self.creating.as_ref(), &self.gone);
         self.monitors.send_if_modified(|m| {
             let changed = *m != monitors;
             if changed {
@@ -211,35 +236,108 @@ impl Task {
         }
     }
 
-    /// Applies lain's arrangement at the spec's scale, with method 1 (`display_config::APPLY_METHOD`).
+    /// Applies lain's arrangement at the spec's scale, with method 1 (`display_config::APPLY_METHOD`). A refusal
+    /// for a stale serial (a `MonitorsChanged` on its way) is retried once on a fresh `GetCurrentState`.
     async fn apply(&mut self, kind: Apply) {
-        let (Some(lain), Some(state)) = (self.lain.as_ref(), self.state.as_ref()) else { return };
-        let set = state.monitor_set();
-        let planned = (|| {
-            let logical = state.logical_of(&lain.connector)?;
-            let mode = state.monitor(&lain.connector)?.current_mode()?;
-            let size =
-                logical_size(mode.width, mode.height, f64::from(lain.spec_scale), logical.transform, state.layout_mode);
-            let (others, rect) = arrangement::split(state, &lain.connector)?;
-            let stored = match kind {
-                Apply::Stored => self.tracker.stored(),
-                Apply::Scale => None,
+        for attempt in 0..2 {
+            let (Some(lain), Some(state)) = (self.lain.as_ref(), self.state.as_ref()) else { return };
+            let set = state.monitor_set();
+            let spec_scale = f64::from(lain.spec_scale);
+            let planned = (|| {
+                let logical = state.logical_of(&lain.connector)?;
+                let mode = state.monitor(&lain.connector)?.current_mode()?;
+                let size = logical_size(mode.width, mode.height, spec_scale, logical.transform, state.layout_mode);
+                let (others, rect) = arrangement::split(state, &lain.connector)?;
+                let stored = match kind {
+                    Apply::Stored => self.tracker.stored(),
+                    // Keeping lain's display where it is, unless that is Mutter's placement after a refusal.
+                    Apply::Scale if self.tracker.refused() => self.tracker.stored(),
+                    Apply::Scale => None,
+                };
+                let plan = arrangement::plan(stored, &others, &rect, size)?;
+                let config = config_with(state, &lain.connector, plan.lain_at, spec_scale, &plan.others_at)?;
+                Some((plan, config))
+            })();
+            let Some((plan, config)) = planned else {
+                tracing::warn!(connector = lain.connector, "can't plan lain's display's arrangement");
+                self.tracker.applied(set, None, false);
+                return;
             };
-            let plan = arrangement::plan(stored, &others, &rect, size)?;
-            let config = config_with(state, &lain.connector, plan.lain_at, f64::from(lain.spec_scale), plan.shift)?;
-            Some((plan, config))
-        })();
-        let Some((plan, config)) = planned else {
-            tracing::warn!(connector = lain.connector, "can't plan lain's display's arrangement");
-            self.tracker.applied(set, None);
-            return;
-        };
-        let args = apply_args(state.serial, &config);
-        tracing::debug!(?kind, ?plan, "ApplyMonitorsConfig (temporary)");
-        if let Err(e) = self.config.call::<_, _, ()>("ApplyMonitorsConfig", &args).await {
-            tracing::warn!(?kind, "ApplyMonitorsConfig refused: {e}");
+            let args = apply_args(state, &config);
+            tracing::debug!(?kind, ?plan, "ApplyMonitorsConfig (temporary)");
+            match self.config.call::<_, _, ()>("ApplyMonitorsConfig", &args).await {
+                Ok(()) => {
+                    self.tracker.applied(set, Some(plan.arrangement), true);
+                    return;
+                }
+                Err(e) if attempt == 0 && is_stale(&e) => {
+                    tracing::debug!(?kind, "ApplyMonitorsConfig: stale serial; re-reading the state");
+                    match current_state(&self.config).await {
+                        Ok(state) => {
+                            self.state = Some(state);
+                            self.publish();
+                        }
+                        Err(e) => {
+                            tracing::warn!("DisplayConfig.GetCurrentState: {e}");
+                            self.tracker.applied(set, Some(plan.arrangement), false);
+                            return;
+                        }
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(?kind, "ApplyMonitorsConfig refused: {e}");
+                    // Counted, so a layout Mutter won't take isn't retried until the monitors change.
+                    self.tracker.applied(set, Some(plan.arrangement), false);
+                    return;
+                }
+            }
         }
-        // Counted even when refused, so a layout Mutter won't take isn't retried until the monitors change.
-        self.tracker.applied(set, Some(plan.arrangement));
+    }
+}
+
+/// Mutter's refusal of a configuration made against an older serial ("The requested configuration is based on
+/// stale information", Mutter 50.1 `handle_apply_monitors_config`).
+fn is_stale(e: &zbus::Error) -> bool {
+    e.to_string().contains("stale information")
+}
+
+/// The contract's monitors: every one but a new virtual monitor while lain's is being created, and lain's former
+/// displays still listed by Mutter.
+pub fn listed(desktop: &Desktop, creating: Option<&HashSet<MonitorSpec>>, gone: &HashSet<MonitorSpec>) -> Vec<Monitor> {
+    desktop
+        .monitors
+        .iter()
+        .filter(|m| !gone.contains(&m.spec))
+        .filter(|m| !creating.is_some_and(|known| m.is_virtual && !m.monitor.lain && !known.contains(&m.spec)))
+        .map(|m| m.monitor.clone())
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::display_config::tests::reference_raw;
+
+    /// Review A5: Mutter still lists lain's display after `ClearLain`, and lists the new one before `SetLain`.
+    #[test]
+    fn lains_display_is_never_listed_as_an_ordinary_monitor() {
+        let state = parse_state(reference_raw(2.0));
+        let mut ids = IdMap::default();
+        let unmarked = desktop::build(&state, None, &mut ids);
+        let marked = desktop::build(&state, Some("Meta-0"), &mut ids);
+        let meta = state.monitor("Meta-0").unwrap().spec.clone();
+        let hdmi = state.monitor("HDMI-1").unwrap().spec.clone();
+        let none = HashSet::new();
+        assert_eq!(listed(&marked, None, &none).len(), 2);
+        // Being created: the new virtual monitor is held back until it is marked.
+        let known = HashSet::from([hdmi.clone()]);
+        assert_eq!(listed(&unmarked, Some(&known), &none), vec![unmarked.monitors[0].monitor.clone()]);
+        assert_eq!(listed(&marked, Some(&known), &none).len(), 2);
+        // A virtual monitor that was there before (another client's) stays listed.
+        let known = HashSet::from([hdmi, meta.clone()]);
+        assert_eq!(listed(&unmarked, Some(&known), &none).len(), 2);
+        // Gone: out while Mutter still lists it.
+        let gone = HashSet::from([meta]);
+        assert_eq!(listed(&unmarked, None, &gone), vec![unmarked.monitors[0].monitor.clone()]);
     }
 }

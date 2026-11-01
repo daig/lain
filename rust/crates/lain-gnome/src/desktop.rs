@@ -5,7 +5,7 @@ use std::collections::HashMap;
 
 use lain_platform::{Monitor, RectF};
 
-use crate::display_config::{DisplayState, IRect, MonitorSpec};
+use crate::display_config::{DisplayState, IRect, LayoutMode, MonitorSpec};
 
 /// Host-run-stable monitor ids, keyed by monitor spec: a monitor keeps its id while it exists and gets it back
 /// if it returns; an id never goes to another spec. lain's virtual monitor has a new serial every session, so
@@ -45,6 +45,7 @@ pub struct DesktopMonitor {
 pub struct Desktop {
     pub serial: u32,
     pub monitors: Vec<DesktopMonitor>,
+    pub layout_mode: LayoutMode,
 }
 
 impl Desktop {
@@ -106,7 +107,7 @@ pub fn build(state: &DisplayState, lain_connector: Option<&str>, ids: &mut IdMap
             })
         })
         .collect();
-    Desktop { serial: state.serial, monitors }
+    Desktop { serial: state.serial, monitors, layout_mode: state.layout_mode }
 }
 
 #[cfg(test)]

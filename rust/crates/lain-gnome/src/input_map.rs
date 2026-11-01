@@ -23,7 +23,8 @@ pub fn source_flag(source: ScrollSource) -> u32 {
 /// One call on the input session.
 #[derive(Debug, Clone, PartialEq)]
 pub enum InputCall {
-    /// `NotifyPointerMotionAbsolute(s stream, d x, d y)`: stream-local logical pixels.
+    /// `NotifyPointerMotionAbsolute(s stream, d x, d y)`: the stream's own pixels from its top-left (for a
+    /// `RecordMonitor` stream in logical layout mode, local logical pixels times the monitor's scale).
     MotionAbsolute { stream: String, x: f64, y: f64 },
     /// `NotifyKeyboardKeycode(u keycode, b state)`: an evdev code.
     Key { code: u32, down: bool },
@@ -50,6 +51,12 @@ pub struct Target {
     pub bounds: RectF,
     pub stream: String,
     pub primary: bool,
+    /// The stream's pixels per global unit: the monitor's scale in logical layout mode, 1 in physical mode.
+    /// A `RecordMonitor` stream takes `NotifyPointerMotionAbsolute` in its own (device) pixels and divides them
+    /// by the scale whenever stage views are scaled, which is logical layout mode (Mutter 50.1,
+    /// `meta_screen_cast_monitor_stream_transform_position`, `meta_backend_is_stage_views_scaled`). Only a
+    /// `RecordVirtual` stream adds the coordinates unscaled, which is what spike B measured at scale 2 (review DB1).
+    pub scale: f64,
 }
 
 /// GNOME Shell's top-panel pointer barrier (spike B, §4): on the primary monitor's right edge, from its top to
@@ -72,7 +79,8 @@ impl Default for Barrier {
     }
 }
 
-/// Maps actions to calls, tracking the pointer it last sent and the buttons held.
+/// Maps actions to calls, tracking the pointer it last sent and the buttons held. Every action goes through it,
+/// even one that is then dropped for want of a session, so the buttons it tracks stay true.
 #[derive(Debug, Default)]
 pub struct Mapper {
     targets: Vec<Target>,
@@ -139,9 +147,23 @@ impl Mapper {
         calls
     }
 
+    /// The motion to `p` on target `index`: stream pixels from the monitor's top-left ([`Target::scale`]).
     fn motion(&self, index: usize, p: PointF) -> InputCall {
         let t = &self.targets[index];
-        InputCall::MotionAbsolute { stream: t.stream.clone(), x: p.x - t.bounds.x, y: p.y - t.bounds.y }
+        let s = if t.scale > 0.0 { t.scale } else { 1.0 };
+        InputCall::MotionAbsolute { stream: t.stream.clone(), x: (p.x - t.bounds.x) * s, y: (p.y - t.bounds.y) * s }
+    }
+
+    /// The session that held the buttons is gone (Mutter releases everything with its virtual devices), and
+    /// the pointer may have moved meanwhile: forget both (review L3).
+    pub fn session_ended(&mut self) {
+        self.held_buttons.clear();
+        self.pointer = None;
+    }
+
+    /// A new session replaced the old one, whose stop released any held button.
+    pub fn buttons_released(&mut self) {
+        self.held_buttons.clear();
     }
 
     /// The monitor under `p` (half-open), else the nearest one with `p` clamped into it.
@@ -197,11 +219,12 @@ mod tests {
     const HDMI: &str = "/org/gnome/Mutter/ScreenCast/Stream/1";
     const LAIN: &str = "/org/gnome/Mutter/ScreenCast/Stream/2";
 
+    /// HDMI-1 at scale 1 and lain's 2752×2064 display at `lain` (1376 wide at scale 2, 2752 at scale 1).
     fn mapper(lain: RectF) -> Mapper {
         let mut m = Mapper::new(Barrier::default());
         m.set_targets(vec![
-            Target { bounds: RectF::new(0.0, 0.0, 3840.0, 2160.0), stream: HDMI.into(), primary: true },
-            Target { bounds: lain, stream: LAIN.into(), primary: false },
+            Target { bounds: RectF::new(0.0, 0.0, 3840.0, 2160.0), stream: HDMI.into(), primary: true, scale: 1.0 },
+            Target { bounds: lain, stream: LAIN.into(), primary: false, scale: 2752.0 / lain.width },
         ]);
         m
     }
@@ -210,16 +233,27 @@ mod tests {
         InputCall::MotionAbsolute { stream: stream.into(), x, y }
     }
 
+    /// Review DB1: a `RecordMonitor` stream takes its own pixels, which Mutter divides by the scale.
     #[test]
-    fn global_to_stream_local_at_scale_two() {
-        // lain's display right of HDMI-1 at scale 2: 1376×1032 logical at (3840, 0).
+    fn global_to_stream_pixels_at_scale_two() {
+        // lain's display right of HDMI-1 at scale 2: 1376×1032 logical at (3840, 0), a 2752×2064 stream.
         let mut m = mapper(RectF::new(3840.0, 0.0, 1376.0, 1032.0));
         let centre = InputAction::MoveTo(PointF::new(3840.0 + 688.0, 516.0));
-        assert_eq!(m.map(&centre, None), vec![motion(LAIN, 688.0, 516.0)]);
-        // Fractions pass through; the right edge belongs to nothing, so it's clamped just inside.
+        assert_eq!(m.map(&centre, None), vec![motion(LAIN, 1376.0, 1032.0)]);
+        // Fractions pass through, scaled.
         let frac = InputAction::MoveTo(PointF::new(3840.0 + 100.5, 200.25));
-        assert_eq!(m.map(&frac, None), vec![motion(LAIN, 100.5, 200.25)]);
+        assert_eq!(m.map(&frac, None), vec![motion(LAIN, 201.0, 400.5)]);
         assert_eq!(m.map(&InputAction::MoveTo(PointF::new(100.0, 1564.0)), None), vec![motion(HDMI, 100.0, 1564.0)]);
+    }
+
+    #[test]
+    fn a_fractionally_scaled_physical_monitor_takes_its_device_pixels() {
+        // A HiDPI laptop panel at 1.5: 2560×1600 logical, a 3840×2400 stream.
+        let mut m = Mapper::new(Barrier::default());
+        let panel =
+            Target { bounds: RectF::new(0.0, 0.0, 2560.0, 1600.0), stream: HDMI.into(), primary: true, scale: 1.5 };
+        m.set_targets(vec![panel]);
+        assert_eq!(m.map(&InputAction::MoveTo(PointF::new(1280.0, 800.0)), None), vec![motion(HDMI, 1920.0, 1200.0)]);
     }
 
     #[test]
@@ -237,8 +271,8 @@ mod tests {
         // Below lain's display, right of HDMI-1's bottom: nearer lain's display.
         let calls = m.map(&InputAction::MoveTo(PointF::new(5000.0, 1100.0)), None);
         let InputCall::MotionAbsolute { stream, x, y } = &calls[0] else { panic!() };
-        assert_eq!((stream.as_str(), *x), (LAIN, 1160.0));
-        assert!(*y < 1032.0 && *y > 1031.9);
+        assert_eq!((stream.as_str(), *x), (LAIN, 2320.0));
+        assert!(*y < 2064.0 && *y > 2063.9);
         // Negative coordinates: onto HDMI-1's corner.
         assert_eq!(m.map(&InputAction::MoveTo(PointF::new(-50.0, -50.0)), None), vec![motion(HDMI, 0.0, 0.0)]);
         // No monitors, no calls.
@@ -252,11 +286,11 @@ mod tests {
         // Spike B's stuck move: from (391, 1564) to lain's (10, 10), crossing x = 3840 at y ≈ 14.
         m.map(&InputAction::MoveTo(PointF::new(391.0, 1564.0)), None);
         let calls = m.map(&InputAction::MoveTo(PointF::new(3850.0, 10.0)), None);
-        assert_eq!(calls, vec![motion(HDMI, 391.0, 32.0), motion(LAIN, 10.0, 32.0), motion(LAIN, 10.0, 10.0)]);
+        assert_eq!(calls, vec![motion(HDMI, 391.0, 32.0), motion(LAIN, 20.0, 64.0), motion(LAIN, 20.0, 20.0)]);
         // The move that went through (crossing at y ≈ 440) goes straight.
         m.map(&InputAction::MoveTo(PointF::new(821.0, 101.0)), None);
         let calls = m.map(&InputAction::MoveTo(PointF::new(3840.0 + 688.0, 516.0)), None);
-        assert_eq!(calls, vec![motion(LAIN, 688.0, 516.0)]);
+        assert_eq!(calls, vec![motion(LAIN, 1376.0, 1032.0)]);
     }
 
     #[test]
@@ -264,10 +298,10 @@ mod tests {
         let mut m = mapper(RectF::new(3840.0, 0.0, 1376.0, 1032.0));
         // From lain's (0, 0) to its centre (spike B: stuck at x = 0 in one run).
         let calls = m.map(&InputAction::MoveTo(PointF::new(3840.0 + 688.0, 516.0)), Some(PointF::new(3840.0, 0.0)));
-        assert_eq!(calls, vec![motion(LAIN, 0.0, 32.0), motion(LAIN, 688.0, 32.0), motion(LAIN, 688.0, 516.0)]);
+        assert_eq!(calls, vec![motion(LAIN, 0.0, 64.0), motion(LAIN, 1376.0, 64.0), motion(LAIN, 1376.0, 1032.0)]);
         // Below the band, or moving left (out of lain's display): straight.
         let calls = m.map(&InputAction::MoveTo(PointF::new(3843.0, 516.0)), Some(PointF::new(3840.0, 516.0)));
-        assert_eq!(calls, vec![motion(LAIN, 3.0, 516.0)]);
+        assert_eq!(calls, vec![motion(LAIN, 6.0, 1032.0)]);
         let calls = m.map(&InputAction::MoveTo(PointF::new(3000.0, 5.0)), Some(PointF::new(3845.0, 5.0)));
         assert_eq!(calls, vec![motion(HDMI, 3000.0, 5.0)]);
     }
@@ -278,7 +312,7 @@ mod tests {
         m.map(&InputAction::MoveTo(PointF::new(3800.0, 10.0)), None);
         m.map(&InputAction::Button { code: 0x110, down: true }, None);
         let calls = m.map(&InputAction::MoveTo(PointF::new(3850.0, 10.0)), None);
-        assert_eq!(calls, vec![motion(LAIN, 10.0, 10.0)]);
+        assert_eq!(calls, vec![motion(LAIN, 20.0, 20.0)]);
         m.map(&InputAction::Button { code: 0x110, down: false }, None);
         assert_eq!(m.map(&InputAction::MoveTo(PointF::new(3800.0, 10.0)), None).len(), 1);
         assert_eq!(m.map(&InputAction::MoveTo(PointF::new(3850.0, 10.0)), None).len(), 3);
@@ -294,6 +328,25 @@ mod tests {
         // No known start: no detour.
         let mut fresh = mapper(RectF::new(3840.0, 0.0, 1376.0, 1032.0));
         assert_eq!(fresh.map(&InputAction::MoveTo(PointF::new(3850.0, 10.0)), None).len(), 1);
+    }
+
+    /// Review L3: the session that held a button ended (its release was dropped, or Mutter released it): the
+    /// mapper must not think it is still held, or the detour is off for good.
+    #[test]
+    fn a_held_button_is_forgotten_when_its_session_ends() {
+        let mut m = mapper(RectF::new(3840.0, 0.0, 1376.0, 1032.0));
+        m.map(&InputAction::Button { code: 0x110, down: true }, None);
+        m.session_ended();
+        m.map(&InputAction::MoveTo(PointF::new(3800.0, 10.0)), None);
+        assert_eq!(m.map(&InputAction::MoveTo(PointF::new(3850.0, 10.0)), None).len(), 3);
+        // Replaced by a new session: the old one's stop released it.
+        m.map(&InputAction::Button { code: 0x110, down: true }, None);
+        m.buttons_released();
+        m.map(&InputAction::MoveTo(PointF::new(3800.0, 10.0)), None);
+        assert_eq!(m.map(&InputAction::MoveTo(PointF::new(3850.0, 10.0)), None).len(), 3);
+        // An ended session also forgets where the pointer was: no detour without a known start.
+        m.session_ended();
+        assert_eq!(m.map(&InputAction::MoveTo(PointF::new(3850.0, 10.0)), None).len(), 1);
     }
 
     #[test]
