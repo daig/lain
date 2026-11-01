@@ -26,12 +26,18 @@ lain-linux-system = { path = "crates/lain-linux-system" }
 
 # External dependencies: one version each across the workspace. Crates add the features they need.
 anyhow = "1.0.104"
+# lain-linux-video's libva and GBM bindings, generated at build time from the system headers (the same
+# bindgen, and features, as libspa-sys's).
+bindgen = { version = "0.72.1", default-features = false, features = ["runtime"] }
 bytes = "1.12"
 clap = { version = "4.6", features = ["derive"] }
 futures = "0.3.34"
+# lain-linux-video's BGRx -> NV12 compute pass: GL through EGL on GBM (L7), EGL loaded at run time.
+glow = "0.18"
 hex = "0.4.3"
 hkdf = "0.13"
 hmac = "0.13"
+khronos-egl = "6.0"
 ksni = "0.3.7"
 libc = "0.2.191"
 oo7 = "0.6"
@@ -39,6 +45,7 @@ openssl = "0.10.81"
 # No GStreamer (L7): loading its plugins initialises CUDA on the NVIDIA GPUs. Capture is the pipewire crate,
 # encoding libva on the AMD render node.
 pipewire = "0.10"
+pkg-config = "0.3.34"
 plist = "1.10"
 proptest = "1.12"
 rand = "0.10"

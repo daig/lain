@@ -2,3 +2,5 @@
 //! Never touches an NVIDIA device (decision L3).
 //!
 //! Brief: `docs/LINUX-HOST-PLAN.md`, `lain-linux-video`; technology chosen by spike A.
+
+mod ffi;

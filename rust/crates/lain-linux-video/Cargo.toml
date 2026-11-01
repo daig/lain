@@ -9,6 +9,14 @@ publish.workspace = true
 [dependencies]
 lain-platform.workspace = true
 lain-gnome.workspace = true
+# GL compute through EGL on GBM (L7). EGL is loaded at run time, only once the environment pins Mesa.
+glow.workspace = true
+khronos-egl = { workspace = true, features = ["dynamic"] }
+pipewire.workspace = true
+
+[build-dependencies]
+bindgen.workspace = true
+pkg-config.workspace = true
 
 [lints]
 workspace = true
