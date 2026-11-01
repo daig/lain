@@ -1,11 +1,10 @@
 //! The file fallback for pairing secrets.
 
 use std::collections::BTreeMap;
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io;
-use std::os::unix::fs::PermissionsExt;
+use std::os::unix::fs::{OpenOptionsExt, PermissionsExt};
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex};
 
 use lain_platform::{PlatformError, Result, SecretStore};
 use tracing::warn;
@@ -26,30 +25,44 @@ const HEADER: &str = "lain-secrets 1";
 /// mode, like `~/.ssh` keys without a passphrase. Format: the line `lain-secrets 1`, then one line per
 /// account, `<account as hex> <secret as hex>`, sorted by account.
 ///
-/// One process should own the file (the daemon): changes within the process are serialized, but two
-/// processes writing at once can lose one's change.
+/// Every change (read, modify, replace) is made under an exclusive `flock` on `<lain dir>/secrets.lock`, so
+/// changes from other instances and other processes (the daemon and a CLI) are serialized and none is
+/// lost. Reads take no lock: the file is only ever replaced whole.
+///
+/// A file or directory found wider than 0600/0700 (restored from a backup, copied under umask 022) is
+/// narrowed when it is read, not left so until the next change; if it can't be (not ours), the read fails
+/// with `Denied`.
 #[derive(Debug, Clone)]
 pub struct FileSecretStore {
     path: PathBuf,
-    lock: Arc<Mutex<()>>,
 }
+
+/// The lock file beside the secrets file.
+pub const SECRETS_LOCK_FILE: &str = "secrets.lock";
 
 impl FileSecretStore {
     /// The store in `lain_dir` (`$XDG_CONFIG_HOME/lain` in production). Touches nothing until used.
     pub fn new(lain_dir: &Path) -> FileSecretStore {
-        FileSecretStore { path: lain_dir.join(SECRETS_FILE), lock: Arc::new(Mutex::new(())) }
+        FileSecretStore { path: lain_dir.join(SECRETS_FILE) }
     }
 
     pub fn path(&self) -> &Path {
         &self.path
     }
 
+    fn dir(&self) -> &Path {
+        self.path.parent().unwrap_or(Path::new("."))
+    }
+
     /// Whether the file exists and holds at least one secret (an unreadable file counts as holding some).
-    pub fn has_secrets(&self) -> bool {
-        match self.read_all() {
+    pub async fn has_secrets(&self) -> bool {
+        let store = self.clone();
+        tokio::task::spawn_blocking(move || match store.read_all() {
             Ok(secrets) => !secrets.is_empty(),
-            Err(_) => self.path.exists(),
-        }
+            Err(_) => store.path.exists(),
+        })
+        .await
+        .unwrap_or(true)
     }
 
     fn read_all(&self) -> Result<BTreeMap<String, Vec<u8>>> {
@@ -58,33 +71,54 @@ impl FileSecretStore {
             Err(e) if e.kind() == io::ErrorKind::NotFound => return Ok(BTreeMap::new()),
             Err(e) => return Err(paths::io_error("reading", &self.path, e)),
         };
-        if let Ok(meta) = fs::metadata(&self.path)
-            && meta.permissions().mode() & 0o077 != 0
-        {
-            warn!(path = %self.path.display(), "the secrets file is readable by others; the next change makes it 0600");
+        let meta = fs::metadata(&self.path).map_err(|e| paths::io_error("reading", &self.path, e))?;
+        if meta.permissions().mode() & 0o077 != 0 {
+            warn!(path = %self.path.display(), "the secrets file was readable by others; making it 0600");
+            fs::set_permissions(&self.path, fs::Permissions::from_mode(0o600))
+                .map_err(|e| paths::io_error("narrowing the mode of", &self.path, e))?;
         }
+        paths::ensure_private_dir(self.dir()).map_err(|e| paths::io_error("narrowing the mode of", self.dir(), e))?;
         parse(&text).map_err(|why| PlatformError::Failed(format!("{}: {why}", self.path.display())))
     }
 
     fn write_all(&self, secrets: &BTreeMap<String, Vec<u8>>) -> Result<()> {
-        let dir = self.path.parent().unwrap_or(Path::new("."));
-        paths::ensure_private_dir(dir).map_err(|e| paths::io_error("creating", dir, e))?;
         paths::replace_atomically(&self.path, render(secrets).as_bytes(), 0o600)
             .map_err(|e| paths::io_error("writing", &self.path, e))
     }
 
-    /// Runs `f` under the store's lock on a blocking thread.
-    async fn locked<T: Send + 'static>(
+    /// Runs `f` on a blocking thread.
+    async fn blocking<T: Send + 'static>(
         &self,
         f: impl FnOnce(&FileSecretStore) -> Result<T> + Send + 'static,
     ) -> Result<T> {
         let store = self.clone();
-        tokio::task::spawn_blocking(move || {
-            let _guard = store.lock.lock().unwrap_or_else(|poisoned| poisoned.into_inner());
-            f(&store)
+        tokio::task::spawn_blocking(move || f(&store))
+            .await
+            .map_err(|e| PlatformError::Failed(format!("secrets file task: {e}")))?
+    }
+
+    /// Reads the secrets, lets `change` edit them, and writes them back if it says they changed: all under
+    /// the lock file's exclusive `flock`, released when the lock file closes.
+    async fn modify(&self, change: impl FnOnce(&mut BTreeMap<String, Vec<u8>>) -> bool + Send + 'static) -> Result<()> {
+        self.blocking(move |s| {
+            let dir = s.dir();
+            paths::ensure_private_dir(dir).map_err(|e| paths::io_error("creating", dir, e))?;
+            let lock_path = dir.join(SECRETS_LOCK_FILE);
+            let lock = OpenOptions::new()
+                .write(true)
+                .create(true)
+                .truncate(false)
+                .mode(0o600)
+                .open(&lock_path)
+                .map_err(|e| paths::io_error("opening", &lock_path, e))?;
+            lock.lock().map_err(|e| paths::io_error("locking", &lock_path, e))?;
+            let mut all = s.read_all()?;
+            if change(&mut all) {
+                s.write_all(&all)?;
+            }
+            Ok(())
         })
         .await
-        .map_err(|e| PlatformError::Failed(format!("secrets file task: {e}")))?
     }
 }
 
@@ -125,36 +159,32 @@ fn parse(bytes: &[u8]) -> std::result::Result<BTreeMap<String, Vec<u8>>, String>
 impl SecretStore for FileSecretStore {
     async fn secret(&self, account: &str) -> Result<Option<Vec<u8>>> {
         let account = account.to_owned();
-        self.locked(move |s| Ok(s.read_all()?.remove(&account))).await
+        self.blocking(move |s| Ok(s.read_all()?.remove(&account))).await
     }
 
     async fn set_secret(&self, account: &str, secret: &[u8]) -> Result<()> {
         let (account, secret) = (account.to_owned(), secret.to_vec());
-        self.locked(move |s| {
-            let mut all = s.read_all()?;
-            if all.get(&account) != Some(&secret) {
-                all.insert(account, secret);
-                s.write_all(&all)?;
+        self.modify(move |all| {
+            if all.get(&account) == Some(&secret) {
+                return false;
             }
-            Ok(())
+            all.insert(account, secret);
+            true
         })
         .await
     }
 
     async fn remove_secret(&self, account: &str) -> Result<()> {
+        // No file, nothing to remove: not even the directory or the lock file is created.
+        if !self.blocking(|s| Ok(s.path.exists())).await? {
+            return Ok(());
+        }
         let account = account.to_owned();
-        self.locked(move |s| {
-            let mut all = s.read_all()?;
-            if all.remove(&account).is_some() {
-                s.write_all(&all)?;
-            }
-            Ok(())
-        })
-        .await
+        self.modify(move |all| all.remove(&account).is_some()).await
     }
 
     async fn all_secrets(&self) -> Result<BTreeMap<String, Vec<u8>>> {
-        self.locked(|s| s.read_all()).await
+        self.blocking(|s| s.read_all()).await
     }
 }
 
@@ -212,17 +242,41 @@ mod tests {
         assert_eq!(fs::read_to_string(store.path()).unwrap(), "lain-secrets 1\n73657269616c 010203\n");
         let reopened = FileSecretStore::new(&dir);
         assert_eq!(reopened.secret("serial").await.unwrap(), Some(vec![1, 2, 3]));
-        assert!(reopened.has_secrets());
+        assert!(reopened.has_secrets().await);
     }
 
+    /// Review S4: the file's only protection is its mode, so a wider one is narrowed as soon as it is seen
+    /// (a read), not at the next change.
     #[tokio::test]
-    async fn a_wider_file_mode_is_narrowed_by_the_next_change() {
-        let (_config, store) = store();
+    async fn a_wider_mode_is_narrowed_on_read() {
+        let (config, store) = store();
         store.set_secret("a", &[1]).await.unwrap();
+        let dir = paths::lain_dir(config.path());
         fs::set_permissions(store.path(), fs::Permissions::from_mode(0o644)).unwrap();
+        fs::set_permissions(&dir, fs::Permissions::from_mode(0o755)).unwrap();
         assert_eq!(store.secret("a").await.unwrap(), Some(vec![1]));
-        store.set_secret("b", &[2]).await.unwrap();
         assert_eq!(fs::metadata(store.path()).unwrap().permissions().mode() & 0o777, 0o600);
+        assert_eq!(fs::metadata(&dir).unwrap().permissions().mode() & 0o777, 0o700);
+        assert_eq!(fs::read_to_string(store.path()).unwrap(), "lain-secrets 1\n61 01\n", "the contents untouched");
+    }
+
+    /// Review S2: two instances on one file (or two processes: the lock is an `flock`) keep every change.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn two_instances_on_one_file_keep_every_change() {
+        let (config, a) = store();
+        let b = FileSecretStore::new(&paths::lain_dir(config.path()));
+        let tasks: Vec<_> = (0..32u8)
+            .map(|n| {
+                let s = if n % 2 == 0 { a.clone() } else { b.clone() };
+                tokio::spawn(async move { s.set_secret(&format!("acct{n}"), &[n]).await.unwrap() })
+            })
+            .collect();
+        for task in tasks {
+            task.await.unwrap();
+        }
+        assert_eq!(a.all_secrets().await.unwrap().len(), 32);
+        let lock = paths::lain_dir(config.path()).join(SECRETS_LOCK_FILE);
+        assert_eq!(fs::metadata(lock).unwrap().permissions().mode() & 0o777, 0o600);
     }
 
     #[tokio::test]
@@ -266,6 +320,7 @@ mod tests {
         let (_config, store) = store();
         store.remove_secret("nobody").await.unwrap();
         assert!(!store.path().exists());
-        assert!(!store.has_secrets());
+        assert!(!store.has_secrets().await);
+        assert!(!store.path().parent().unwrap().exists(), "nothing created");
     }
 }
