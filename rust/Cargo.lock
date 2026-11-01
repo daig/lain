@@ -853,9 +853,15 @@ dependencies = [
  "glow",
  "khronos-egl",
  "lain-gnome",
+ "lain-media",
  "lain-platform",
  "pipewire",
  "pkg-config",
+ "rustix",
+ "tempfile",
+ "tokio",
+ "tracing",
+ "zbus",
 ]
 
 [[package]]
