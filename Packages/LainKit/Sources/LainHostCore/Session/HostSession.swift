@@ -454,8 +454,19 @@ public final class HostSession: Sendable {
     public func setRadioPriority(_ priority: NetworkStreamOptions.RadioPriority) {
         guard var options = deps.wifi?.options, let listener = state.withLock({ $0.wifiListener }) else { return }
         options.radioPriority = priority
+        options.includePeerToPeer = deps.preferences().peerToPeer
         listener.setOptions(options)
         if case .wifi? = state.withLock({ $0.live?.owner }) { reconnect() }
+    }
+
+    /// Whether the Wi-Fi listener also advertises and accepts over peer-to-peer (AWDL). Off, the Mac's AWDL can
+    /// go idle: LainHost was its only client, keeping the radio leaving the network's channel about once a
+    /// second (~100 ms pauses on the network path). A restart of the listener; sessions go on.
+    public func setPeerToPeer(_ on: Bool) {
+        guard var options = deps.wifi?.options, let listener = state.withLock({ $0.wifiListener }) else { return }
+        options.includePeerToPeer = on
+        options.radioPriority = deps.preferences().radioPriority
+        listener.setOptions(options)
     }
 
     /// Ends the live session so that the iPad reconnects into a new one, which picks up settings read at

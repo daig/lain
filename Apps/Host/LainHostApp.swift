@@ -93,6 +93,9 @@ struct LainHostApp: App {
                     }
                 }
             }
+            Button((host.preferences.peerToPeer ? "✓ " : "") + "Advertise for Direct Connections") {
+                host.update { $0.peerToPeer.toggle() }
+            }
             Menu("Keep Display After Disconnect") {
                 ForEach(HostPreferences.keepAliveChoices, id: \.self) { seconds in
                     Button((host.preferences.displayKeepAliveSeconds == seconds ? "✓ " : "") + HostController.keepAliveTitle(seconds)) {
@@ -168,7 +171,8 @@ final class HostController {
                                                                                       colorFormat: preferences.value.colorFormat) },
                                                       identity: identity,
                                                       wifi: identity.map { _ in
-                                                          HostWiFiConfig(options: NetworkStreamOptions(radioPriority: preferences.value.radioPriority),
+                                                          HostWiFiConfig(options: NetworkStreamOptions(includePeerToPeer: preferences.value.peerToPeer,
+                                                                                                       radioPriority: preferences.value.radioPriority),
                                                                          advertise: true)
                                                       },
                                                       setup: Self.probeSetup,
@@ -252,7 +256,9 @@ final class HostController {
         new.save()
         livePreferences.value = new
         keeper.keepFor = .seconds(new.displayKeepAliveSeconds)
-        if new.radioPriority != old.radioPriority {
+        if new.peerToPeer != old.peerToPeer {
+            session?.setPeerToPeer(new.peerToPeer)   // restarts the listener; sessions go on
+        } else if new.radioPriority != old.radioPriority {
             session?.setRadioPriority(new.radioPriority)   // restarts the listener; reconnects a Wi-Fi session
         } else if new.displayScale != old.displayScale || new.systemKey != old.systemKey || new.colorFormat != old.colorFormat {
             session?.reconnect()
