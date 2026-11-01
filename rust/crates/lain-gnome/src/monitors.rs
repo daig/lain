@@ -267,7 +267,7 @@ impl Task {
             tracing::debug!(?kind, ?plan, "ApplyMonitorsConfig (temporary)");
             match self.config.call::<_, _, ()>("ApplyMonitorsConfig", &args).await {
                 Ok(()) => {
-                    self.tracker.applied(set, Some(plan.arrangement), true);
+                    self.tracker.applied(set, plan.arrangement, true);
                     return;
                 }
                 Err(e) if attempt == 0 && is_stale(&e) => {
@@ -279,7 +279,7 @@ impl Task {
                         }
                         Err(e) => {
                             tracing::warn!("DisplayConfig.GetCurrentState: {e}");
-                            self.tracker.applied(set, Some(plan.arrangement), false);
+                            self.tracker.applied(set, plan.arrangement, false);
                             return;
                         }
                     }
@@ -287,7 +287,7 @@ impl Task {
                 Err(e) => {
                     tracing::warn!(?kind, "ApplyMonitorsConfig refused: {e}");
                     // Counted, so a layout Mutter won't take isn't retried until the monitors change.
-                    self.tracker.applied(set, Some(plan.arrangement), false);
+                    self.tracker.applied(set, plan.arrangement, false);
                     return;
                 }
             }
