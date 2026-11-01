@@ -55,19 +55,35 @@ public struct LastConnectedHost: Sendable {
     /// The service that last answered for a host id, if any.
     public var service: @Sendable (_ hostId: String) -> String?
     public var setService: @Sendable (_ hostId: String, _ service: String) -> Void
+    /// Each Mac's name as its last `HelloAck` gave it, by host id (the panel's host list).
+    public var names: @Sendable () -> [String: String]
+    public var setName: @Sendable (_ hostId: String, _ name: String) -> Void
+    /// The host the owner picked in the panel; nil: automatic (the cable first, then the last connected).
+    public var selected: @Sendable () -> String?
+    public var setSelected: @Sendable (String?) -> Void
 
     public init(get: @escaping @Sendable () -> String?, set: @escaping @Sendable (String) -> Void,
                 service: @escaping @Sendable (_ hostId: String) -> String? = { _ in nil },
-                setService: @escaping @Sendable (_ hostId: String, _ service: String) -> Void = { _, _ in }) {
+                setService: @escaping @Sendable (_ hostId: String, _ service: String) -> Void = { _, _ in },
+                names: @escaping @Sendable () -> [String: String] = { [:] },
+                setName: @escaping @Sendable (_ hostId: String, _ name: String) -> Void = { _, _ in },
+                selected: @escaping @Sendable () -> String? = { nil },
+                setSelected: @escaping @Sendable (String?) -> Void = { _ in }) {
         self.get = get
         self.set = set
         self.service = service
         self.setService = setService
+        self.names = names
+        self.setName = setName
+        self.selected = selected
+        self.setSelected = setSelected
     }
 
     /// `servicesKey` holds a dictionary host id → service (one entry per Mac that answered over Wi-Fi).
     public static func userDefaults(key: String = "lain.lastHostId",
-                                    servicesKey: String = "lain.lastHostServices") -> LastConnectedHost {
+                                    servicesKey: String = "lain.lastHostServices",
+                                    namesKey: String = "lain.hostNames",
+                                    selectedKey: String = "lain.selectedHostId") -> LastConnectedHost {
         LastConnectedHost(get: { UserDefaults.standard.string(forKey: key) },
                           set: { UserDefaults.standard.set($0, forKey: key) },
                           service: { id in UserDefaults.standard.dictionary(forKey: servicesKey)?[id] as? String },
@@ -76,6 +92,18 @@ public struct LastConnectedHost: Sendable {
                               var all = UserDefaults.standard.dictionary(forKey: servicesKey) ?? [:]
                               all[id] = service
                               UserDefaults.standard.set(all, forKey: servicesKey)
+                          },
+                          names: { (UserDefaults.standard.dictionary(forKey: namesKey) as? [String: String]) ?? [:] },
+                          setName: { id, name in
+                              var all = (UserDefaults.standard.dictionary(forKey: namesKey) as? [String: String]) ?? [:]
+                              guard all[id] != name else { return }
+                              all[id] = name
+                              UserDefaults.standard.set(all, forKey: namesKey)
+                          },
+                          selected: { UserDefaults.standard.string(forKey: selectedKey) },
+                          setSelected: { id in
+                              if let id { UserDefaults.standard.set(id, forKey: selectedKey) }
+                              else { UserDefaults.standard.removeObject(forKey: selectedKey) }
                           })
     }
 
@@ -83,12 +111,16 @@ public struct LastConnectedHost: Sendable {
         let box = Box(initial)
         return LastConnectedHost(get: { box.value.withLock { $0.id } }, set: { id in box.value.withLock { $0.id = id } },
                                  service: { id in box.value.withLock { $0.services[id] } },
-                                 setService: { id, service in box.value.withLock { $0.services[id] = service } })
+                                 setService: { id, service in box.value.withLock { $0.services[id] = service } },
+                                 names: { box.value.withLock { $0.names } },
+                                 setName: { id, name in box.value.withLock { $0.names[id] = name } },
+                                 selected: { box.value.withLock { $0.selected } },
+                                 setSelected: { id in box.value.withLock { $0.selected = id } })
     }
 
     private final class Box: Sendable {
-        let value: Mutex<(id: String?, services: [String: String])>
-        init(_ initial: String?) { value = Mutex((initial, [:])) }
+        let value: Mutex<(id: String?, services: [String: String], names: [String: String], selected: String?)>
+        init(_ initial: String?) { value = Mutex((initial, [:], [:], nil)) }
     }
 }
 
@@ -118,9 +150,10 @@ struct WiFiDialPlan: Equatable {
     init() {}
 
     /// `secret` reads an account of the client's store; `versions` nil: `VersionList.offered`.
-    init(hosts: [DiscoveredHost], preferring lastHostId: String?, versions: VersionList? = nil,
+    /// `only`: the host the owner picked (nil: automatic, every paired Mac in sight).
+    init(hosts: [DiscoveredHost], preferring lastHostId: String?, only: String? = nil, versions: VersionList? = nil,
          secret: (String) -> [UInt8]?) {
-        for host in hosts where PairingAccounts.isCanonicalHostId(host.hostId) {
+        for host in hosts where PairingAccounts.isCanonicalHostId(host.hostId) && (only == nil || host.hostId == only) {
             let stored = secret(PairingAccounts.mac(host.hostId))
             if let gap = VersionGap(local: versions, advertised: host.versions) {
                 otherVersion.append(OtherVersion(host: host, gap: gap, paired: stored != nil))
@@ -368,7 +401,8 @@ extension SessionCore {
         let now = MonotonicClock.now()
         updateDiscovery(now: now)
         w.plan = current == nil && w.discovery != nil
-            ? WiFiDialPlan(hosts: w.hosts, preferring: w.config.lastHost.get(), versions: versions, secret: storedSecret)
+            ? WiFiDialPlan(hosts: w.hosts, preferring: w.config.lastHost.get(), only: w.config.lastHost.selected(),
+                           versions: versions, secret: storedSecret)
                 .ordered(lastGood: w.config.lastHost.service, lastTried: { w.services[$0]?.lastAttemptAt ?? now })
             : WiFiDialPlan()
         guard current == nil, w.dialing == nil, !w.paused, !w.plan.candidates.isEmpty else { return }
@@ -598,7 +632,7 @@ extension SessionCore {
         publish()
     }
 
-    private func storedSecret(_ account: String) -> [UInt8]? {
+    func storedSecret(_ account: String) -> [UInt8]? {
         do {
             return try secrets.secret(for: account)
         } catch {

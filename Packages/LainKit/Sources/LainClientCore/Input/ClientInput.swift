@@ -164,6 +164,9 @@ public final class ClientInput: @unchecked Sendable {
         perform { self.pipeline.onLocalShortcut = handler }
     }
 
+    /// Closes the panel (Esc in it): the keyboard and trackpad go to the host again.
+    public func closePanel() { perform { self.pipeline.closePanel() } }
+
     public func learnCharacter(_ key: PhysicalKey, _ characters: String) {
         perform { self.pipeline.learnCharacter(key, characters) }
     }

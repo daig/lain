@@ -110,37 +110,72 @@ public final class ClientInputPipeline {
     public enum LocalShortcut: Sendable, Equatable {
         /// Ctrl-Opt-Cmd-L: show/hide the HUD.
         case toggleHUD
-        /// Right Option, lain's system key, held alone for `overlayHoldNs`: show the overlay (true) until
-        /// it's released or another key or a click comes (false).
+        /// Right Option, lain's system key, held alone for `overlayHoldNs`: the panel opens (true). It stays
+        /// open, taking the keyboard and trackpad, until `closePanel()` or a Right Option tap (false).
         case overlay(Bool)
+        /// While the panel is open: a key-down (never sent to the host).
+        case panelKey(PhysicalKey)
+        /// While the panel is open: the trackpad moved (GameController deltas, y up) or clicked.
+        case panelPointer(dx: Double, dy: Double)
+        case panelClick
     }
 
     /// How long Right Option must be held alone to show the overlay: longer than the hosts' longest tap
     /// (300 ms, `SystemKey.tapMaxNs`), so a hold that shows it never opens Mission Control on release.
     public static let overlayHoldNs: UInt64 = 350_000_000
-    /// Right Option went down alone and nothing else came since (the overlay is due at this + hold).
+    /// Right Option went down alone and nothing else came since (the panel is due at this + hold).
     private var systemKeyDownAtNs: UInt64?
-    /// The overlay is showing.
+    /// The panel is open: the keyboard and trackpad drive it, and nothing reaches the host.
     public private(set) var overlayShown = false
+    /// The Right Option press that opened the panel is still down: its release goes to the host (which saw
+    /// the press), and isn't a tap.
+    private var openingPressHeld = false
+    /// Right Option went down while the panel was open, nothing else since: its release closes the panel.
+    private var closeTapArmed = false
 
-    /// The overlay watch: every key event still goes to the Mac unchanged (the hosts read Right Option
-    /// themselves), this only decides what the iPad shows.
+    /// Before the panel opens: a Right Option hold alone is timed (`tick`); anything else cancels it, since
+    /// Right Option + a key is a chord for the host. Every key still goes to the host unchanged.
     private func watchSystemKey(_ key: PhysicalKey, isDown: Bool, at timeNs: UInt64) {
         if key == .rightOption, isDown {
             // Alone: no other key held (a modifier, or the Left Option that makes it plain Option).
             systemKeyDownAtNs = keyboard.physicalModifiers.isEmpty && keyboard.macHeldKeys.isEmpty ? timeNs : nil
             return
         }
-        // Its release, or anything else: Right Option + a key is a chord for the Mac, not the overlay.
-        if key == .rightOption || isDown { endOverlay() }
+        if key == .rightOption || isDown { systemKeyDownAtNs = nil }
     }
 
-    private func endOverlay() {
-        systemKeyDownAtNs = nil
-        if overlayShown {
-            overlayShown = false
-            onLocalShortcut(.overlay(false))
+    /// While the panel is open: true if the key was the panel's (not sent to the host).
+    private func panelKey(_ key: PhysicalKey, isDown: Bool) -> Bool {
+        if key == .rightOption {
+            if isDown {
+                closeTapArmed = true
+                consumedKeys.insert(key)
+                return true
+            }
+            if openingPressHeld {
+                openingPressHeld = false
+                return false   // the host lifts the Right Option it saw go down
+            }
+            consumedKeys.remove(key)
+            if closeTapArmed { closePanel() }
+            return true
         }
+        if isDown {
+            closeTapArmed = false
+            consumedKeys.insert(key)
+            onLocalShortcut(.panelKey(key))
+            return true
+        }
+        return consumedKeys.remove(key) != nil
+    }
+
+    /// Closes the panel (Esc in it, a Right Option tap, a lost focus): input goes to the host again.
+    public func closePanel() {
+        systemKeyDownAtNs = nil
+        closeTapArmed = false
+        guard overlayShown else { return }
+        overlayShown = false
+        onLocalShortcut(.overlay(false))
     }
 
     /// Called on the input queue when a local shortcut fires.
@@ -159,7 +194,11 @@ public final class ClientInputPipeline {
 
     /// A physical key changed (GCKeyboard usage, or Globe from UIKit).
     public func keyChanged(_ key: PhysicalKey, isDown: Bool, at timeNs: UInt64) {
-        watchSystemKey(key, isDown: isDown, at: timeNs)
+        if overlayShown {
+            if panelKey(key, isDown: isDown) { return }
+        } else {
+            watchSystemKey(key, isDown: isDown, at: timeNs)
+        }
         if isDown, let shortcut = localShortcut(for: key) {
             consumedKeys.insert(key)
             onLocalShortcut(shortcut)
@@ -189,13 +228,18 @@ public final class ClientInputPipeline {
     /// A GCMouse delta (y up-positive). Zero deltas are ignored.
     public func mouseMoved(dx: Double, dy: Double, at timeNs: UInt64) {
         guard pointerEnabled else { return }
+        if overlayShown { return onLocalShortcut(.panelPointer(dx: dx, dy: dy)) }
         guard let move = pointer.move(dx: dx, dy: dy, at: timeNs, buttons: heldButtons.mask) else { return }
         send(.pointerMove(move))
     }
 
     public func mouseButton(_ button: MouseButton, isDown: Bool, at timeNs: UInt64) {
         if isDown {
-            endOverlay()   // a click with Right Option held is a Command-click on the Mac
+            systemKeyDownAtNs = nil   // a click with Right Option held is a Command-click on the host
+            if overlayShown {
+                if pointerEnabled { onLocalShortcut(.panelClick) }
+                return
+            }
             guard pointerEnabled, heldButtons.set(button, down: true) else { return }
             if let stop = momentum.cancel() { send(.scroll(stop)) }   // a click stops a fling, as on the Mac
             let count = clicks.down(button, x: pointer.x, y: pointer.y, at: timeNs)
@@ -225,7 +269,7 @@ public final class ClientInputPipeline {
 
     /// Fingers touched down for a scroll (pan `.began`). Stops any running momentum.
     public func scrollBegan(at timeNs: UInt64) {
-        guard pointerEnabled else { return }
+        guard pointerEnabled, !overlayShown else { return }   // the panel takes the trackpad
         if let stop = momentum.touchBegan(at: timeNs) { send(.scroll(stop)) }
         isScrolling = true
         scrollStarted = false
@@ -233,7 +277,7 @@ public final class ClientInputPipeline {
 
     /// A scroll delta in points since the previous one (pan translation delta, passed through as is).
     public func scrollChanged(dx: Double, dy: Double, at timeNs: UInt64) {
-        guard pointerEnabled else { return }
+        guard pointerEnabled, !overlayShown else { return }
         if !isScrolling { scrollBegan(at: timeNs) }
         guard dx != 0 || dy != 0 else { return }
         let (sx, sy) = invertScroll ? (-dx, -dy) : (dx, dy)
@@ -259,7 +303,7 @@ public final class ClientInputPipeline {
     /// A mouse-wheel notch (discrete scroll): passed through with no phase and no momentum, as a
     /// wheel scrolls on the Mac. Stops a running fling.
     public func scrollWheel(dx: Double, dy: Double, at timeNs: UInt64) {
-        guard pointerEnabled, dx != 0 || dy != 0 else { return }
+        guard pointerEnabled, !overlayShown, dx != 0 || dy != 0 else { return }
         if let stop = momentum.cancel() { send(.scroll(stop)) }
         let (sx, sy) = invertScroll ? (-dx, -dy) : (dx, dy)
         send(.scroll(Scroll(dx: Float(sx), dy: Float(sy), phase: .none, momentumPhase: .none)))
@@ -279,7 +323,7 @@ public final class ClientInputPipeline {
     /// Pinch (value = change in the absolute gesture scale since the previous event, so the host sees
     /// 1 + Σ value; `.ended`/`.cancelled` last) or rotate (value = incremental radians).
     public func gesture(_ kind: Gesture.Kind, phase: GesturePhase, value: Float, at timeNs: UInt64) {
-        guard pointerEnabled || phase == .ended || phase == .cancelled else { return }
+        guard (pointerEnabled && !overlayShown) || phase == .ended || phase == .cancelled else { return }
         send(.gesture(Gesture(kind: kind, phase: phase, value: value)))
     }
 
@@ -290,7 +334,11 @@ public final class ClientInputPipeline {
         if let scroll = momentum.tick(at: timeNs) { send(.scroll(scroll)) }
         if let repeated = keyRepeat.tick(at: timeNs) { send(.keyEvent(repeated)) }
         if let down = systemKeyDownAtNs, !overlayShown, timeNs &- down >= Self.overlayHoldNs, timeNs >= down {
+            systemKeyDownAtNs = nil
             overlayShown = true
+            openingPressHeld = true
+            closeTapArmed = false
+            keyRepeat.cancel()
             onLocalShortcut(.overlay(true))
         }
     }
@@ -310,7 +358,8 @@ public final class ClientInputPipeline {
             send(.releaseAll(ReleaseAll(reason: reason)))
         }
         _ = keyboard.releaseAll()
-        endOverlay()
+        openingPressHeld = false
+        closePanel()
         _ = heldButtons.releaseAll(x: pointer.x, y: pointer.y)
         keyRepeat.cancel()
         clicks.reset()
