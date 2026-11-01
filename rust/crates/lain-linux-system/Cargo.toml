@@ -7,7 +7,20 @@ rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
+futures.workspace = true
+hex.workspace = true
 lain-platform.workspace = true
+# Secret Service; its default features are `tokio` and `native_crypto` (the encrypted session), which we want.
+oo7.workspace = true
+rustix = { workspace = true, features = ["system"] }
+tokio = { workspace = true, features = ["rt", "sync", "macros", "time"] }
+tracing.workspace = true
+uuid = { workspace = true, features = ["v4"] }
+zbus.workspace = true
+
+[dev-dependencies]
+tempfile.workspace = true
+tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "macros", "time", "process", "io-util"] }
 
 [lints]
 workspace = true
