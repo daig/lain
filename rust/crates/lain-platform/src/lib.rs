@@ -13,6 +13,8 @@
 //!   spawned on tokio's multi-thread runtime; an implementation may write them as `async fn`.
 //! - Methods called from the realtime path (`InputBackend::apply`, `CursorSource::current`,
 //!   `DisplayBackend::cursor_location`, `VideoSession::encode`) never block.
+//! - Every trait is implemented for `Arc<T>` ([`shared`]), so a task that needs an owned handle shares
+//!   the platform's implementation instead of wrapping it.
 
 pub mod advertise;
 pub mod clock;
@@ -26,6 +28,7 @@ pub mod power;
 pub mod secrets;
 pub mod settings;
 pub mod setup;
+pub mod shared;
 pub mod video;
 
 #[cfg(feature = "fake")]
@@ -49,17 +52,21 @@ pub use video::{
 
 /// Everything the session engine (`lain-host`) needs from a platform, as one bundle of associated types
 /// (static dispatch). Advertising and autostart aren't here: the daemon drives them directly.
+///
+/// Every part is a cheap handle: cloning one shares the implementation's state, never copies it, so the
+/// engine gives a task (an acceptor, a cursor monitor, a video pipeline) its own handle by cloning. A
+/// type that isn't a handle goes in as `Arc<T>`, which implements every trait ([`shared`]).
 pub trait Platform: Send + Sync + 'static {
-    type Display: DisplayBackend;
+    type Display: DisplayBackend + Clone;
     /// Captures what the display backend creates.
-    type Video: VideoBackend<Source = <Self::Display as DisplayBackend>::Source>;
-    type Cursor: CursorSource;
-    type Input: InputBackend;
-    type Power: PowerBackend;
-    type Settings: SettingsSource;
-    type Setup: SetupSource;
-    type Secrets: SecretStore;
-    type Clock: Clock;
+    type Video: VideoBackend<Source = <Self::Display as DisplayBackend>::Source> + Clone;
+    type Cursor: CursorSource + Clone;
+    type Input: InputBackend + Clone;
+    type Power: PowerBackend + Clone;
+    type Settings: SettingsSource + Clone;
+    type Setup: SetupSource + Clone;
+    type Secrets: SecretStore + Clone;
+    type Clock: Clock + Clone;
 
     fn display(&self) -> &Self::Display;
     fn video(&self) -> &Self::Video;
