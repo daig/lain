@@ -86,7 +86,8 @@ fn failed(what: &str, e: impl std::fmt::Display) -> PlatformError {
 }
 
 impl GnomeDisplay {
-    pub(crate) fn new(conn: Connection, desktop: DesktopHandle, cursor: Arc<CursorState>) -> Self {
+    /// The display backend on `conn`, with the desktop task `monitors::spawn` started and the run's cursor state.
+    pub fn new(conn: Connection, desktop: DesktopHandle, cursor: Arc<CursorState>) -> Self {
         Self { conn, desktop, cursor, active: Arc::new(Mutex::new(None)) }
     }
 

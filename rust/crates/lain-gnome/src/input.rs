@@ -9,12 +9,17 @@
 //! [`InputBackend::apply`] never blocks: actions go onto an unbounded channel, and one task sends the calls in
 //! order with the no-reply flag.
 //!
+//! The session exists only while input flows: the first actions build it (they wait in the channel meanwhile,
+//! tens of milliseconds), and it stops after [`IDLE`] without any. A RemoteDesktop session with streams shows
+//! GNOME Shell's screen-sharing indicator, which shouldn't stay up while no iPad uses lain. New in the port:
+//! macOS needs no session to post events.
+//!
 //! When the set of monitors changes, the task builds a new session with a stream of each, switches to it, and
 //! then stops the old one, because adding a `RecordMonitor` to a started session was verified for libei only,
 //! not for D-Bus motion (spike B, "Recommended design"). **Difference:** a key or button held across that
-//! switch is released by Mutter when the old session stops (its virtual devices go with it). The input
-//! session closing on its own (the sharing indicator's Stop ends every session) is answered by rebuilding it
-//! after a backoff.
+//! switch is released by Mutter when the old session stops (its virtual devices go with it). If the session
+//! closes on its own (the sharing indicator's Stop ends every session), the next actions rebuild it, no sooner
+//! than a backoff after the last attempt.
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -34,6 +39,8 @@ use crate::input_map::{Barrier, Mapper, Target};
 
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(30);
+/// How long input's session outlives the last action.
+pub const IDLE: Duration = Duration::from_secs(300);
 
 /// The input backend.
 #[derive(Debug, Clone)]
@@ -50,7 +57,9 @@ impl InputBackend for GnomeInput {
 }
 
 impl GnomeInput {
-    pub(crate) fn spawn(
+    /// Starts the input task on `conn`, following the monitors in `desktop`. No session exists until the first
+    /// [`apply`](InputBackend::apply).
+    pub fn spawn(
         conn: Connection,
         desktop: watch::Receiver<Arc<Desktop>>,
         cursor: Arc<CursorState>,
@@ -118,7 +127,9 @@ pub fn targets(desktop: &Desktop, streams: &HashMap<String, String>) -> Vec<Targ
 impl Task {
     async fn run(mut self, mut rx: mpsc::UnboundedReceiver<Vec<InputAction>>) {
         let mut backoff = BACKOFF_MIN;
-        let mut retry_at = Some(Instant::now());
+        // No attempt before this (after a failure, or the session closing on its own).
+        let mut not_before = Instant::now();
+        let mut last_action = Instant::now();
         // The current session's `Closed`, apart from `self` so the other arms can borrow it.
         let mut closed_signal: Option<SignalStream<'static>> = None;
         loop {
@@ -128,9 +139,23 @@ impl Task {
                     None => std::future::pending().await,
                 }
             };
+            let has_session = self.session.is_some();
             tokio::select! {
                 actions = rx.recv() => {
                     let Some(actions) = actions else { break };
+                    last_action = Instant::now();
+                    if self.session.is_none() && Instant::now() >= not_before {
+                        match self.connect().await {
+                            Ok(closed) => {
+                                closed_signal = Some(closed);
+                                backoff = BACKOFF_MIN;
+                            }
+                            Err(()) => {
+                                not_before = Instant::now() + backoff;
+                                backoff = (backoff * 2).min(BACKOFF_MAX);
+                            }
+                        }
+                    }
                     self.perform(&actions).await;
                 }
                 changed = self.desktop.changed() => {
@@ -138,45 +163,54 @@ impl Task {
                         break;
                     }
                     let connectors = self.desktop.borrow().connectors();
-                    if self.session.as_ref().is_none_or(|s| s.connectors != connectors) {
-                        retry_at = Some(Instant::now());
+                    if self.session.as_ref().is_some_and(|s| s.connectors != connectors)
+                        && let Ok(closed) = self.connect().await
+                    {
+                        closed_signal = Some(closed);
                     }
                     self.retarget();
                 }
                 still = closed => {
-                    tracing::warn!(lost = !still, "input's RemoteDesktop session closed; rebuilding it");
+                    tracing::warn!(lost = !still, "input's RemoteDesktop session closed; the next input rebuilds it");
                     self.session = None;
                     closed_signal = None;
                     self.retarget();
-                    retry_at = Some(Instant::now() + backoff);
+                    not_before = Instant::now() + backoff;
                     backoff = (backoff * 2).min(BACKOFF_MAX);
                 }
-                _ = tokio::time::sleep_until(retry_at.unwrap_or_else(Instant::now)), if retry_at.is_some() => {
-                    retry_at = None;
-                    let connectors = self.desktop.borrow().connectors();
-                    match build(&self.conn, &connectors).await {
-                        Ok((new, closed)) => {
-                            tracing::debug!(?connectors, path = new.remote.path(), "input session ready");
-                            closed_signal = Some(closed);
-                            if let Some(old) = self.session.replace(new) {
-                                tokio::spawn(async move {
-                                    let _ = old.remote.stop().await;
-                                });
-                            }
-                            self.retarget();
-                            backoff = BACKOFF_MIN;
-                        }
-                        Err(e) => {
-                            tracing::warn!("can't set up input's RemoteDesktop session: {e}");
-                            retry_at = Some(Instant::now() + backoff);
-                            backoff = (backoff * 2).min(BACKOFF_MAX);
-                        }
+                _ = tokio::time::sleep_until(last_action + IDLE), if has_session => {
+                    tracing::debug!("no input for {IDLE:?}; stopping input's session");
+                    closed_signal = None;
+                    if let Some(s) = self.session.take() {
+                        let _ = s.remote.stop().await;
                     }
+                    self.retarget();
                 }
             }
         }
         if let Some(s) = self.session.take() {
             let _ = s.remote.stop().await;
+        }
+    }
+
+    /// Builds a session with a stream of every monitor now, switches to it, then stops the old one.
+    async fn connect(&mut self) -> Result<SignalStream<'static>, ()> {
+        let connectors = self.desktop.borrow().connectors();
+        match build(&self.conn, &connectors).await {
+            Ok((new, closed)) => {
+                tracing::debug!(?connectors, path = new.remote.path(), "input session ready");
+                if let Some(old) = self.session.replace(new) {
+                    tokio::spawn(async move {
+                        let _ = old.remote.stop().await;
+                    });
+                }
+                self.retarget();
+                Ok(closed)
+            }
+            Err(e) => {
+                tracing::warn!("can't set up input's RemoteDesktop session: {e}");
+                Err(())
+            }
         }
     }
 

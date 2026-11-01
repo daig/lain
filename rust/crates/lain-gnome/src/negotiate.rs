@@ -5,6 +5,10 @@
 //! mode from a descriptor.
 //!
 //! The PipeWire main loop runs on its own thread, iterated in 10 ms steps until the caller stops it.
+//!
+//! [`consume_cursor`] is the same consumer asking for cursor metadata too, written into a [`CursorState`] as
+//! `lain-linux-video` does for lain's stream (spike B, §6). The live tests use it to see where the pointer is;
+//! it maps no picture buffer.
 
 use std::cell::RefCell;
 use std::rc::Rc;
@@ -19,6 +23,8 @@ use pw::spa::param::video::{VideoFormat, VideoInfoRaw};
 use pw::spa::pod::{Pod, Value, serialize::PodSerializer};
 use pw::spa::utils::{Fraction, Rectangle, SpaTypes};
 use tokio::sync::oneshot;
+
+use crate::cursor::{BitmapFormat, CursorState};
 
 /// How long the thread waits for a format, at most, whatever the caller does.
 const LIMIT: Duration = Duration::from_secs(10);
@@ -92,20 +98,74 @@ impl Drop for Negotiation {
     }
 }
 
+/// The largest cursor bitmap asked for: 384×384 pixels, as `pwprobe.c`.
+const CURSOR_MAX: usize = 384;
+
+/// The `SPA_PARAM_Meta` asking for `SPA_META_Cursor` with room for a bitmap of up to 384×384 RGBA pixels.
+pub fn cursor_meta_pod() -> Vec<u8> {
+    use pw::spa::pod::{ChoiceValue, Object, Property};
+    use pw::spa::utils::{Choice, ChoiceEnum, ChoiceFlags, Id};
+    let size = |side: usize| {
+        (std::mem::size_of::<spa::sys::spa_meta_cursor>()
+            + std::mem::size_of::<spa::sys::spa_meta_bitmap>()
+            + side * side * 4) as i32
+    };
+    let object = Object {
+        type_: SpaTypes::ObjectParamMeta.as_raw(),
+        id: spa::param::ParamType::Meta.as_raw(),
+        properties: vec![
+            Property::new(spa::sys::SPA_PARAM_META_type, Value::Id(Id(spa::sys::SPA_META_Cursor))),
+            Property::new(
+                spa::sys::SPA_PARAM_META_size,
+                Value::Choice(ChoiceValue::Int(Choice(
+                    ChoiceFlags::empty(),
+                    ChoiceEnum::Range { default: size(CURSOR_MAX), min: size(1), max: size(CURSOR_MAX) },
+                ))),
+            ),
+        ],
+    };
+    PodSerializer::serialize(std::io::Cursor::new(Vec::new()), &Value::Object(object))
+        .expect("a meta pod always serializes")
+        .0
+        .into_inner()
+}
+
 /// Connects a consumer to `node` asking for `width × height` at up to `fps`. The receiver gets the format
-/// once Mutter fixes it, or why it didn't.
+/// once Mutter fixes it, or why it didn't (within 10 s).
 pub fn negotiate(
     node: u32,
     width: u32,
     height: u32,
     fps: u32,
 ) -> (Negotiation, oneshot::Receiver<Result<NegotiatedFormat, String>>) {
+    start(node, width, height, fps, None)
+}
+
+/// [`negotiate`], then keeps the stream connected and writes its cursor metadata into `cursor` until stopped:
+/// the position, invalid while the pointer is off the stream's monitor, and each new bitmap.
+pub fn consume_cursor(
+    node: u32,
+    width: u32,
+    height: u32,
+    fps: u32,
+    cursor: Arc<CursorState>,
+) -> (Negotiation, oneshot::Receiver<Result<NegotiatedFormat, String>>) {
+    start(node, width, height, fps, Some(cursor))
+}
+
+fn start(
+    node: u32,
+    width: u32,
+    height: u32,
+    fps: u32,
+    cursor: Option<Arc<CursorState>>,
+) -> (Negotiation, oneshot::Receiver<Result<NegotiatedFormat, String>>) {
     let (tx, rx) = oneshot::channel();
     let stop = Arc::new(AtomicBool::new(false));
     let flag = stop.clone();
     let thread = std::thread::Builder::new().name("lain-pw-negotiate".into()).spawn(move || {
         let mut tx = Some(tx);
-        if let Err(e) = run(node, width, height, fps, &flag, &mut tx)
+        if let Err(e) = run(node, width, height, fps, cursor, &flag, &mut tx)
             && let Some(tx) = tx.take()
         {
             let _ = tx.send(Err(e));
@@ -123,7 +183,34 @@ pub fn negotiate(
 
 type Reply = Option<oneshot::Sender<Result<NegotiatedFormat, String>>>;
 
-fn run(node: u32, width: u32, height: u32, fps: u32, stop: &AtomicBool, tx: &mut Reply) -> Result<(), String> {
+/// Writes one buffer's cursor metadata into `cursor`.
+fn write_cursor(cursor: &CursorState, meta: &spa::buffer::meta::MetaCursor) {
+    if !meta.is_valid() {
+        cursor.set_invalid();
+        return;
+    }
+    let p = meta.position();
+    cursor.set_position(p.x, p.y);
+    if let Some(bitmap) = meta.bitmap()
+        && let Some(data) = bitmap.bitmap_data()
+    {
+        let format = if bitmap.format() == VideoFormat::BGRA { BitmapFormat::Bgra } else { BitmapFormat::Rgba };
+        let size = bitmap.size();
+        let hot = meta.hotspot();
+        let stride = bitmap.stride().unsigned_abs() as usize;
+        cursor.set_bitmap(format, size.width, size.height, stride, (hot.x, hot.y), data);
+    }
+}
+
+fn run(
+    node: u32,
+    width: u32,
+    height: u32,
+    fps: u32,
+    cursor: Option<Arc<CursorState>>,
+    stop: &AtomicBool,
+    tx: &mut Reply,
+) -> Result<(), String> {
     pw::init();
     let mainloop = pw::main_loop::MainLoopRc::new(None).map_err(|e| format!("PipeWire main loop: {e}"))?;
     let context = pw::context::ContextRc::new(&mainloop, None).map_err(|e| format!("PipeWire context: {e}"))?;
@@ -141,9 +228,10 @@ fn run(node: u32, width: u32, height: u32, fps: u32, stop: &AtomicBool, tx: &mut
     let outcome: Rc<RefCell<Option<Result<NegotiatedFormat, String>>>> = Rc::new(RefCell::new(None));
     let on_format = outcome.clone();
     let on_state = outcome.clone();
+    let wants_cursor = cursor.is_some();
     let _listener = stream
         .add_local_listener_with_user_data(())
-        .param_changed(move |_, _, id, param| {
+        .param_changed(move |stream, _, id, param| {
             let Some(param) = param else { return };
             if id != spa::param::ParamType::Format.as_raw() {
                 return;
@@ -158,6 +246,14 @@ fn run(node: u32, width: u32, height: u32, fps: u32, stop: &AtomicBool, tx: &mut
                     max_framerate: (max.num, max.denom),
                     format: info.format().as_raw(),
                 }));
+                if wants_cursor {
+                    let meta = cursor_meta_pod();
+                    if let Some(pod) = Pod::from_bytes(&meta)
+                        && let Err(e) = stream.update_params(&mut [pod])
+                    {
+                        tracing::debug!("asking for cursor metadata: {e}");
+                    }
+                }
             }
         })
         .state_changed(move |_, _, _, new| {
@@ -165,9 +261,14 @@ fn run(node: u32, width: u32, height: u32, fps: u32, stop: &AtomicBool, tx: &mut
                 on_state.borrow_mut().get_or_insert(Err(format!("PipeWire stream error: {e}")));
             }
         })
-        .process(|stream, _| {
-            // Buffers aren't wanted: hand each back at once (dropping it requeues it).
-            let _ = stream.dequeue_buffer();
+        .process(move |stream, _| {
+            // Pictures aren't wanted: each buffer goes back at once (dropping it requeues it).
+            if let Some(buffer) = stream.dequeue_buffer()
+                && let Some(cursor) = &cursor
+                && let Some(meta) = buffer.find_meta::<spa::buffer::meta::MetaCursor>()
+            {
+                write_cursor(cursor, meta);
+            }
         })
         .register()
         .map_err(|e| format!("PipeWire listener: {e}"))?;
@@ -177,12 +278,18 @@ fn run(node: u32, width: u32, height: u32, fps: u32, stop: &AtomicBool, tx: &mut
         .connect(spa::utils::Direction::Input, Some(node), pw::stream::StreamFlags::AUTOCONNECT, &mut [pod])
         .map_err(|e| format!("connecting to node {node}: {e}"))?;
     let deadline = Instant::now() + LIMIT;
-    while !stop.load(Ordering::Acquire) && Instant::now() < deadline {
+    // Until stopped; without a format by the deadline, or with an error, it gives up.
+    while !stop.load(Ordering::Acquire) && (tx.is_none() || Instant::now() < deadline) {
         mainloop.loop_().iterate(pw::loop_::Timeout::Finite(Duration::from_millis(10)));
-        if let Some(result) = outcome.borrow_mut().take()
-            && let Some(tx) = tx.take()
-        {
-            let _ = tx.send(result);
+        let result = outcome.borrow_mut().take();
+        if let Some(result) = result {
+            let failed = result.is_err();
+            if let Some(tx) = tx.take() {
+                let _ = tx.send(result);
+            }
+            if failed {
+                break;
+            }
         }
     }
     if let Some(tx) = tx.take() {
@@ -229,5 +336,21 @@ mod tests {
         assert_eq!(default.0, VideoFormat::BGRx.as_raw());
         assert!(alternatives.contains(&Id(VideoFormat::BGRA.as_raw())));
         assert!(Pod::from_bytes(&bytes).is_some());
+    }
+
+    #[test]
+    fn the_meta_pod_asks_for_cursor_metadata() {
+        let bytes = cursor_meta_pod();
+        let (_, value) = PodDeserializer::deserialize_any_from(&bytes).unwrap();
+        let Value::Object(obj) = value else { panic!("not an object") };
+        assert_eq!(obj.type_, SpaTypes::ObjectParamMeta.as_raw());
+        assert_eq!(obj.properties[0].value, Value::Id(Id(spa::sys::SPA_META_Cursor)));
+        let Value::Choice(ChoiceValue::Int(Choice(_, ChoiceEnum::Range { default, min, max }))) =
+            obj.properties[1].value
+        else {
+            panic!("size isn't a range")
+        };
+        assert_eq!(default, max);
+        assert!(min < max && max as usize > 384 * 384 * 4);
     }
 }

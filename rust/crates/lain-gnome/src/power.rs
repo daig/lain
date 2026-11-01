@@ -22,7 +22,8 @@ pub struct GnomePower {
 }
 
 impl GnomePower {
-    pub(crate) fn spawn(conn: Connection) -> Self {
+    /// Starts the task that holds the inhibitor on `conn`.
+    pub fn spawn(conn: Connection) -> Self {
         let (tx, rx) = mpsc::unbounded_channel();
         tokio::spawn(run(conn, rx));
         Self { tx }
