@@ -1,0 +1,18 @@
+# Spike 6, candidate "vk": BGRx -> NV12 in one Vulkan compute pass on RADV. A standalone package, outside
+# rust/'s workspace.
+[package]
+name = "linux-convert-vk"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "vkconvert"
+path = "src/main.rs"
+
+[dependencies]
+ash = "0.38"
+naga = { version = "*", features = ["wgsl-in", "spv-out"] }
+libc = "0.2"
