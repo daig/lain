@@ -345,7 +345,9 @@ async fn the_ipad_is_dialed_when_the_active_device_detaches() {
         ..tuned(tuning)
     };
     let mut rig = Rig::new(options).await;
-    assert!(eventually(T, || rig.session.usb_device_dialed() == Some(3) && rig.status() == HostStatus::Connecting).await);
+    assert!(
+        eventually(T, || rig.session.usb_device_dialed() == Some(3) && rig.status() == HostStatus::Connecting).await
+    );
     tokio::time::sleep(Duration::from_millis(100)).await;
     assert!(rig.usb.next_link(Duration::from_millis(100)).await.is_none(), "only the iPhone is being dialed");
     assert_eq!(rig.mux.connect_count(), 0);
@@ -394,7 +396,9 @@ async fn a_v1_app_closing_right_after_channel_hello_is_asked_to_update() {
     assert_eq!(mux.connect_count(), 9);
     assert_eq!(
         session.status().title(),
-        format!("Error: lain on the iPad is too old (it speaks an older protocol, this computer protocol {local}): update it")
+        format!(
+            "Error: lain on the iPad is too old (it speaks an older protocol, this computer protocol {local}): update it"
+        )
     );
     // Unplugged, it is just waiting again.
     mux.detach(7);
@@ -414,10 +418,8 @@ async fn a_legacy_app_answering_version_mismatch_is_asked_to_update() {
         HostSession::start(platform.clone(), HostConfig { tuning, ..HostConfig::default() }, mux.client(), None);
     let mut statuses = Statuses(session.status_changes());
     let local = VersionList::offered().clone();
-    let older = HostStatus::version_gap(
-        &lain_link::VersionGap::PeerOlder { peer: "a protocol from before v3".into() },
-        &local,
-    );
+    let older =
+        HostStatus::version_gap(&lain_link::VersionGap::PeerOlder { peer: "a protocol from before v3".into() }, &local);
     assert!(statuses.reaches(&older, T).await);
     assert!(session.status().title().contains("update it"));
     assert_eq!(mux.connect_count(), 3, "the first link attempt said so");

@@ -115,7 +115,9 @@ mod tests {
         let older = HostStatus::version_gap(&VersionGap::PeerOlder { peer: "protocol v2".into() }, &local);
         assert_eq!(
             older.title(),
-            format!("Error: lain on the iPad is too old (it speaks protocol v2, this computer protocol {local}): update it")
+            format!(
+                "Error: lain on the iPad is too old (it speaks protocol v2, this computer protocol {local}): update it"
+            )
         );
         let newer = HostStatus::version_gap(&VersionGap::PeerNewer { peer: "protocol v9".into() }, &local);
         assert!(newer.title().ends_with("update lain on this computer"));

@@ -85,9 +85,13 @@ async fn a_wifi_session_runs_like_a_usb_one() {
 #[tokio::test]
 async fn usb_takes_over_from_a_live_wifi_session() {
     let secret = secret();
-    let mut rig =
-        Rig::new(RigOptions { stored: stored(&secret), usb_stored: usb_stored(&secret), devices: vec![], ..Default::default() })
-            .await;
+    let mut rig = Rig::new(RigOptions {
+        stored: stored(&secret),
+        usb_stored: usb_stored(&secret),
+        devices: vec![],
+        ..Default::default()
+    })
+    .await;
     let mut ipad = rig.wifi_connect(&secret, wifi_hello()).await;
     assert!(ipad.hello_ack().is_some());
     assert!(rig.statuses.reaches(&connected_via(lan()), T).await);
@@ -116,7 +120,8 @@ async fn usb_takes_over_from_a_live_wifi_session() {
 #[tokio::test]
 async fn a_wifi_link_while_usb_is_live_is_busy() {
     let secret = secret();
-    let mut rig = Rig::new(RigOptions { stored: stored(&secret), usb_stored: usb_stored(&secret), ..Default::default() }).await;
+    let mut rig =
+        Rig::new(RigOptions { stored: stored(&secret), usb_stored: usb_stored(&secret), ..Default::default() }).await;
     let _usb = rig.usb.next_link(T).await.expect("a USB link");
     assert!(rig.statuses.reaches(&HostStatus::connected_usb("iPad16,6"), T).await);
 
@@ -225,7 +230,10 @@ async fn the_window_restarts_when_a_waiting_ipad_is_first_dialed() {
         stored: stored(&secret),
         devices: vec![FakeDevice::usb(3, "IPHONE-3").refusing(), FakeDevice::usb(7, SERIAL).refusing()],
         // The iPhone's turn: 25 × 100 ms, well past the window from the attach.
-        config: HostConfig { tuning: Tuning { fast_retries: 25, ..Tuning::default() }, ..admission(Duration::from_millis(1500)) },
+        config: HostConfig {
+            tuning: Tuning { fast_retries: 25, ..Tuning::default() },
+            ..admission(Duration::from_millis(1500))
+        },
         ..Default::default()
     })
     .await;
@@ -248,7 +256,10 @@ async fn hand_overs_between_failing_devices_dont_keep_wifi_busy() {
         stored: stored(&secret),
         devices: vec![FakeDevice::usb(3, "IPHONE-3").refusing(), FakeDevice::usb(7, SERIAL).refusing()],
         // A hand-over about every 0.5 s: the iPad is dialed again about every second.
-        config: HostConfig { tuning: Tuning { fast_retries: 5, ..Tuning::default() }, ..admission(Duration::from_millis(1500)) },
+        config: HostConfig {
+            tuning: Tuning { fast_retries: 5, ..Tuning::default() },
+            ..admission(Duration::from_millis(1500))
+        },
         ..Default::default()
     })
     .await;
@@ -375,8 +386,10 @@ async fn an_iphone_reattaching_leaves_the_wifi_session_up() {
 #[tokio::test]
 async fn a_usbmuxd_restart_leaves_the_wifi_session_up() {
     let secret = secret();
-    let config =
-        HostConfig { tuning: Tuning { usbmux_retry_interval: Duration::from_millis(100), ..Tuning::default() }, ..wifi_config() };
+    let config = HostConfig {
+        tuning: Tuning { usbmux_retry_interval: Duration::from_millis(100), ..Tuning::default() },
+        ..wifi_config()
+    };
     let mut rig = Rig::new(RigOptions { stored: stored(&secret), devices: vec![], config, ..Default::default() }).await;
     let ipad = rig.wifi_connect(&secret, wifi_hello()).await;
     let wifi = connected_via(lan());
@@ -401,8 +414,10 @@ async fn a_usbmuxd_restart_leaves_the_wifi_session_up() {
 /// Neither is an error, and the next iPad is found once the daemon is back.
 #[tokio::test]
 async fn usbmuxd_exiting_and_coming_back_is_no_error() {
-    let config =
-        HostConfig { tuning: Tuning { usbmux_retry_interval: Duration::from_millis(100), ..Tuning::default() }, ..wifi_config() };
+    let config = HostConfig {
+        tuning: Tuning { usbmux_retry_interval: Duration::from_millis(100), ..Tuning::default() },
+        ..wifi_config()
+    };
     let mut rig = Rig::new(RigOptions { config, ..Default::default() }).await;
     assert!(rig.usb.next_link(T).await.is_some());
     assert!(rig.statuses.reaches(&HostStatus::connected_usb("iPad16,6"), T).await);
@@ -464,7 +479,8 @@ async fn a_newer_wifi_peer_tells_the_owner_to_update_this_computer() {
         opened.err(),
         Some(TransportError::NoCommonVersion { local: newer.clone(), peer: VersionList::offered().clone() })
     );
-    let gap = HostStatus::version_gap(&VersionGap::PeerNewer { peer: format!("protocol {newer}") }, VersionList::offered());
+    let gap =
+        HostStatus::version_gap(&VersionGap::PeerNewer { peer: format!("protocol {newer}") }, VersionList::offered());
     assert!(rig.statuses.reaches(&gap, T).await);
     assert!(rig.session.status().title().contains("update lain on this computer"));
     assert!(rig.platform.power().transitions().is_empty() && rig.platform.input().actions().is_empty());
