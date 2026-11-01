@@ -441,10 +441,8 @@ impl<S: SecretStore + Clone> Rig<S> {
         let advertiser = FakeAdvertiser::default();
         let config = options.config.host_config(options.identity, VersionList::offered().clone());
         let input = config.input;
-        let daemon_options = DaemonOptions {
-            setup_poll: options.setup_poll,
-            ..test_options(options.config.daemon_options().wifi)
-        };
+        let daemon_options =
+            DaemonOptions { setup_poll: options.setup_poll, ..test_options(options.config.daemon_options().wifi) };
         let daemon =
             Daemon::start(platform.clone(), config, mux.client(), Some(advertiser.clone()), daemon_options).await;
         let handle = daemon.handle();
