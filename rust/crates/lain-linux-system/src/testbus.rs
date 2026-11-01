@@ -63,6 +63,11 @@ impl TestBus {
         Some(TestBus { child, address, _dir: dir })
     }
 
+    /// The bus's D-Bus address, for a child process's `DBUS_SESSION_BUS_ADDRESS`.
+    pub(crate) fn address(&self) -> &str {
+        &self.address
+    }
+
     /// A new connection to this bus.
     pub(crate) async fn connect(&self) -> zbus::Connection {
         zbus::connection::Builder::address(self.address.as_str()).unwrap().build().await.unwrap()
