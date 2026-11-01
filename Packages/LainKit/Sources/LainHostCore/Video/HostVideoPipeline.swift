@@ -116,6 +116,8 @@ public final class HostVideoPipeline: Sendable {
         var bitrate: BitrateController?
         /// What the encoder runs at now: the target, or the ceiling for refinements (the link is idle then).
         var appliedRate = 0
+        /// The gate's held-back count as last passed to the controller.
+        var heldBackSeen = 0
     }
 
     public let displayProvider: any StreamedDisplayProvider
@@ -495,6 +497,11 @@ public final class HostVideoPipeline: Sendable {
             guard s.phase == .running else { return nil }
             if let a = s.acks.acked(frameId: ack.frameId, at: now) {
                 s.rttMs.record(Double(a.roundTripNs) / 1e6)
+                // Frames the gate held back since the last ack: the link is the limit.
+                if let held = s.gate?.stats.droppedBeforeEncode, held > s.heldBackSeen {
+                    s.heldBackSeen = held
+                    s.bitrate?.heldBack(at: now)
+                }
                 s.bitrate?.acked(bytes: Int(ack.bytes), rttNs: a.roundTripNs, at: now)
                 if s.window.ackRttsMs.count < 512 { s.window.ackRttsMs.append(Double(a.roundTripNs) / 1e6) }
             }
