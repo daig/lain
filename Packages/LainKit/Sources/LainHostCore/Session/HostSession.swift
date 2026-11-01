@@ -924,6 +924,8 @@ final class HostConnection: Sendable {
         var lastActivityNs: UInt64?
         /// This connection took the display-sleep assertion (`start()`), so `finish()` must drop it.
         var holdsPower = false
+        /// How the input arrives (the `diag` log).
+        var arrivals = InputArrivals()
         var finished = false
     }
     private let rt: Mutex<Realtime>
@@ -1029,9 +1031,10 @@ final class HostConnection: Sendable {
 
     // MARK: Realtime queue
 
-    private func handle(_ env: Envelope) { handle(env.message) }
+    private func handle(_ env: Envelope) { handle(env.message, sentNs: env.header.timestampNs) }
 
-    func handle(_ message: Message) {
+    /// `sentNs`: the header's send time (the iPad's clock), for the input diagnostics.
+    func handle(_ message: Message, sentNs: UInt64? = nil) {
         switch message {
         case .ping(let p):
             let received = deps.now()
@@ -1050,6 +1053,9 @@ final class HostConnection: Sendable {
         let now = deps.now()
         let (declare, tap) = rt.withLock { s -> (Bool, UInt64?) in
             guard !s.finished else { return (false, nil) }
+            if let sentNs, message.type.rawValue >= MessageType.keyEvent.rawValue {   // input: 0x50…
+                s.arrivals.record(message, sentNs: sentNs, receivedNs: now)
+            }
             let before = s.router.pendingSystemKeyTap
             switch s.router.handle(message, nowNs: now) {
             case .notInput, .ignored:
@@ -1094,7 +1100,10 @@ final class HostConnection: Sendable {
             let layout = DispatchSource.makeTimerSource(queue: layoutQueue)
             layout.schedule(deadline: .now() + check, repeating: check, leeway: .milliseconds(20))
             layout.setEventHandler { [self] in sendLayoutIfChanged() }
-            t = [sampler, layout]
+            let diagnostics = DispatchSource.makeTimerSource(queue: layoutQueue)
+            diagnostics.schedule(deadline: .now() + 1, repeating: 1, leeway: .milliseconds(50))
+            diagnostics.setEventHandler { [self] in logDiagnostics() }
+            t = [sampler, layout, diagnostics]
             return t
         }
         started.forEach { $0.resume() }   // `finish()` may have cancelled them since: that's fine
@@ -1110,6 +1119,26 @@ final class HostConnection: Sendable {
             return s.warp.sample(global, atNs: now)
         }
         if let warp { link.realtime.send(.cursorWarp(CursorWarp(x: warp.x, y: warp.y))) }
+    }
+
+    // MARK: Diagnostics
+
+    private let diagLog = Telemetry.logger("diag")
+    /// The cumulative stats at the last diagnostics line (for the second's change).
+    private let lastDiagStats = Mutex<HostVideoStats?>(nil)
+
+    /// Once a second, while anything happened: how the input arrived and what the video path did.
+    /// `log show --predicate 'subsystem == "lain" AND category == "diag"'`.
+    private func logDiagnostics() {
+        if let input = rt.withLock({ $0.arrivals.take() }) {
+            diagLog.notice("\(input.line, privacy: .public)")
+        }
+        guard let video, let window = video.takeDiagnostics() else { return }
+        let stats = video.stats
+        let previous = lastDiagStats.withLock { p in defer { p = stats }; return p } ?? stats
+        let captured = stats.captured - previous.captured
+        guard window.sent > 0 || captured > 0 else { return }
+        diagLog.notice("\(window.line(captured: captured, droppedBeforeEncode: stats.droppedBeforeEncode - previous.droppedBeforeEncode), privacy: .public)")
     }
 
     // MARK: Stats (v5)
