@@ -9,6 +9,11 @@
 # The video bitrate in Mb/s, from 1 to 200 (also what the iPad is told).
 # bitrate_mbps = 60
 
+# How long lain keeps its display after the iPad leaves unexpectedly (you switch apps on the iPad, the cable comes
+# out, Wi-Fi drops), in seconds, from 0 to 600. Back within that time, the iPad gets the same display: windows stay
+# where they were. 0 removes it at once.
+# keep_alive_seconds = 30
+
 # GNOME Shell's top-bar pointer barrier: pointer moves that would cross it into lain's display from the
 # primary monitor go around it. The band is the top bar's height in logical pixels, from 0 to 200.
 # [barrier]

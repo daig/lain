@@ -27,6 +27,7 @@
 
 mod config;
 mod connection;
+mod keeper;
 mod session;
 mod status;
 mod util;

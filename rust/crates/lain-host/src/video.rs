@@ -15,6 +15,7 @@ use lain_proto::{ChromaFormat, Hello, Message};
 use tokio::sync::{Notify, mpsc, watch};
 use tracing::{error, info};
 
+use crate::keeper::DisplayKeeper;
 use crate::util::Cancel;
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -130,6 +131,7 @@ impl SessionVideo {
     /// Creates the display for `hello`, starts capture and encode, and streams on `video` (frames) and
     /// `realtime` (cursor shapes). Returns the chroma streamed and the bit depth. `on_end` is called once if
     /// capture ends on its own (`Failed` or `StoppedByUser`); the video is torn down after it.
+    #[allow(clippy::too_many_arguments)] // the session's channels and callbacks, as before, plus the keeper
     pub(crate) async fn start<P: Platform>(
         self: &Arc<Self>,
         platform: &P,
@@ -138,6 +140,7 @@ impl SessionVideo {
         realtime: ChannelSender,
         video: ChannelSender,
         on_end: impl FnOnce(VideoEnd) + Send + 'static,
+        keeper: &Arc<DisplayKeeper<P::Display>>,
     ) -> Result<Streaming, StartError> {
         // Marked started before the stop check: a waiter that saw `done` had the stop come first, and the check
         // then sees it, so no display is made after `wait_until_stopped` returned.
@@ -146,13 +149,14 @@ impl SessionVideo {
             self.done.send_replace(true);
             return Err(StartError::Stopped);
         }
-        let result = self.start_inner(platform, hello, options, realtime, video, on_end).await;
+        let result = self.start_inner(platform, hello, options, realtime, video, on_end, keeper).await;
         if result.is_err() {
             self.done.send_replace(true);
         }
         result
     }
 
+    #[allow(clippy::too_many_arguments)] // the session's channels and callbacks, as before, plus the keeper
     async fn start_inner<P: Platform>(
         self: &Arc<Self>,
         platform: &P,
@@ -161,26 +165,41 @@ impl SessionVideo {
         realtime: ChannelSender,
         video: ChannelSender,
         on_end: impl FnOnce(VideoEnd) + Send + 'static,
+        keeper: &Arc<DisplayKeeper<P::Display>>,
     ) -> Result<Streaming, StartError> {
         let display = platform.display().clone();
         let spec = display_spec(hello);
-        // `create` is cancel-safe: a stop meanwhile drops it, and the backend removes what it made.
-        let created = tokio::select! {
-            biased;
-            () = self.stop.cancelled() => return Err(StartError::Stopped),
-            created = display.create(spec) => created,
-        };
-        let (streamed, source) = created.map_err(StartError::Failed)?;
-        if self.stop.is_cancelled() {
-            display.destroy().await;
-            return Err(StartError::Stopped);
-        }
-        let config = lain_media::encode_config(&streamed, hello.max_refresh_rate, &options);
-        let (session, mut events) = match platform.video().start(&source, config).await {
-            Ok(started) => started,
-            Err(e) => {
+        // A display kept from the last session is taken back first (keeper.rs); one that no longer captures
+        // (stopped on the desktop while kept) is removed and a new one created.
+        let mut kept = keeper.take(spec).await;
+        let (streamed, source, session, mut events) = loop {
+            let reused = kept.is_some();
+            let (streamed, source) = match kept.take() {
+                Some(display) => display,
+                None => {
+                    // `create` is cancel-safe: a stop meanwhile drops it, and the backend removes what it made.
+                    let created = tokio::select! {
+                        biased;
+                        () = self.stop.cancelled() => return Err(StartError::Stopped),
+                        created = display.create(spec) => created,
+                    };
+                    created.map_err(StartError::Failed)?
+                }
+            };
+            if self.stop.is_cancelled() {
                 display.destroy().await;
-                return Err(StartError::Failed(e));
+                return Err(StartError::Stopped);
+            }
+            let config = lain_media::encode_config(&streamed, hello.max_refresh_rate, &options);
+            match platform.video().start(&source, config).await {
+                Ok((session, events)) => break (streamed, source, session, events),
+                Err(e) => {
+                    display.destroy().await;
+                    if !reused {
+                        return Err(StartError::Failed(e));
+                    }
+                    info!("the kept display no longer captures ({e}); making a new one");
+                }
             }
         };
         if self.stop.is_cancelled() {
@@ -247,6 +266,7 @@ impl SessionVideo {
         cursor.start();
 
         let this = self.clone();
+        let keeper = keeper.clone();
         tokio::spawn(async move {
             let end = this.drive(&mut pipeline, &mut cursor, &mut events, &mut commands_rx, &clock).await;
             this.sending.store(false, Ordering::SeqCst);
@@ -255,12 +275,17 @@ impl SessionVideo {
                 s.streaming = None;
                 s.commands = None;
             }
+            let ended_on_its_own = end.is_some();
             if let Some(end) = end {
                 on_end(end);
             }
             cursor.stop();
             pipeline.stop().await;
-            display.destroy().await;
+            // Stopped (the link went away, or a takeover): kept for the next session. Capture that ended on its
+            // own (`StoppedByUser`, `Failed`) takes its display with it.
+            if ended_on_its_own || !keeper.keep(spec, streamed, source).await {
+                display.destroy().await;
+            }
             this.done.send_replace(true);
             this.changed.notify_one();
             info!("video stopped");

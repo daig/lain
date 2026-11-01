@@ -30,6 +30,8 @@ pub const CONFIG_FILE: &str = "config.toml";
 /// at 60 (SL2, SL7). Below 1 the picture is unusable, and above 200 a 2752×2064 stream gains nothing visible
 /// while the coded buffer and the Wi-Fi link suffer.
 pub const BITRATE_MBPS: (u32, u32) = (1, 200);
+/// `keep_alive_seconds`' bounds: 0 (off) to 10 minutes.
+pub const KEEP_ALIVE_SECONDS: (u32, u32) = (0, 600);
 /// The panel band's bounds in logical pixels (GNOME's top bar is about 32).
 pub const BARRIER_BAND: (f64, f64) = (0.0, 200.0);
 /// The pinch threshold's bounds: above 1 (`PinchZoomMapper` asserts it), at most 4 (a 4× pinch per step).
@@ -60,6 +62,10 @@ pub struct Config {
     pub wifi: bool,
     /// The encoder's average bitrate and `HelloAck.bitrate` (Swift: `HostVideoPipeline`'s 60 Mb/s).
     pub bitrate_mbps: u32,
+    /// How long lain's display outlives the iPad leaving unexpectedly (its app left the screen, the cable came
+    /// out), so that it comes back to the same display (`HostConfig::display_keep_alive`; no Swift counterpart).
+    /// 0 removes it at once, as the Mac host does.
+    pub keep_alive_seconds: u32,
     /// The panel-barrier detour of pointer moves (`lain_gnome::Barrier`; no Swift counterpart).
     pub barrier: BarrierConfig,
     pub input: InputSection,
@@ -71,6 +77,7 @@ impl Default for Config {
         Self {
             wifi: true,
             bitrate_mbps: PipelineOptions::default().average_bit_rate / 1_000_000,
+            keep_alive_seconds: 30,
             barrier: BarrierConfig { detour: barrier.detour, band: barrier.band },
             input: InputSection::from(&InputConfig::default()),
         }
@@ -306,6 +313,13 @@ impl Config {
         if !(lo..=hi).contains(&self.bitrate_mbps) {
             return bad("bitrate_mbps", format!("must be between {lo} and {hi} Mb/s, not {}", self.bitrate_mbps));
         }
+        let (lo, hi) = KEEP_ALIVE_SECONDS;
+        if !(lo..=hi).contains(&self.keep_alive_seconds) {
+            return bad(
+                "keep_alive_seconds",
+                format!("must be between {lo} and {hi}, not {}", self.keep_alive_seconds),
+            );
+        }
         let (lo, hi) = BARRIER_BAND;
         let band = self.barrier.band;
         if !(band.is_finite() && (lo..=hi).contains(&band)) {
@@ -402,6 +416,7 @@ impl Config {
             identity,
             video: self.pipeline_options(),
             input: self.input_config(),
+            display_keep_alive: std::time::Duration::from_secs(u64::from(self.keep_alive_seconds)),
             ..HostConfig::default()
         }
     }
@@ -507,6 +522,7 @@ fn key_at(text: &str, span: std::ops::Range<usize>) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::time::Duration;
 
     fn parse(text: &str) -> Result<Config, ConfigError> {
         Config::parse(Path::new("/x/lain/config.toml"), text)
@@ -522,6 +538,7 @@ mod tests {
         let c = Config::default();
         assert!(c.wifi);
         assert_eq!(c.bitrate_mbps, 60);
+        assert_eq!(c.keep_alive_seconds, 30);
         assert_eq!(c.input_config(), InputConfig::default());
         assert_eq!(c.barrier(), Barrier::default());
         assert_eq!(c.pipeline_options(), PipelineOptions::default());
@@ -658,6 +675,13 @@ client_stop_delay_ms = 300
         assert_eq!(e, "/x/lain/config.toml: bitrate_mbps: must be between 1 and 200 Mb/s, not 0");
         assert!(refused("bitrate_mbps = 201\n").contains("not 201"));
         assert_eq!(parse("bitrate_mbps = 200\n").unwrap().bitrate_mbps, 200);
+        let e = refused("keep_alive_seconds = 601\n");
+        assert_eq!(e, "/x/lain/config.toml: keep_alive_seconds: must be between 0 and 600, not 601");
+        assert!(refused("keep_alive_seconds = -1\n").contains("keep_alive_seconds: "));
+        let off = parse("keep_alive_seconds = 0\n").unwrap();
+        assert_eq!(off.host_config(None, VersionList::offered().clone()).display_keep_alive, Duration::ZERO);
+        let c = parse("keep_alive_seconds = 90\n").unwrap();
+        assert_eq!(c.host_config(None, VersionList::offered().clone()).display_keep_alive, Duration::from_secs(90));
         let e = refused("[input.modifiers]\ncommand = \"meta\"\n");
         assert!(e.contains("input.modifiers.command: unknown variant `meta`"), "{e}");
         let e = refused("[input]\nzoom = \"ctrl_wheel\"\n");
