@@ -150,6 +150,9 @@ async fn a_bound_stream_is_bound_to_its_secret_only() {
     assert!(!channel.is_bound_to_secret(&[8; 32]));
     let plain = MessageChannel::new(memory_pair().0, "plain");
     assert!(plain.is_bound_to_secret(&[1; 32]), "an unbound stream can't tell: true");
+    let unbound = BoundStream::unbound(memory_pair().0, wifi_path());
+    assert_eq!((unbound.pairing_secret(), unbound.link_transport()), (None, wifi_path()));
+    assert!(MessageChannel::new(unbound, "unbound").is_bound_to_secret(&[1; 32]));
     bound
         .write_all(&MessageCodec::encode(&hello_msg(ConnectionKind::Audio, token(), None), 0, 0, None, None))
         .await
