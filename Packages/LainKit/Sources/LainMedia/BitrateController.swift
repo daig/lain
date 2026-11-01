@@ -7,7 +7,8 @@
 ///   taken for congestion, while frames that keep arriving late are.
 /// - **Down**, quickly: queueing above `congestedMs` lowers the target to 90% of the measured delivery rate
 ///   (or by `decrease` if too few acks to measure), at most every `decreaseIntervalNs`, never below `floor`.
-///   With some queueing (above `clearMs`) and frames held back lately (`heldBack`), a link delivering under
+///   Both need the link busy (`isBusy`: several frames held back lately, and a real delivery rate), so a
+///   quiet link's stalls and tiny frames never lower it. With some queueing (above `clearMs`), a link delivering under
 ///   90% of the target is saturated too: the host's gate (two frames in flight) holds frames back before the
 ///   queue grows, costing frame rate, so the target drops to 90% of the delivery rate. Fluidity first:
 ///   smaller frames rather than fewer. Without held-back frames a low delivery rate only means there was
@@ -30,8 +31,12 @@ public struct BitrateController: Sendable {
         public var recentWindowNs: UInt64 = 500_000_000
         public var deliveryWindowNs: UInt64 = 1_000_000_000
         public var minRttWindowNs: UInt64 = 10_000_000_000
-        /// Frames held back this recently mean the link is the limit.
-        public var heldBackWindowNs: UInt64 = 300_000_000
+        /// The link is busy (the target may come down) when the gate held back at least `busyHeldBack` frames
+        /// in the last `heldBackWindowNs` and it delivered at least `busyDeliveryBps`. At rest a link stall
+        /// holds back one frame, and tiny frames deliver almost nothing: neither says anything about capacity.
+        public var heldBackWindowNs: UInt64 = 500_000_000
+        public var busyHeldBack = 3
+        public var busyDeliveryBps = 3_000_000
         public init() {}
     }
 
@@ -46,7 +51,8 @@ public struct BitrateController: Sendable {
     /// Per-second minima of the round trip, for the windowed best.
     private var minima: [(second: UInt64, rttNs: UInt64)] = []
     private var lastChangeNs: UInt64?
-    private var lastHeldBackNs: UInt64?
+    /// When the gate held frames back, within `heldBackWindowNs`.
+    private var heldBackAt: [UInt64] = []
     private var clearSinceNs: UInt64?
 
     public init(config: Config = Config(), start: Int) {
@@ -74,7 +80,16 @@ public struct BitrateController: Sendable {
     }
 
     /// The host's gate held a frame back (two already in flight): there's more to send than the link takes.
-    public mutating func heldBack(at now: UInt64) { lastHeldBackNs = now }
+    public mutating func heldBack(at now: UInt64) {
+        heldBackAt.append(now)
+        heldBackAt.removeAll { now &- $0 > config.heldBackWindowNs }
+    }
+
+    /// More to send than the link takes, and the link really carrying it.
+    public func isBusy(at now: UInt64) -> Bool {
+        heldBackAt.filter { now &- $0 <= config.heldBackWindowNs }.count >= config.busyHeldBack
+            && (deliveryBps(at: now) ?? 0) >= config.busyDeliveryBps
+    }
 
     /// One `FrameAck`: the frame's size and its send → ack round trip, acknowledged at `now`. Returns the new
     /// target when it changed.
@@ -99,14 +114,14 @@ public struct BitrateController: Sendable {
         let since = lastChangeNs.map { now &- $0 } ?? .max
         if queueing > config.congestedMs {
             clearSinceNs = nil
-            guard since >= config.decreaseIntervalNs else { return nil }
+            guard since >= config.decreaseIntervalNs, isBusy(at: now) else { return nil }
             let byDelivery = deliveryBps(at: now).map { Int(Double($0) * 0.9) }
             let lowered = min(Int(Double(target) * config.decrease), byDelivery ?? .max)
             return set(max(config.floor, min(lowered, target)), at: now)
         }
         guard queueing < config.clearMs else {
             clearSinceNs = nil
-            guard since >= config.decreaseIntervalNs, let held = lastHeldBackNs, now &- held <= config.heldBackWindowNs,
+            guard since >= config.decreaseIntervalNs, isBusy(at: now),
                   let delivery = deliveryBps(at: now), Double(delivery) < Double(target) * 0.9 else { return nil }
             return set(max(config.floor, Int(Double(delivery) * 0.9)), at: now)
         }
