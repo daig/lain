@@ -13,23 +13,29 @@
 ///   queue grows, costing frame rate, so the target drops to 90% of the delivery rate. Fluidity first:
 ///   smaller frames rather than fewer. Without held-back frames a low delivery rate only means there was
 ///   little to send.
-/// - **Up**, slowly: queueing below `clearMs` for `increaseIntervalNs` while the link is actually busy
-///   (delivering at least half the target) raises it by `increase`, up to `ceiling`. An idle link teaches
-///   nothing, so the target stays where the last busy period left it.
+/// - **Up**, slowly: queueing below `clearMs` for `increaseIntervalNs` raises it by `increase`, up to
+///   `ceiling`, busy or not (see `decide`).
+/// - Nothing comes down during `warmupNs` after the first ack, or while the link isn't busy, and one step
+///   down is at most to `maxStep` of the target.
 public struct BitrateController: Sendable {
     public struct Config: Sendable, Equatable {
         public var floor = 6_000_000
         public var ceiling = 60_000_000
         public var congestedMs = 30.0
         public var clearMs = 10.0
-        public var decrease = 0.8
-        public var increase = 1.1
+        /// A decrease without a delivery rate to go by, and the smallest step down.
+        public var decrease = 0.9
+        /// The largest step down: never below this share of the target in one step.
+        public var maxStep = 0.7
+        /// No decrease this soon after the first ack (the first keyframe and its burst).
+        public var warmupNs: UInt64 = 1_000_000_000
+        public var increase = 1.15
         public var decreaseIntervalNs: UInt64 = 250_000_000
         public var increaseIntervalNs: UInt64 = 500_000_000
         /// The round trips the median is taken over (and how old they may be).
         public var recentSamples = 8
         public var recentWindowNs: UInt64 = 500_000_000
-        public var deliveryWindowNs: UInt64 = 1_000_000_000
+        public var deliveryWindowNs: UInt64 = 500_000_000
         public var minRttWindowNs: UInt64 = 10_000_000_000
         /// The link is busy (the target may come down) when the gate held back at least `busyHeldBack` frames
         /// in the last `heldBackWindowNs` and it delivered at least `busyDeliveryBps`. At rest a link stall
@@ -51,6 +57,7 @@ public struct BitrateController: Sendable {
     /// Per-second minima of the round trip, for the windowed best.
     private var minima: [(second: UInt64, rttNs: UInt64)] = []
     private var lastChangeNs: UInt64?
+    private var firstAckNs: UInt64?
     /// When the gate held frames back, within `heldBackWindowNs`.
     private var heldBackAt: [UInt64] = []
     private var clearSinceNs: UInt64?
@@ -71,12 +78,19 @@ public struct BitrateController: Sendable {
         return Double(fresh[fresh.count / 2] &- min(best, fresh[fresh.count / 2])) / 1e6
     }
 
-    /// Bits per second acknowledged over the delivery window, if it holds enough acks to say.
+    /// Bits per second acknowledged over the delivery window, if it holds enough acks to say. Measured over
+    /// the time the link was delivering: a silence between acks longer than three times the window's median
+    /// gap is a stall and counts as one median gap, so a link stall (no acks for ~270 ms) doesn't read as a
+    /// slow link, while a slow link's steady acks still do.
     public func deliveryBps(at now: UInt64) -> Int? {
         let window = delivered.filter { now &- $0.at <= config.deliveryWindowNs }
-        guard window.count >= 5, let first = window.first else { return nil }
-        let span = max(now &- first.at, config.deliveryWindowNs / 2)
-        return Int(Double(window.reduce(0) { $0 + $1.bytes }) * 8 / (Double(span) / 1e9))
+        guard window.count >= 5 else { return nil }
+        let gaps = (1..<window.count).map { window[$0].at &- window[$0 - 1].at }
+        let median = gaps.sorted()[gaps.count / 2]
+        let span = gaps.reduce(UInt64(0)) { $0 + ($1 > 3 * median ? median : $1) }
+        guard span > 0 else { return nil }
+        let bytes = window.dropFirst().reduce(0) { $0 + $1.bytes }
+        return Int(Double(bytes) * 8 / (Double(span) / 1e9))
     }
 
     /// The host's gate held a frame back (two already in flight): there's more to send than the link takes.
@@ -95,6 +109,7 @@ public struct BitrateController: Sendable {
     /// target when it changed.
     @discardableResult
     public mutating func acked(bytes: Int, rttNs: UInt64, at now: UInt64) -> Int? {
+        if firstAckNs == nil { firstAckNs = now }
         recent.append((now, rttNs))
         if recent.count > config.recentSamples { recent.removeFirst(recent.count - config.recentSamples) }
         delivered.append((now, bytes))
@@ -112,23 +127,34 @@ public struct BitrateController: Sendable {
     private mutating func decide(at now: UInt64) -> Int? {
         guard let queueing = queueingMs(at: now) else { return nil }
         let since = lastChangeNs.map { now &- $0 } ?? .max
-        if queueing > config.congestedMs {
+        let warm = firstAckNs.map { now &- $0 >= config.warmupNs } ?? false
+        let delivery = deliveryBps(at: now)
+        // Saturated: frames held back while the link delivers under 90% of the target. Not from the round
+        // trips alone: when every frame is big, each one's transfer time is in the best round trip too, so
+        // a link carrying a fifth of the target can show no queueing at all.
+        let busy = isBusy(at: now)
+        let saturated = busy && (delivery.map { Double($0) < Double(target) * 0.9 } ?? false)
+        if saturated || (busy && queueing > config.congestedMs) {
             clearSinceNs = nil
-            guard since >= config.decreaseIntervalNs, isBusy(at: now) else { return nil }
-            let byDelivery = deliveryBps(at: now).map { Int(Double($0) * 0.9) }
-            let lowered = min(Int(Double(target) * config.decrease), byDelivery ?? .max)
-            return set(max(config.floor, min(lowered, target)), at: now)
+            // Down only once warm: the session's first keyframe burst isn't the link's capacity.
+            guard warm, since >= config.decreaseIntervalNs else { return nil }
+            // To 90% of what the link delivered, but at most `maxStep` lower per step (a delivery rate
+            // diluted by an idle moment mustn't crash it).
+            let byDelivery = delivery.map { Int(Double($0) * 0.9) } ?? Int(Double(target) * config.decrease)
+            let lowered = max(byDelivery, Int(Double(target) * config.maxStep))
+            return set(max(config.floor, min(lowered, Int(Double(target) * config.decrease))), at: now)
         }
-        guard queueing < config.clearMs else {
+        // Up while nothing queues and nothing was held back lately, busy or not (probing, as congestion
+        // control does): a quiet link at a low target makes small frames that never fill it, so waiting for
+        // it to be busy would trap the target low. A target too high comes down once frames back up.
+        let heldLately = heldBackAt.last.map { now &- $0 <= config.heldBackWindowNs } ?? false
+        guard queueing < config.clearMs, !heldLately else {
             clearSinceNs = nil
-            guard since >= config.decreaseIntervalNs, isBusy(at: now),
-                  let delivery = deliveryBps(at: now), Double(delivery) < Double(target) * 0.9 else { return nil }
-            return set(max(config.floor, Int(Double(delivery) * 0.9)), at: now)
+            return nil
         }
         let clearSince = clearSinceNs ?? now
         clearSinceNs = clearSince
-        guard now &- clearSince >= config.increaseIntervalNs, since >= config.increaseIntervalNs,
-              let delivery = deliveryBps(at: now), delivery * 2 >= target else { return nil }
+        guard now &- clearSince >= config.increaseIntervalNs, since >= config.increaseIntervalNs else { return nil }
         return set(min(config.ceiling, Int(Double(target) * config.increase)), at: now)
     }
 
