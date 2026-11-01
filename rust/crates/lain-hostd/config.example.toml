@@ -14,6 +14,11 @@
 # where they were. 0 removes it at once.
 # keep_alive_seconds = 30
 
+# lain's display's scale, from 1 to 3, as in GNOME's display settings: 2 shows the iPad at its own size (as the Mac
+# host does); 1.75 or 1.5 give more room with smaller text. GNOME applies the closest scale it supports (fractional
+# ones need fractional scaling on, which Ubuntu's GNOME has by default). Unset: the iPad's own.
+# scale = 2
+
 # GNOME Shell's top-bar pointer barrier: pointer moves that would cross it into lain's display from the
 # primary monitor go around it. The band is the top bar's height in logical pixels, from 0 to 200.
 # [barrier]

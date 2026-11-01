@@ -32,6 +32,8 @@ pub const CONFIG_FILE: &str = "config.toml";
 pub const BITRATE_MBPS: (u32, u32) = (1, 200);
 /// `keep_alive_seconds`' bounds: 0 (off) to 10 minutes.
 pub const KEEP_ALIVE_SECONDS: (u32, u32) = (0, 600);
+/// `scale`'s bounds.
+pub const SCALE: (f64, f64) = (1.0, 3.0);
 /// The panel band's bounds in logical pixels (GNOME's top bar is about 32).
 pub const BARRIER_BAND: (f64, f64) = (0.0, 200.0);
 /// The pinch threshold's bounds: above 1 (`PinchZoomMapper` asserts it), at most 4 (a 4× pinch per step).
@@ -66,6 +68,10 @@ pub struct Config {
     /// out), so that it comes back to the same display (`HostConfig::display_keep_alive`; no Swift counterpart).
     /// 0 removes it at once, as the Mac host does.
     pub keep_alive_seconds: u32,
+    /// lain's display's scale, as GNOME's display settings offer it (the closest scale GNOME supports is
+    /// applied); unset: the iPad's own (2, as the Mac host). New in the port: GNOME's interface is larger than
+    /// macOS's at the same scale, so a smaller one (1.5, 1.75) gives more room.
+    pub scale: Option<f64>,
     /// The panel-barrier detour of pointer moves (`lain_gnome::Barrier`; no Swift counterpart).
     pub barrier: BarrierConfig,
     pub input: InputSection,
@@ -78,6 +84,7 @@ impl Default for Config {
             wifi: true,
             bitrate_mbps: PipelineOptions::default().average_bit_rate / 1_000_000,
             keep_alive_seconds: 30,
+            scale: None,
             barrier: BarrierConfig { detour: barrier.detour, band: barrier.band },
             input: InputSection::from(&InputConfig::default()),
         }
@@ -320,6 +327,12 @@ impl Config {
                 format!("must be between {lo} and {hi}, not {}", self.keep_alive_seconds),
             );
         }
+        if let Some(scale) = self.scale {
+            let (lo, hi) = SCALE;
+            if !(scale.is_finite() && (lo..=hi).contains(&scale)) {
+                return bad("scale", format!("must be between {lo} and {hi}, not {scale}"));
+            }
+        }
         let (lo, hi) = BARRIER_BAND;
         let band = self.barrier.band;
         if !(band.is_finite() && (lo..=hi).contains(&band)) {
@@ -539,6 +552,7 @@ mod tests {
         assert!(c.wifi);
         assert_eq!(c.bitrate_mbps, 60);
         assert_eq!(c.keep_alive_seconds, 30);
+        assert_eq!(c.scale, None);
         assert_eq!(c.input_config(), InputConfig::default());
         assert_eq!(c.barrier(), Barrier::default());
         assert_eq!(c.pipeline_options(), PipelineOptions::default());
@@ -567,7 +581,9 @@ mod tests {
             .map(|l| format!("{l}\n"))
             .collect();
         assert!(uncommented.contains("\nwifi = true\n"), "{uncommented}");
-        assert_eq!(parse(&uncommented).unwrap(), Config::default(), "{uncommented}");
+        // `scale` is shown at the iPad's own 2, which unset means too.
+        let shown = Config { scale: Some(2.0), ..Config::default() };
+        assert_eq!(parse(&uncommented).unwrap(), shown, "{uncommented}");
     }
 
     #[test]
@@ -680,6 +696,11 @@ client_stop_delay_ms = 300
         assert!(refused("keep_alive_seconds = -1\n").contains("keep_alive_seconds: "));
         let off = parse("keep_alive_seconds = 0\n").unwrap();
         assert_eq!(off.host_config(None, VersionList::offered().clone()).display_keep_alive, Duration::ZERO);
+        assert_eq!(parse("scale = 1.5\n").unwrap().scale, Some(1.5));
+        assert_eq!(parse("scale = 2\n").unwrap().scale, Some(2.0), "an integer is fine");
+        assert_eq!(refused("scale = 0.5\n"), "/x/lain/config.toml: scale: must be between 1 and 3, not 0.5");
+        assert!(refused("scale = nan\n").contains("scale: "));
+        assert!(refused("scale = \"big\"\n").contains("scale: invalid type"));
         let c = parse("keep_alive_seconds = 90\n").unwrap();
         assert_eq!(c.host_config(None, VersionList::offered().clone()).display_keep_alive, Duration::from_secs(90));
         let e = refused("[input.modifiers]\ncommand = \"meta\"\n");

@@ -38,6 +38,8 @@ pub struct DesktopMonitor {
     pub is_virtual: bool,
     /// Its current mode: `(width, height, refresh)` in device pixels.
     pub mode: Option<(i32, i32, f64)>,
+    /// The scales Mutter takes for the current mode.
+    pub supported_scales: Vec<f64>,
 }
 
 /// The desktop at one `GetCurrentState`.
@@ -87,6 +89,7 @@ pub fn build(state: &DisplayState, lain_connector: Option<&str>, ids: &mut IdMap
             let rect = state.rect_of(l)?;
             let lain = lain_connector.is_some_and(|c| l.monitors.iter().any(|s| s.connector == c));
             let mode = info.current_mode().map(|m| (m.width, m.height, m.refresh));
+            let supported_scales = info.current_mode().map(|m| m.supported_scales.clone()).unwrap_or_default();
             Some(DesktopMonitor {
                 monitor: Monitor {
                     id: ids.id(&spec),
@@ -104,6 +107,7 @@ pub fn build(state: &DisplayState, lain_connector: Option<&str>, ids: &mut IdMap
                 rect,
                 scale: l.scale,
                 mode,
+                supported_scales,
             })
         })
         .collect();

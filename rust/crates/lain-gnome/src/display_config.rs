@@ -49,6 +49,22 @@ pub struct Mode {
     pub height: i32,
     pub refresh: f64,
     pub current: bool,
+    /// The scales Mutter takes for this mode (fractional ones only with `scale-monitor-framebuffer` on);
+    /// `ApplyMonitorsConfig` refuses any other.
+    pub supported_scales: Vec<f64>,
+}
+
+/// The supported scale closest to `wanted` (the first of two equally close); `wanted` itself if Mutter listed
+/// none.
+pub fn nearest_scale(supported: &[f64], wanted: f64) -> f64 {
+    supported
+        .iter()
+        .copied()
+        .fold(None, |best: Option<f64>, s| match best {
+            Some(b) if (b - wanted).abs() <= (s - wanted).abs() => Some(b),
+            _ => Some(s),
+        })
+        .unwrap_or(wanted)
 }
 
 /// The per-monitor settings `ApplyMonitorsConfig` resets unless they are passed back: Mutter builds each
@@ -239,11 +255,12 @@ pub fn parse_state(raw: RawState) -> DisplayState {
             spec: spec(s),
             modes: modes
                 .into_iter()
-                .map(|(id, width, height, refresh, _preferred_scale, _scales, p)| Mode {
+                .map(|(id, width, height, refresh, _preferred_scale, scales, p)| Mode {
                     id,
                     width,
                     height,
                     refresh,
+                    supported_scales: scales,
                     current: prop_bool(&p, "is-current").unwrap_or(false),
                 })
                 .collect(),
@@ -358,6 +375,18 @@ pub(crate) mod tests {
 
     pub(crate) fn owned(v: Value<'_>) -> OwnedValue {
         v.try_to_owned().unwrap()
+    }
+
+    #[test]
+    fn the_nearest_supported_scale_is_applied() {
+        let fractional = [1.0, 1.25, 1.4997, 1.75, 2.0, 2.25];
+        assert_eq!(nearest_scale(&fractional, 1.5), 1.4997);
+        assert_eq!(nearest_scale(&fractional, 2.0), 2.0);
+        assert_eq!(nearest_scale(&fractional, 1.6), 1.4997);
+        // Fractional scaling off: integers only, the closest one.
+        assert_eq!(nearest_scale(&[1.0, 2.0, 3.0], 1.5), 1.0, "ties go to the first listed");
+        assert_eq!(nearest_scale(&[1.0, 2.0, 3.0], 1.75), 2.0);
+        assert_eq!(nearest_scale(&[], 1.75), 1.75, "nothing listed: as asked");
     }
 
     fn raw_mode(id: &str, w: i32, h: i32, hz: f64, current: bool) -> RawMode {

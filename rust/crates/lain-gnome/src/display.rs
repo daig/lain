@@ -80,6 +80,8 @@ pub struct GnomeDisplay {
     desktop: DesktopHandle,
     cursor: Arc<CursorState>,
     active: Arc<Mutex<Option<Active>>>,
+    /// The owner's scale for lain's display; `None`: the iPad's own.
+    scale: Option<f64>,
 }
 
 fn failed(what: &str, e: impl std::fmt::Display) -> PlatformError {
@@ -89,7 +91,14 @@ fn failed(what: &str, e: impl std::fmt::Display) -> PlatformError {
 impl GnomeDisplay {
     /// The display backend on `conn`, with the desktop task `monitors::spawn` started and the run's cursor state.
     pub fn new(conn: Connection, desktop: DesktopHandle, cursor: Arc<CursorState>) -> Self {
-        Self { conn, desktop, cursor, active: Arc::new(Mutex::new(None)) }
+        Self { conn, desktop, cursor, active: Arc::new(Mutex::new(None)), scale: None }
+    }
+
+    /// Makes lain's display at `scale` (the closest Mutter supports) instead of the iPad's own. New in the port:
+    /// GNOME's interface is larger than macOS's at the same scale, so the owner may want more room than 2×.
+    pub fn with_scale(mut self, scale: Option<f64>) -> Self {
+        self.scale = scale;
+        self
     }
 
     /// `create`'s body, on a task of its own (review L1). Its result goes to `reply`; if nobody waits for it any
@@ -249,19 +258,19 @@ impl GnomeDisplay {
 
         self.cursor.reset();
         // Scale 0 counts as 1, as in `DisplaySpec::logical_size` (review A4).
-        let spec_scale = spec.scale.max(1);
-        self.desktop.send(Command::SetLain { connector: connector.clone(), spec_scale });
-        let scale = f64::from(spec_scale);
+        let wanted = self.scale.unwrap_or_else(|| f64::from(spec.scale.max(1)));
+        self.desktop.send(Command::SetLain { connector: connector.clone(), scale: wanted });
+        let reached = |m: &crate::desktop::DesktopMonitor| {
+            (m.scale - crate::display_config::nearest_scale(&m.supported_scales, wanted)).abs() < 1e-3
+        };
         let arranged = tokio::time::timeout(
             ARRANGE_TIMEOUT,
-            desktop.wait_for(|d| {
-                d.lain().is_some_and(|m| m.spec.connector == connector && (m.scale - scale).abs() < 1e-3)
-            }),
+            desktop.wait_for(|d| d.lain().is_some_and(|m| m.spec.connector == connector && reached(m))),
         )
         .await
         .is_ok_and(|r| r.is_ok());
         if !arranged {
-            tracing::warn!(connector, "lain's display didn't reach scale {scale} in time; going on at Mutter's");
+            tracing::warn!(connector, "lain's display didn't reach scale {wanted} in time; going on at Mutter's");
         }
         let d = desktop.borrow().clone();
         let lain =
@@ -270,7 +279,7 @@ impl GnomeDisplay {
         let refresh_hz = if hz > 0.0 { hz.round() as u32 } else { spec.refresh_hz };
         let streamed =
             StreamedDisplay { id: lain.monitor.id, pixel_width: w as u32, pixel_height: h as u32, refresh_hz };
-        tracing::info!(connector, ?streamed, node_id, "lain's display is up");
+        tracing::info!(connector, ?streamed, node_id, scale = lain.scale, "lain's display is up");
         let source = GnomeSource {
             node_id,
             mapping_id,

@@ -27,8 +27,9 @@ pub enum Command {
     /// a new virtual monitor is kept out of `monitors()`, so it is never listed as an ordinary monitor before
     /// it is marked as lain's (review A5).
     Creating { known: HashSet<MonitorSpec> },
-    /// lain's display is `connector`, to be kept at `spec_scale` (0 counts as 1): mark it, and arrange it now.
-    SetLain { connector: String, spec_scale: u32 },
+    /// lain's display is `connector`, to be kept at the supported scale closest to `scale`: mark it, and
+    /// arrange it now.
+    SetLain { connector: String, scale: f64 },
     /// lain's display is gone (destroyed, ended by Mutter, or its creation given up): its entry leaves
     /// `monitors()` at once, and stays out while Mutter still lists that monitor.
     ClearLain,
@@ -50,7 +51,16 @@ impl DesktopHandle {
 
 struct Lain {
     connector: String,
-    spec_scale: u32,
+    /// The scale asked for; the one applied is the closest Mutter supports for the current mode.
+    wanted: f64,
+}
+
+impl Lain {
+    fn target(&self, state: &DisplayState) -> f64 {
+        let supported =
+            state.monitor(&self.connector).and_then(|m| m.current_mode()).map(|m| m.supported_scales.as_slice());
+        crate::display_config::nearest_scale(supported.unwrap_or(&[]), self.wanted)
+    }
 }
 
 struct Task {
@@ -141,9 +151,10 @@ impl Task {
                         self.creating = Some(known);
                         self.publish();
                     }
-                    Some(Command::SetLain { connector, spec_scale }) => {
+                    Some(Command::SetLain { connector, scale }) => {
                         self.creating = None;
-                        self.lain = Some(Lain { connector, spec_scale: spec_scale.max(1) });
+                        let wanted = if scale > 0.0 { scale } else { 1.0 };
+                        self.lain = Some(Lain { connector, wanted });
                         self.tracker.reset();
                         self.wake = None;
                         self.refresh().await;
@@ -215,7 +226,7 @@ impl Task {
         Some(View {
             set: state.monitor_set(),
             scale: logical.scale,
-            spec_scale: lain.spec_scale,
+            spec_scale: lain.target(state),
             current: arrangement::derive(&others, &rect),
         })
     }
@@ -242,7 +253,14 @@ impl Task {
         for attempt in 0..2 {
             let (Some(lain), Some(state)) = (self.lain.as_ref(), self.state.as_ref()) else { return };
             let set = state.monitor_set();
-            let spec_scale = f64::from(lain.spec_scale);
+            let spec_scale = lain.target(state);
+            if (spec_scale - lain.wanted).abs() > 1e-3 {
+                tracing::info!(
+                    wanted = lain.wanted,
+                    applied = spec_scale,
+                    "lain's display: the closest scale Mutter supports"
+                );
+            }
             let planned = (|| {
                 let logical = state.logical_of(&lain.connector)?;
                 let mode = state.monitor(&lain.connector)?.current_mode()?;
