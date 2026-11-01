@@ -844,6 +844,9 @@ public final class HostSession: Sendable {
         log.notice("session ended")
     }
 
+    /// Where adaptive bitrate starts over Wi-Fi (the logs on a weak AWDL link: ~12 Mb/s while scrolling).
+    static let wifiStartBitRate = 20_000_000
+
     /// Capture was stopped on the Mac: resumes after `Tuning.resumeDelay` if the owner wants that and the
     /// last automatic resume is at least `Tuning.resumeMinGap` ago.
     private func resumeAfterStop() {
@@ -871,8 +874,11 @@ public final class HostSession: Sendable {
         guard let video = connection.video else { return nil }
         let link = connection.link, log = self.log
         do {
+            // Adaptive bitrate starts at the ceiling over USB (it rarely moves there), lower over Wi-Fi so the
+            // first scroll doesn't flood the link.
+            let start: Int? = link.transport == .usb ? nil : Self.wifiStartBitRate
             try await video.start(hello: hello, videoChannel: link.video, sendRealtime: { link.realtime.send($0) },
-                                  onError: { [weak self, weak connection] error in
+                                  startBitRate: start, onError: { [weak self, weak connection] error in
                                       if error is CaptureStoppedByUser {
                                           // The owner stopped it: keep the session, input only; then, if the owner
                                           // wants that, start again by itself (rust/HOST-PARITY.md §2).

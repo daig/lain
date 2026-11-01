@@ -68,6 +68,10 @@ public final class HostVideoPipeline: Sendable {
         public var cursorHz = 60.0
         /// The owner's choice (`HostPreferences.colorFormat`): 4:4:4 where the iPad decodes it, or 4:2:0 always.
         public var allows444 = true
+        /// Adaptive bitrate (`BitrateController`): `averageBitRate` is the ceiling, and each stream starts at
+        /// `start(…, startBitRate:)`. Off: a fixed `averageBitRate`, as before.
+        public var adaptive = true
+        public var bitrateFloor = 6_000_000
         public init() {}
     }
 
@@ -108,6 +112,10 @@ public final class HostVideoPipeline: Sendable {
         var discardDisplay = false
         /// The current second's diagnostics (`takeDiagnostics`).
         var window = VideoWindow()
+        /// Adaptive bitrate: steered by the acks (nil: fixed rate).
+        var bitrate: BitrateController?
+        /// What the encoder runs at now: the target, or the ceiling for refinements (the link is idle then).
+        var appliedRate = 0
     }
 
     public let displayProvider: any StreamedDisplayProvider
@@ -159,8 +167,9 @@ public final class HostVideoPipeline: Sendable {
     /// Creates the display, the encoder and the capture, and starts streaming on `videoChannel`
     /// (whose handler it takes over for `FrameAck`s). `sendRealtime` carries cursor messages.
     /// `onError` is called if capture stops on its own (display gone, permission revoked).
+    /// `startBitRate`: where adaptive bitrate starts (nil: the ceiling, `Options.averageBitRate`).
     public func start(hello: Hello, videoChannel: MessageChannel, sendRealtime: @escaping @Sendable (Message) -> Void,
-                      onError: (@Sendable (any Error) -> Void)? = nil) async throws {
+                      startBitRate: Int? = nil, onError: (@Sendable (any Error) -> Void)? = nil) async throws {
         let claimed = state.withLock { s -> Bool in
             guard s.phase == .idle else { return false }
             s.phase = .starting
@@ -183,9 +192,19 @@ public final class HostVideoPipeline: Sendable {
             var wanted = VideoEncoder.Settings(width: display.pixelWidth, height: display.pixelHeight)
             wanted.chroma = Self.requestedChroma(for: hello, allows444: options.allows444)
             wanted.frameRate = hello.maxRefreshRate > 0 ? min(options.frameRate, Int(hello.maxRefreshRate)) : options.frameRate
-            wanted.averageBitRate = options.averageBitRate
+            var control: BitrateController?
+            if options.adaptive {
+                var config = BitrateController.Config()
+                config.ceiling = options.averageBitRate
+                config.floor = min(options.bitrateFloor, options.averageBitRate)
+                control = BitrateController(config: config, start: startBitRate ?? options.averageBitRate)
+            }
+            wanted.averageBitRate = control?.target ?? options.averageBitRate
             settings = wanted
             encoder = try VideoEncoder(settings: settings) { [weak self] out in self?.encoded(out) }
+            if let control, control.target < control.config.ceiling {
+                encoder.setBitRate(average: control.target, bytesPerSecondLimit: Self.limit(for: control.target))
+            }
             let gate = FrameGate<Item>(maxInFlight: options.maxInFlight, isStale: { [weak self] item in
                 self.map { item.capture < $0.newestCapture.load(ordering: .acquiring) } ?? false
             }) { [weak self] item in self?.submit(item) }
@@ -200,6 +219,8 @@ public final class HostVideoPipeline: Sendable {
                 timer.schedule(deadline: .now(), repeating: .milliseconds(idleCheckMs), leeway: .milliseconds(2))
                 timer.setEventHandler { [weak self] in self?.idleTick() }
                 s.phase = .running
+                s.bitrate = control
+                s.appliedRate = settings.averageBitRate
                 s.display = display
                 s.encoder = encoder
                 s.gate = gate
@@ -333,10 +354,18 @@ public final class HostVideoPipeline: Sendable {
 
     /// The second's diagnostics since the last call (nil unless running), and a fresh window.
     public func takeDiagnostics() -> VideoWindow? {
-        state.withLock { s in
+        let now = MonotonicClock.now()
+        return state.withLock { s in
             guard s.phase == .running else { return nil }
             defer { s.window = VideoWindow() }
-            return s.window
+            var w = s.window
+            if let b = s.bitrate {
+                w.targetBps = b.target
+                w.deliveryBps = b.deliveryBps(at: now)
+                w.queueingMs = b.queueingMs(at: now)
+            }
+            w.encodeP50Ms = s.encodeMs.p50
+            return w
         }
     }
 
@@ -386,15 +415,30 @@ public final class HostVideoPipeline: Sendable {
 
     // MARK: Encoder
 
+    /// A hard cap of 1.5× the average over one second: a scroll can't burst far past what the link takes.
+    static func limit(for average: Int) -> Int { average / 8 * 3 / 2 }
+
     /// Called by the gate (outside its lock) when a frame may enter the encoder.
     private func submit(_ item: Item) {
-        let next = state.withLock { s -> (VideoEncoder, UInt32)? in
+        let next = state.withLock { s -> (VideoEncoder, UInt32, Int?)? in
             guard s.phase == .running, let e = s.encoder else { return nil }
             let id = s.nextFrameId
             s.nextFrameId &+= 1
-            return (e, id)
+            // Adaptive bitrate: the target, or the ceiling for a refinement (the screen is still, the link idle).
+            var change: Int?
+            if let b = s.bitrate {
+                let wanted = item.refinement ? b.config.ceiling : b.target
+                if wanted != s.appliedRate {
+                    s.appliedRate = wanted
+                    change = wanted
+                }
+            }
+            return (e, id, change)
         }
-        guard let (encoder, frameId) = next else { return }
+        guard let (encoder, frameId, change) = next else { return }
+        if let change {
+            encoder.setBitRate(average: change, bytesPerSecondLimit: change < options.averageBitRate ? Self.limit(for: change) : nil)
+        }
         // Frame ids are encode ids: monotonically increasing, so the PTS (frame ticks) is too (D25).
         encoder.encode(item.buffer, frameId: frameId, captureTimeNs: item.captureNs, refinement: item.refinement)
     }
@@ -451,6 +495,7 @@ public final class HostVideoPipeline: Sendable {
             guard s.phase == .running else { return nil }
             if let a = s.acks.acked(frameId: ack.frameId, at: now) {
                 s.rttMs.record(Double(a.roundTripNs) / 1e6)
+                s.bitrate?.acked(bytes: Int(ack.bytes), rttNs: a.roundTripNs, at: now)
                 if s.window.ackRttsMs.count < 512 { s.window.ackRttsMs.append(Double(a.roundTripNs) / 1e6) }
             }
             return s.gate

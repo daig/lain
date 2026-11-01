@@ -112,6 +112,15 @@ public final class VideoEncoder: @unchecked Sendable {
         }
     }
 
+    /// Changes the rate live (adaptive bitrate): the average, and a hard cap in bytes per second (nil: none,
+    /// as at the start; a cap costs encode time, §13, so it's only set below the ceiling).
+    public func setBitRate(average: Int, bytesPerSecondLimit: Int?) {
+        VTSessionSetProperty(session, key: kVTCompressionPropertyKey_AverageBitRate, value: average as CFNumber)
+        let limit: CFTypeRef = bytesPerSecondLimit.map { [$0, 1] as CFArray } ?? ([] as CFArray)
+        let status = VTSessionSetProperty(session, key: kVTCompressionPropertyKey_DataRateLimits, value: limit)
+        if status != noErr { log.error("data rate limit not set: \(status)") }
+    }
+
     /// The next frame will be a keyframe (client `KeyframeRequest`, §7.7 and D22).
     public func requestKeyframe() { state.withLock { $0.forceKeyframe = true } }
 

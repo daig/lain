@@ -80,6 +80,11 @@ public struct VideoWindow: Sendable, Equatable {
     public var refinements = 0
     public var ackRttsMs: [Double] = []
     public var maxInFlight = 0
+    /// Adaptive bitrate at the end of the second: the target, what the link delivered, the queueing.
+    public var targetBps: Int?
+    public var deliveryBps: Int?
+    public var queueingMs: Double?
+    public var encodeP50Ms: Double?
     public init() {}
 
     /// With the cumulative stats' change over the same second (captured, held back before encode).
@@ -87,9 +92,16 @@ public struct VideoWindow: Sendable, Equatable {
         let sorted = ackRttsMs.sorted()
         let p50 = sorted.isEmpty ? 0 : sorted[sorted.count / 2], max = sorted.last ?? 0
         let mean = sent > 0 ? bytes / sent : 0
-        return String(format: "video: captured %d, sent %d (kf %d, refine %d), held back %d · %.1f Mb/s, frame mean %d KB max %d KB"
-                          + " · ack p50 %.0f max %.0f ms · in flight max %d",
-                      captured, sent, keyframes, refinements, droppedBeforeEncode, Double(bytes) * 8 / 1e6, mean / 1024,
-                      maxFrameBytes / 1024, p50, max, maxInFlight)
+        var line = String(format: "video: captured %d, sent %d (kf %d, refine %d), held back %d · %.1f Mb/s, frame mean %d KB max %d KB"
+                              + " · ack p50 %.0f max %.0f ms · in flight max %d",
+                          captured, sent, keyframes, refinements, droppedBeforeEncode, Double(bytes) * 8 / 1e6, mean / 1024,
+                          maxFrameBytes / 1024, p50, max, maxInFlight)
+        if let targetBps {
+            line += String(format: " · target %.1f Mb/s", Double(targetBps) / 1e6)
+            line += deliveryBps.map { String(format: ", delivered %.1f", Double($0) / 1e6) } ?? ""
+            line += queueingMs.map { String(format: ", queueing %.0f ms", $0) } ?? ""
+        }
+        if let encodeP50Ms { line += String(format: " · encode p50 %.1f ms", encodeP50Ms) }
+        return line
     }
 }
