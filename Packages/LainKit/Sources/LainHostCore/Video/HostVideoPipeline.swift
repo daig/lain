@@ -104,6 +104,8 @@ public final class HostVideoPipeline: Sendable {
         /// Capture failed on its own (not stopped by the owner): the display goes with it rather than being
         /// kept for the next session (`DisplayKeeper`).
         var discardDisplay = false
+        /// The current second's diagnostics (`takeDiagnostics`).
+        var window = VideoWindow()
     }
 
     public let displayProvider: any StreamedDisplayProvider
@@ -326,6 +328,15 @@ public final class HostVideoPipeline: Sendable {
         }
     }
 
+    /// The second's diagnostics since the last call (nil unless running), and a fresh window.
+    public func takeDiagnostics() -> VideoWindow? {
+        state.withLock { s in
+            guard s.phase == .running else { return nil }
+            defer { s.window = VideoWindow() }
+            return s.window
+        }
+    }
+
     public var stats: HostVideoStats {
         let now = MonotonicClock.now()
         let (snapshot, gate) = state.withLock { s -> (HostVideoStats, FrameGate<Item>?) in
@@ -408,11 +419,18 @@ public final class HostVideoPipeline: Sendable {
                 s.stats.bytesSent += out.data.count
                 if out.isKeyframe { s.stats.keyframes += 1 }
                 if out.isRefinement { s.stats.refinements += 1 }
+                s.window.sent += 1
+                s.window.bytes += out.data.count
+                s.window.maxFrameBytes = max(s.window.maxFrameBytes, out.data.count)
+                if out.isKeyframe { s.window.keyframes += 1 }
+                if out.isRefinement { s.window.refinements += 1 }
                 return (channel, gate, s.configId)
             }
             guard let (channel, gate, configId) = target else { return }
             // In flight before it is on the wire, so its ack can't arrive first.
             gate.sent(frameId: out.frameId)
+            let inFlight = gate.inFlight
+            state.withLock { $0.window.maxInFlight = max($0.window.maxInFlight, inFlight) }
             if let config = out.config { channel.send(.videoConfig(config)) }
             var flags: HeaderFlags = out.isKeyframe ? .keyframe : []
             if out.isRefinement { flags.insert(.refinement) }
@@ -428,7 +446,10 @@ public final class HostVideoPipeline: Sendable {
         let now = MonotonicClock.now()
         let gate = state.withLock { s -> FrameGate<Item>? in
             guard s.phase == .running else { return nil }
-            if let a = s.acks.acked(frameId: ack.frameId, at: now) { s.rttMs.record(Double(a.roundTripNs) / 1e6) }
+            if let a = s.acks.acked(frameId: ack.frameId, at: now) {
+                s.rttMs.record(Double(a.roundTripNs) / 1e6)
+                if s.window.ackRttsMs.count < 512 { s.window.ackRttsMs.append(Double(a.roundTripNs) / 1e6) }
+            }
             return s.gate
         }
         gate?.acked(frameId: ack.frameId)
