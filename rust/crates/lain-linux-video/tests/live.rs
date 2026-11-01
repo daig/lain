@@ -47,11 +47,12 @@ fn encode_config() -> EncodeConfig {
     }
 }
 
-/// Runs `body` on lain's display, then destroys the display whatever happened.
+/// Runs `body` on lain's display, then destroys the display whatever happened: the body runs as a task of its
+/// own, so that a panic in it (an assertion, an overflow) still reaches the destroy.
 async fn with_display<F, Fut>(body: F)
 where
     F: FnOnce(GnomeSource, Arc<CursorState>) -> Fut,
-    Fut: std::future::Future<Output = Result<(), String>>,
+    Fut: std::future::Future<Output = Result<(), String>> + Send + 'static,
 {
     let conn = zbus::Connection::session().await.expect("the session bus");
     let dir = tempfile::tempdir().unwrap();
@@ -62,7 +63,7 @@ where
     let result = match display.create(IPAD).await {
         Ok((streamed, source)) => {
             eprintln!("lain's display {streamed:?} on {} (node {})", source.connector, source.node_id);
-            body(source, cursor).await
+            tokio::spawn(body(source, cursor)).await.unwrap_or_else(|e| Err(format!("the test body panicked: {e}")))
         }
         Err(e) => Err(format!("create: {e}")),
     };
@@ -158,7 +159,7 @@ async fn drive(
 #[ignore = "desktop: creates lain's display and a fullscreen window on it (the lead runs it, with the developer told)"]
 async fn desktop_capture_10s_full() {
     with_display(|source, cursor| async move {
-        let _probe = Probe::start(&source.connector, 13);
+        let _probe = Probe::start(&source.connector, 16); // outlasts the 2 s settle, the start and 11 s of driving
         tokio::time::sleep(Duration::from_secs(2)).await; // the window comes up fullscreen
         let video = LinuxVideo::new(LinuxVideoConfig::default());
         let (session, mut events) = video.start(&source, encode_config()).await.map_err(|e| e.to_string())?;
@@ -180,7 +181,8 @@ async fn desktop_capture_10s_full() {
             (after.replaced - before.replaced) as f64 / 10.0,
             run.captured as f64 / 10.0,
             run.encoded.len() as f64 / 10.0,
-            (run.captured - encoded_captures.len() as u64) as f64 / 10.0,
+            // Saturating: a request still out at the end of the warm-up is answered in this window.
+            run.captured.saturating_sub(encoded_captures.len() as u64) as f64 / 10.0,
             run.failed
         );
         println!(
@@ -210,7 +212,7 @@ async fn desktop_capture_10s_full() {
 #[ignore = "desktop: creates lain's display and a fullscreen window on it (the lead runs it, with the developer told)"]
 async fn desktop_forced_idr_from_live_capture() {
     with_display(|source, _| async move {
-        let _probe = Probe::start(&source.connector, 6);
+        let _probe = Probe::start(&source.connector, 8);
         tokio::time::sleep(Duration::from_secs(2)).await;
         let (session, mut events) =
             LinuxVideo::default().start(&source, encode_config()).await.map_err(|e| e.to_string())?;

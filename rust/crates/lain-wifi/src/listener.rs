@@ -218,6 +218,17 @@ pub(crate) fn accept_error_is_exhaustion(error: &io::Error) -> bool {
     matches!(error.raw_os_error(), Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM))
 }
 
+/// How many connection errors in a row the accept loop takes at once. An error that keeps coming past that is
+/// the listening socket's own (EINVAL or EBADF, which a socket this crate owns and never shuts down shouldn't
+/// give), so the loop rests as for exhaustion instead of spinning.
+const ACCEPT_ERRORS_BEFORE_PAUSE: u32 = 16;
+
+/// Whether the accept loop rests (and may warn) after `error`, the `in_a_row`th failure since the last
+/// connection it accepted.
+pub(crate) fn accept_error_pauses(error: &io::Error, in_a_row: u32) -> bool {
+    accept_error_is_exhaustion(error) || in_a_row >= ACCEPT_ERRORS_BEFORE_PAUSE
+}
+
 /// Rate-limits the accept loop's warnings to one per [`DropReports::WINDOW`], counting the rest into the
 /// next one.
 #[derive(Debug, Default)]
@@ -227,8 +238,8 @@ pub(crate) struct AcceptWarnings {
 }
 
 impl AcceptWarnings {
-    /// For an exhaustion error at `now_ns`: `Some(n)` to warn now, with `n` errors suppressed since the last
-    /// warning; `None` to stay quiet.
+    /// For an error that pauses the loop, at `now_ns`: `Some(n)` to warn now, with `n` errors suppressed since
+    /// the last warning; `None` to stay quiet.
     pub(crate) fn exhausted(&mut self, now_ns: u64) -> Option<usize> {
         let window = DropReports::WINDOW.as_nanos() as u64;
         match self.window_start_ns {
@@ -246,16 +257,24 @@ impl AcceptWarnings {
 
 async fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
     let mut warnings = AcceptWarnings::default();
+    let mut in_a_row = 0u32;
     loop {
         match listener.accept().await {
-            Ok((tcp, peer)) => admit(&shared, tcp, peer),
-            Err(e) if accept_error_is_exhaustion(&e) => {
-                if let Some(suppressed) = warnings.exhausted(now_ns()) {
-                    tracing::warn!("Wi-Fi listener: accept failed: {e} ({suppressed} more since the last notice)");
-                }
-                tokio::time::sleep(ACCEPT_ERROR_PAUSE).await;
+            Ok((tcp, peer)) => {
+                in_a_row = 0;
+                admit(&shared, tcp, peer);
             }
-            Err(e) => tracing::debug!("Wi-Fi listener: accept failed for one connection: {e}"),
+            Err(e) => {
+                in_a_row = in_a_row.saturating_add(1);
+                if accept_error_pauses(&e, in_a_row) {
+                    if let Some(suppressed) = warnings.exhausted(now_ns()) {
+                        tracing::warn!("Wi-Fi listener: accept failed: {e} ({suppressed} more since the last notice)");
+                    }
+                    tokio::time::sleep(ACCEPT_ERROR_PAUSE).await;
+                } else {
+                    tracing::debug!("Wi-Fi listener: accept failed for one connection: {e}");
+                }
+            }
         }
     }
 }
@@ -386,6 +405,19 @@ mod tests {
             assert!(!accept_error_is_exhaustion(&os(errno)), "{errno}");
         }
         assert!(!accept_error_is_exhaustion(&io::Error::other("no errno")));
+    }
+
+    /// A connection's own error is retried at once, but one that keeps coming pauses the loop as exhaustion
+    /// does: it is the listening socket's, and retrying it at once would spin.
+    #[test]
+    fn an_accept_error_that_keeps_coming_pauses_the_loop() {
+        let os = io::Error::from_raw_os_error;
+        assert!(accept_error_pauses(&os(libc::EMFILE), 1));
+        for in_a_row in 1..ACCEPT_ERRORS_BEFORE_PAUSE {
+            assert!(!accept_error_pauses(&os(libc::ECONNABORTED), in_a_row), "{in_a_row}");
+        }
+        assert!(accept_error_pauses(&os(libc::EINVAL), ACCEPT_ERRORS_BEFORE_PAUSE));
+        assert!(accept_error_pauses(&os(libc::EINVAL), u32::MAX));
     }
 
     /// Out of descriptors, the loop warns once a window, with the count of the rest.
