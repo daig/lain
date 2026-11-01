@@ -1,0 +1,20 @@
+# Spike A (open spike 1): HEVC encode latency on the AMD iGPU. A standalone package outside rust/'s
+# workspace, on the versions rust/Cargo.toml pins.
+[package]
+name = "linux-encoder-spike"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[[bin]]
+name = "encbench"
+path = "src/main.rs"
+
+[dependencies]
+gstreamer = "0.25"
+gstreamer-app = "0.25"
+gstreamer-video = "0.25"
+libc = "0.2.191"
+zbus = { version = "5.19", default-features = false, features = ["blocking-api", "async-io"] }
