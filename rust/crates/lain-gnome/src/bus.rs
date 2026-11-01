@@ -6,6 +6,8 @@
 //! inhibitor when its owner leaves the bus, so whatever lain leaves behind goes with the process.
 
 use std::collections::HashMap;
+use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::StreamExt;
 use zbus::proxy::{CacheProperties, SignalStream};
@@ -83,6 +85,23 @@ pub struct RemoteSession {
     pub remote: Proxy<'static>,
     pub cast: Proxy<'static>,
     conn: Connection,
+    /// `Start` succeeded: Mutter refuses `Stop` before it ("Session not started", Mutter 50.1 `handle_stop`).
+    started: Arc<AtomicBool>,
+}
+
+/// Ends the RemoteDesktop session at `remote`, which may never have been started. Mutter refuses `Stop` on an
+/// unstarted session and keeps it (and its linked ScreenCast session and streams) until lain's connection
+/// closes, so an unstarted one is started first, then stopped (review L2). Starting it briefly runs whatever
+/// streams it already has, consumer-less: a monitor stream's PipeWire node, and a virtual stream, which makes
+/// no monitor without a consumer (spike B, §1). Failures are logged; then the session stays until the
+/// connection closes.
+async fn end(remote: &Proxy<'_>, started: bool) {
+    if !started && let Err(e) = remote.call::<_, _, ()>("Start", &()).await {
+        tracing::debug!(path = %remote.path(), "Start (to stop an unstarted session): {e}");
+    }
+    if let Err(e) = remote.call::<_, _, ()>("Stop", &()).await {
+        tracing::warn!(path = %remote.path(), "can't stop a RemoteDesktop session; it stays until lain exits: {e}");
+    }
 }
 
 impl RemoteSession {
@@ -100,9 +119,9 @@ impl RemoteSession {
         }
         .await;
         match made {
-            Ok(cast) => Ok(Self { remote, cast, conn: conn.clone() }),
+            Ok(cast) => Ok(Self { remote, cast, conn: conn.clone(), started: Arc::new(AtomicBool::new(false)) }),
             Err(e) => {
-                let _ = remote.call_noreply("Stop", &()).await;
+                end(&remote, false).await;
                 Err(e)
             }
         }
@@ -129,12 +148,20 @@ impl RemoteSession {
     }
 
     pub async fn start(&self) -> zbus::Result<()> {
-        self.remote.call("Start", &()).await
+        self.remote.call::<_, _, ()>("Start", &()).await?;
+        self.started.store(true, Ordering::Release);
+        Ok(())
     }
 
-    /// `Stop`: Mutter removes the session's streams (and a virtual monitor) and emits `Closed`.
+    /// `Stop`: Mutter removes the session's streams (and a virtual monitor) and emits `Closed`. Refused for a
+    /// session that wasn't started: use [`discard`](Self::discard) where that is possible.
     pub async fn stop(&self) -> zbus::Result<()> {
         self.remote.call("Stop", &()).await
+    }
+
+    /// Ends the session whether or not it was started (see [`end`]); errors are logged.
+    pub async fn discard(&self) {
+        end(&self.remote, self.started.load(Ordering::Acquire)).await;
     }
 
     pub fn path(&self) -> String {

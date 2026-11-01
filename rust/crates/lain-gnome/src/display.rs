@@ -7,13 +7,14 @@ use std::time::Duration;
 
 use futures::StreamExt;
 use lain_platform::{DisplayBackend, DisplaySpec, Monitor, PlatformError, PointF, Result, StreamedDisplay};
-use tokio::sync::{Mutex, watch};
+use tokio::sync::{Mutex, oneshot, watch};
 use zbus::Connection;
 use zbus::fdo::DBusProxy;
 use zbus::zvariant::OwnedValue;
 
 use crate::bus::{self, RemoteSession};
 use crate::cursor::CursorState;
+use crate::display_config::MonitorSpec;
 use crate::monitors::{Command, DesktopHandle};
 use crate::negotiate::{self, NegotiatedFormat};
 
@@ -91,15 +92,30 @@ impl GnomeDisplay {
         Self { conn, desktop, cursor, active: Arc::new(Mutex::new(None)) }
     }
 
-    async fn create_inner(&self, spec: DisplaySpec) -> Result<(StreamedDisplay, GnomeSource)> {
+    /// `create`'s body, on a task of its own (review L1). Its result goes to `reply`; if nobody waits for it any
+    /// more (the caller dropped `create`), the display it made is removed again, as Swift's start does when a
+    /// `stop()` comes during it (`HostVideoPipeline.abandonStart`, D29). It holds `active`'s lock throughout, so
+    /// a `destroy` meanwhile waits for it and then removes what it made.
+    async fn create_owned(&self, spec: DisplaySpec, reply: oneshot::Sender<Result<(StreamedDisplay, GnomeSource)>>) {
         let mut active = self.active.lock().await;
         if active.is_some() {
-            return Err(PlatformError::Failed("lain's display already exists; destroy it first".into()));
+            let _ = reply.send(Err(PlatformError::Failed("lain's display already exists; destroy it first".into())));
+            return;
         }
-        let session = RemoteSession::create(&self.conn)
-            .await
-            .map_err(|e| PlatformError::Unavailable(format!("Mutter's RemoteDesktop/ScreenCast: {e}")))?;
-        match self.bring_up(&session, spec).await {
+        // Mutter reuses connector names (each session's monitor is `Meta-0` again), so lain's new monitor is
+        // told apart by its full spec: its serial is new (spike B exp2; review L6).
+        let known: HashSet<MonitorSpec> =
+            self.desktop.desktop.borrow().monitors.iter().map(|m| m.spec.clone()).collect();
+        self.desktop.send(Command::Creating { known: known.clone() });
+        let session = match RemoteSession::create(&self.conn).await {
+            Ok(s) => s,
+            Err(e) => {
+                self.desktop.send(Command::ClearLain);
+                let _ = reply.send(Err(PlatformError::Unavailable(format!("Mutter's RemoteDesktop/ScreenCast: {e}"))));
+                return;
+            }
+        };
+        match self.bring_up(&session, spec, &known).await {
             Ok((display, source, closed)) => {
                 let (end_tx, ended) = watch::channel(None);
                 let destroying = Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -111,36 +127,80 @@ impl GnomeDisplay {
                     self.desktop.clone(),
                     self.cursor.clone(),
                 ));
-                *active = Some(Active {
+                let made = Active {
                     session,
                     connector: source.connector.clone(),
                     ended: ended.clone(),
                     end_tx,
                     destroying,
                     watcher,
-                });
-                Ok((display, GnomeSource { ended, ..source }))
+                };
+                match reply.send(Ok((display, GnomeSource { ended, ..source }))) {
+                    Ok(()) => *active = Some(made),
+                    Err(_) => {
+                        tracing::info!("create was given up; removing the display it made");
+                        self.remove(made).await;
+                    }
+                }
             }
             Err(e) => {
-                let _ = session.stop().await;
+                tracing::warn!("lain's display failed to come up: {e}");
+                session.discard().await;
+                // Until the monitor it may have made is gone, it stays out of `monitors()` (Creating).
+                let mut desktop = self.desktop.desktop.clone();
+                let new_virtual =
+                    |d: &crate::desktop::Desktop| d.monitors.iter().any(|m| m.is_virtual && !known.contains(&m.spec));
+                let gone = tokio::time::timeout(REMOVAL_TIMEOUT, desktop.wait_for(|d| !new_virtual(d))).await;
+                if !matches!(gone, Ok(Ok(_))) {
+                    tracing::warn!("a virtual monitor from the failed create is still listed");
+                }
                 self.desktop.send(Command::ClearLain);
-                Err(e)
+                let _ = reply.send(Err(e));
             }
         }
     }
 
-    /// Everything between `CreateSession` and a display that is listed, arranged and scaled.
+    /// Stops `active`'s session, reports the end, and waits for its monitor to leave (at most
+    /// [`REMOVAL_TIMEOUT`]).
+    async fn remove(&self, active: Active) {
+        if active.ended.borrow().is_none() {
+            active.destroying.store(true, std::sync::atomic::Ordering::Release);
+            if let Err(e) = active.session.stop().await {
+                tracing::debug!("Stop: {e}");
+            }
+        }
+        let _ = tokio::time::timeout(REMOVAL_TIMEOUT, active.watcher).await;
+        active.end_tx.send_if_modified(|e| {
+            let first = e.is_none();
+            if first {
+                *e = Some(DisplayEnd::Destroyed);
+            }
+            first
+        });
+        self.desktop.send(Command::ClearLain);
+        self.cursor.set_geometry(None);
+        let connector = active.connector;
+        let mut desktop = self.desktop.desktop.clone();
+        let gone =
+            tokio::time::timeout(REMOVAL_TIMEOUT, desktop.wait_for(|d| d.by_connector(&connector).is_none())).await;
+        if !matches!(gone, Ok(Ok(_))) {
+            tracing::warn!(connector, "lain's display is still listed after Stop");
+        }
+    }
+
+    /// Everything between `CreateSession` and a display that is listed, arranged and scaled. `known`: the
+    /// monitors there before.
     async fn bring_up(
         &self,
         session: &RemoteSession,
         spec: DisplaySpec,
+        known: &HashSet<MonitorSpec>,
     ) -> Result<(StreamedDisplay, GnomeSource, zbus::proxy::SignalStream<'static>)> {
         let closed = session.closed().await.map_err(|e| failed("subscribing to Closed", e))?;
         let stream_path = session.record_virtual().await.map_err(|e| failed("RecordVirtual", e))?;
         let stream = session.stream(stream_path.clone()).await.map_err(|e| failed("the stream", e))?;
         let mut added =
             stream.receive_signal("PipeWireStreamAdded").await.map_err(|e| failed("PipeWireStreamAdded", e))?;
-        let known: HashSet<String> = self.desktop.desktop.borrow().connectors().into_iter().collect();
         session.start().await.map_err(|e| failed("Start", e))?;
         let node_id = tokio::time::timeout(NODE_TIMEOUT, bus::next_node_id(&mut added))
             .await
@@ -175,7 +235,7 @@ impl GnomeDisplay {
         let size = (spec.pixel_width as i32, spec.pixel_height as i32);
         // The new virtual monitor in the negotiated mode.
         let is_new = |m: &crate::desktop::DesktopMonitor| {
-            m.is_virtual && !known.contains(&m.spec.connector) && m.mode.is_some_and(|(w, h, _)| (w, h) == size)
+            m.is_virtual && !known.contains(&m.spec) && m.mode.is_some_and(|(w, h, _)| (w, h) == size)
         };
         let connector =
             match tokio::time::timeout(MONITOR_TIMEOUT, desktop.wait_for(|d| d.monitors.iter().any(is_new))).await {
@@ -188,8 +248,10 @@ impl GnomeDisplay {
         negotiation.finish().await;
 
         self.cursor.reset();
-        self.desktop.send(Command::SetLain { connector: connector.clone(), spec_scale: spec.scale });
-        let scale = f64::from(spec.scale.max(1));
+        // Scale 0 counts as 1, as in `DisplaySpec::logical_size` (review A4).
+        let spec_scale = spec.scale.max(1);
+        self.desktop.send(Command::SetLain { connector: connector.clone(), spec_scale });
+        let scale = f64::from(spec_scale);
         let arranged = tokio::time::timeout(
             ARRANGE_TIMEOUT,
             desktop.wait_for(|d| {
@@ -269,8 +331,16 @@ async fn watch_end(
 impl DisplayBackend for GnomeDisplay {
     type Source = GnomeSource;
 
+    /// Cancel-safe: once polled, the creation runs to its end on a task of its own; if this future is dropped
+    /// first, the display it made is removed again ([`GnomeDisplay::create_owned`]), and a `destroy` issued
+    /// meanwhile waits for that.
     fn create(&self, spec: DisplaySpec) -> impl Future<Output = Result<(StreamedDisplay, GnomeSource)>> + Send {
-        self.create_inner(spec)
+        let this = self.clone();
+        async move {
+            let (reply, result) = oneshot::channel();
+            tokio::spawn(async move { this.create_owned(spec, reply).await });
+            result.await.unwrap_or_else(|_| Err(PlatformError::Failed("lain's display's creation ended".into())))
+        }
     }
 
     fn destroy(&self) -> impl Future<Output = ()> + Send {
@@ -278,29 +348,7 @@ impl DisplayBackend for GnomeDisplay {
         // On a task of its own, so the removal completes even if this future is dropped.
         let task = tokio::spawn(async move {
             let Some(active) = this.active.lock().await.take() else { return };
-            if active.ended.borrow().is_none() {
-                active.destroying.store(true, std::sync::atomic::Ordering::Release);
-                if let Err(e) = active.session.stop().await {
-                    tracing::debug!("Stop: {e}");
-                }
-            }
-            let _ = tokio::time::timeout(REMOVAL_TIMEOUT, active.watcher).await;
-            active.end_tx.send_if_modified(|e| {
-                let first = e.is_none();
-                if first {
-                    *e = Some(DisplayEnd::Destroyed);
-                }
-                first
-            });
-            this.desktop.send(Command::ClearLain);
-            this.cursor.set_geometry(None);
-            let connector = active.connector;
-            let mut desktop = this.desktop.desktop.clone();
-            let gone =
-                tokio::time::timeout(REMOVAL_TIMEOUT, desktop.wait_for(|d| d.by_connector(&connector).is_none())).await;
-            if !matches!(gone, Ok(Ok(_))) {
-                tracing::warn!(connector, "lain's display is still listed after Stop");
-            }
+            this.remove(active).await;
         });
         async move {
             let _ = task.await;

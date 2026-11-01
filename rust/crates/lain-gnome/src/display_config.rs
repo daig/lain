@@ -51,6 +51,38 @@ pub struct Mode {
     pub current: bool,
 }
 
+/// The per-monitor settings `ApplyMonitorsConfig` resets unless they are passed back: Mutter builds each
+/// monitor's configuration from `underscanning = false`, the default colour mode and an unknown RGB range, and
+/// overrides them only from the monitor's `a{sv}` (Mutter 50.1, `create_monitor_config_from_variant`). So lain
+/// reads them from `GetCurrentState` and sends them back as they were; otherwise every apply would turn an
+/// owner's HDR off.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct MonitorSettings {
+    /// `color-mode` (`u`): 0 default, 1 BT.2100 (HDR).
+    pub color_mode: Option<u32>,
+    /// `rgb-range` (`u`).
+    pub rgb_range: Option<u32>,
+    /// `is-underscanning` (`b`), reported only by monitors that support underscanning; sent as `underscanning`.
+    pub underscanning: Option<bool>,
+}
+
+impl MonitorSettings {
+    /// The monitor's `a{sv}` in `ApplyMonitorsConfig`, with the keys gnome-control-center sends.
+    pub fn properties(&self) -> HashMap<String, Value<'static>> {
+        let mut p = HashMap::new();
+        if let Some(v) = self.color_mode {
+            p.insert("color-mode".to_owned(), Value::from(v));
+        }
+        if let Some(v) = self.rgb_range {
+            p.insert("rgb-range".to_owned(), Value::from(v));
+        }
+        if let Some(v) = self.underscanning {
+            p.insert("underscanning".to_owned(), Value::from(v));
+        }
+        p
+    }
+}
+
 /// One monitor (Mutter: a "physical" monitor, which may be virtual).
 #[derive(Debug, Clone, PartialEq)]
 pub struct MonitorInfo {
@@ -58,6 +90,8 @@ pub struct MonitorInfo {
     pub modes: Vec<Mode>,
     /// The `is-virtual` property, where Mutter reports it.
     pub is_virtual_prop: Option<bool>,
+    /// What an apply must pass back to keep the monitor as it is.
+    pub settings: MonitorSettings,
 }
 
 impl MonitorInfo {
@@ -86,12 +120,13 @@ pub struct LogicalMonitor {
 }
 
 /// `layout-mode`: logical (1, the default under `scale-monitor-framebuffer`) or physical (2).
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum LayoutMode {
     /// Positions and sizes are logical pixels: a monitor's size is its mode divided by its scale.
-    Logical,
+    #[default]
+    Logical = 1,
     /// Positions and sizes are device pixels.
-    Physical,
+    Physical = 2,
 }
 
 /// The desktop as one `GetCurrentState` reply.
@@ -102,6 +137,9 @@ pub struct DisplayState {
     pub monitors: Vec<MonitorInfo>,
     pub logical: Vec<LogicalMonitor>,
     pub layout_mode: LayoutMode,
+    /// `supports-changing-layout-mode`: Mutter takes a `layout-mode` in `ApplyMonitorsConfig`'s properties (and
+    /// refuses the call if one is passed without this).
+    pub supports_changing_layout_mode: bool,
 }
 
 /// An integer rectangle in the global space (logical pixels in logical layout mode).
@@ -210,6 +248,11 @@ pub fn parse_state(raw: RawState) -> DisplayState {
                 })
                 .collect(),
             is_virtual_prop: prop_bool(&mprops, "is-virtual"),
+            settings: MonitorSettings {
+                color_mode: prop_u32(&mprops, "color-mode"),
+                rgb_range: prop_u32(&mprops, "rgb-range"),
+                underscanning: prop_bool(&mprops, "is-underscanning"),
+            },
         })
         .collect();
     let logical = logical
@@ -227,7 +270,8 @@ pub fn parse_state(raw: RawState) -> DisplayState {
         Some(2) => LayoutMode::Physical,
         _ => LayoutMode::Logical,
     };
-    DisplayState { serial, monitors, logical, layout_mode }
+    let supports_changing_layout_mode = prop_bool(&props, "supports-changing-layout-mode").unwrap_or(false);
+    DisplayState { serial, monitors, logical, layout_mode, supports_changing_layout_mode }
 }
 
 /// One logical monitor of a configuration to apply.
@@ -238,8 +282,8 @@ pub struct LogicalConfig {
     pub scale: f64,
     pub transform: u32,
     pub primary: bool,
-    /// `(connector, mode id)` of each monitor shown in it.
-    pub monitors: Vec<(String, String)>,
+    /// `(connector, mode id, settings)` of each monitor shown in it.
+    pub monitors: Vec<(String, String, MonitorSettings)>,
 }
 
 /// `ApplyMonitorsConfig`'s arguments: `(u serial, u method, a(iiduba(ssa{sv})) logical_monitors, a{sv}
@@ -251,28 +295,36 @@ pub type ApplyArgs<'a> = (
     HashMap<String, Value<'a>>,
 );
 
-/// The arguments for applying `config` against the state with `serial`, always with [`APPLY_METHOD`]
-/// (temporary). No properties: the layout mode stays as it is.
-pub fn apply_args(serial: u32, config: &[LogicalConfig]) -> ApplyArgs<'static> {
+/// The arguments for applying `config` against `state` (its serial), always with [`APPLY_METHOD`] (temporary).
+/// Each monitor carries its [`MonitorSettings`] back. The layout mode is passed back as `state` reports it,
+/// where Mutter supports changing it: without the key Mutter applies its *default* layout mode, not the current
+/// one, and with the key but without that support it refuses the call (Mutter 50.1,
+/// `handle_apply_monitors_config`).
+pub fn apply_args(state: &DisplayState, config: &[LogicalConfig]) -> ApplyArgs<'static> {
     let logical = config
         .iter()
         .map(|l| {
-            let monitors = l.monitors.iter().map(|(c, m)| (c.clone(), m.clone(), HashMap::new())).collect();
+            let monitors = l.monitors.iter().map(|(c, m, s)| (c.clone(), m.clone(), s.properties())).collect();
             (l.x, l.y, l.scale, l.transform, l.primary, monitors)
         })
         .collect();
-    (serial, APPLY_METHOD, logical, HashMap::new())
+    let mut props = HashMap::new();
+    if state.supports_changing_layout_mode {
+        props.insert("layout-mode".to_owned(), Value::from(state.layout_mode as u32));
+    }
+    (state.serial, APPLY_METHOD, logical, props)
 }
 
-/// The configuration that keeps every logical monitor as it is (moved by `shift`, which keeps the layout's
-/// top-left at the origin), except `connector`'s, which goes to `at` with `scale`. Mode, transform and the
-/// primary flag stay as they are. `None` if a monitor has no current mode (nothing to apply it with).
+/// The configuration that keeps every logical monitor as it is, except that `connector`'s goes to `at` with
+/// `scale`, and each other one listed in `others_at` (by its first monitor's spec) goes to the position given
+/// there. Mode, transform, the primary flag and the monitors' settings stay as they are. `None` if a monitor has
+/// no current mode (nothing to apply it with).
 pub fn config_with(
     state: &DisplayState,
     connector: &str,
     at: (i32, i32),
     scale: f64,
-    shift: (i32, i32),
+    others_at: &[(MonitorSpec, (i32, i32))],
 ) -> Option<Vec<LogicalConfig>> {
     state
         .logical
@@ -281,10 +333,19 @@ pub fn config_with(
             let monitors = l
                 .monitors
                 .iter()
-                .map(|s| Some((s.connector.clone(), state.monitor(&s.connector)?.current_mode()?.id.clone())))
+                .map(|s| {
+                    let info = state.monitor(&s.connector)?;
+                    Some((s.connector.clone(), info.current_mode()?.id.clone(), info.settings))
+                })
                 .collect::<Option<Vec<_>>>()?;
             let is_lain = l.monitors.iter().any(|s| s.connector == connector);
-            let (x, y, scale) = if is_lain { (at.0, at.1, scale) } else { (l.x + shift.0, l.y + shift.1, l.scale) };
+            let (x, y, scale) = if is_lain {
+                (at.0, at.1, scale)
+            } else {
+                let to = l.monitors.first().and_then(|f| others_at.iter().find(|(s, _)| s == f)).map(|(_, p)| *p);
+                let (x, y) = to.unwrap_or((l.x, l.y));
+                (x, y, l.scale)
+            };
             Some(LogicalConfig { x, y, scale, transform: l.transform, primary: l.primary, monitors })
         })
         .collect()
@@ -318,6 +379,14 @@ pub(crate) mod tests {
         let meta = raw_spec("Meta-0", "MetaVendor", "Virtual remote monitor", "0x000001");
         let mut layout = HashMap::new();
         layout.insert("layout-mode".to_owned(), owned(Value::from(1u32)));
+        layout.insert("supports-changing-layout-mode".to_owned(), owned(Value::from(true)));
+        // As the live GetCurrentState reports HDMI-1 (2026-11-01).
+        let hdmi_props = HashMap::from([
+            ("color-mode".to_owned(), owned(Value::from(0u32))),
+            ("supported-color-modes".to_owned(), owned(Value::from(vec![0u32, 2]))),
+            ("rgb-range".to_owned(), owned(Value::from(1u32))),
+            ("is-underscanning".to_owned(), owned(Value::from(false))),
+        ]);
         (
             7,
             vec![
@@ -327,7 +396,7 @@ pub(crate) mod tests {
                         raw_mode("3840x2160@60.000", 3840, 2160, 60.0, true),
                         raw_mode("1920x1080@60.000", 1920, 1080, 60.0, false),
                     ],
-                    HashMap::new(),
+                    hdmi_props,
                 ),
                 (meta.clone(), vec![raw_mode("2752x2064@120.000", 2752, 2064, 120.0, true)], HashMap::new()),
             ],
@@ -375,7 +444,8 @@ pub(crate) mod tests {
     #[test]
     fn apply_args_have_mutters_signature_and_method_one() {
         let s = parse_state(reference_raw(1.0));
-        let config = config_with(&s, "Meta-0", (3840, 0), 2.0, (0, 0)).unwrap();
+        let config = config_with(&s, "Meta-0", (3840, 0), 2.0, &[]).unwrap();
+        let hdmi_settings = MonitorSettings { color_mode: Some(0), rgb_range: Some(1), underscanning: Some(false) };
         assert_eq!(
             config,
             vec![
@@ -385,7 +455,7 @@ pub(crate) mod tests {
                     scale: 1.0,
                     transform: 0,
                     primary: true,
-                    monitors: vec![("HDMI-1".into(), "3840x2160@60.000".into())]
+                    monitors: vec![("HDMI-1".into(), "3840x2160@60.000".into(), hdmi_settings)]
                 },
                 LogicalConfig {
                     x: 3840,
@@ -393,11 +463,11 @@ pub(crate) mod tests {
                     scale: 2.0,
                     transform: 0,
                     primary: false,
-                    monitors: vec![("Meta-0".into(), "2752x2064@120.000".into())]
+                    monitors: vec![("Meta-0".into(), "2752x2064@120.000".into(), MonitorSettings::default())]
                 },
             ]
         );
-        let args = apply_args(s.serial, &config);
+        let args = apply_args(&s, &config);
         assert_eq!(args.0, 7);
         assert_eq!(args.1, 1, "temporary, never persistent");
         assert_eq!(<ApplyArgs<'_> as DynamicType>::signature(&args).to_string(), "(uua(iiduba(ssa{sv}))a{sv})");
@@ -406,11 +476,57 @@ pub(crate) mod tests {
         assert!(to_bytes(ctx, &args).unwrap().len() > 40);
     }
 
+    /// Review DB3: every apply passed an empty `a{sv}` per monitor, which Mutter reads as "SDR, no underscanning,
+    /// unknown RGB range".
     #[test]
-    fn config_shifts_the_other_monitors() {
+    fn apply_keeps_hdr_underscanning_and_rgb_range() {
+        let mut raw = reference_raw(1.0);
+        raw.1[0].2.insert("color-mode".into(), owned(Value::from(2u32)));
+        raw.1[0].2.insert("rgb-range".into(), owned(Value::from(2u32)));
+        raw.1[0].2.insert("is-underscanning".into(), owned(Value::from(true)));
+        let s = parse_state(raw);
+        let config = config_with(&s, "Meta-0", (3840, 0), 2.0, &[]).unwrap();
+        let args = apply_args(&s, &config);
+        let hdmi = &args.2[0].5[0].2;
+        assert_eq!(hdmi.get("color-mode"), Some(&Value::from(2u32)));
+        assert_eq!(hdmi.get("rgb-range"), Some(&Value::from(2u32)));
+        assert_eq!(hdmi.get("underscanning"), Some(&Value::from(true)));
+        // A monitor that reports none of them gets none (Mutter's defaults are what it has).
+        assert!(args.2[1].5[0].2.is_empty());
+        // Underscanning is reported only where supported, so it is passed back only there.
+        let mut raw = reference_raw(1.0);
+        raw.1[0].2.remove("is-underscanning");
+        let s = parse_state(raw);
+        let args = apply_args(&s, &config_with(&s, "Meta-0", (3840, 0), 2.0, &[]).unwrap());
+        assert_eq!(args.2[0].5[0].2.get("underscanning"), None);
+    }
+
+    /// Review DB4: without `layout-mode` Mutter applies its default layout mode, not the current one.
+    #[test]
+    fn apply_passes_the_current_layout_mode_back_where_mutter_takes_it() {
+        let mut raw = reference_raw(2.0);
+        raw.3.insert("layout-mode".to_owned(), owned(Value::from(2u32)));
+        let s = parse_state(raw);
+        assert!(s.supports_changing_layout_mode);
+        let args = apply_args(&s, &config_with(&s, "Meta-0", (3840, 0), 2.0, &[]).unwrap());
+        assert_eq!(args.3.get("layout-mode"), Some(&Value::from(2u32)));
+        let s = parse_state(reference_raw(2.0));
+        let args = apply_args(&s, &config_with(&s, "Meta-0", (3840, 0), 2.0, &[]).unwrap());
+        assert_eq!(args.3.get("layout-mode"), Some(&Value::from(1u32)));
+        // Without the capability Mutter refuses the key, so it isn't sent.
+        let mut raw = reference_raw(2.0);
+        raw.3.remove("supports-changing-layout-mode");
+        let s = parse_state(raw);
+        let args = apply_args(&s, &config_with(&s, "Meta-0", (3840, 0), 2.0, &[]).unwrap());
+        assert!(args.3.is_empty());
+    }
+
+    #[test]
+    fn config_moves_the_other_monitors() {
         // The iPad to the left: HDMI-1 moves right by lain's width.
         let s = parse_state(reference_raw(1.0));
-        let config = config_with(&s, "Meta-0", (0, 0), 2.0, (1376, 0)).unwrap();
+        let hdmi = s.monitors[0].spec.clone();
+        let config = config_with(&s, "Meta-0", (0, 0), 2.0, &[(hdmi, (1376, 0))]).unwrap();
         assert_eq!((config[0].x, config[0].y, config[0].scale), (1376, 0, 1.0));
         assert_eq!((config[1].x, config[1].y, config[1].scale), (0, 0, 2.0));
     }
@@ -419,7 +535,7 @@ pub(crate) mod tests {
     fn config_needs_a_current_mode_for_every_monitor() {
         let mut s = parse_state(reference_raw(1.0));
         s.monitors[0].modes.iter_mut().for_each(|m| m.current = false);
-        assert_eq!(config_with(&s, "Meta-0", (3840, 0), 2.0, (0, 0)), None);
+        assert_eq!(config_with(&s, "Meta-0", (3840, 0), 2.0, &[]), None);
     }
 
     #[test]
