@@ -113,6 +113,38 @@ public final class ClientSession: Sendable {
         core.stop()
     }
 
+    /// A Mac this iPad can reach over Wi-Fi (it holds its key), for the panel's host list.
+    public struct SavedHost: Sendable, Equatable, Identifiable {
+        public var id: String
+        public var name: String
+        /// The current link is to it.
+        public var isCurrent: Bool
+        /// Discovery lists it now (only known while the iPad browses: no link, or a peer-to-peer one).
+        public var isSeen: Bool
+        public init(id: String, name: String, isCurrent: Bool, isSeen: Bool) {
+            self.id = id; self.name = name; self.isCurrent = isCurrent; self.isSeen = isSeen
+        }
+    }
+
+    public struct HostList: Sendable, Equatable {
+        /// By name.
+        public var hosts: [SavedHost] = []
+        /// The host picked in the panel; nil: automatic.
+        public var selected: String?
+        /// The current link is the cable: it wins, and the panel offers no switching.
+        public var onCable = false
+        public init() {}
+    }
+
+    /// The saved Macs, the pick and whether the cable is in (from the session queue: cheap, for the panel).
+    public func hostList() -> HostList { core.queue.sync { core.hostList() } }
+
+    /// Picks the Mac to use over Wi-Fi (nil: automatic). Over Wi-Fi, a link to another Mac closes and the
+    /// picked one is dialed at once; over the cable nothing changes (the panel doesn't offer it then).
+    public func selectHost(_ id: String?) {
+        core.queue.async { [core] in core.selectHost(id) }
+    }
+
     /// The Mac's latest `HostStats` (v5) on the current link, while they're asked for
     /// (`setHostStatsInterval`); nil before the first, and with a Mac on an older version.
     public var hostStats: HostStats? { core.hostStats.withLock { $0.stats } }
@@ -205,6 +237,8 @@ final class SessionCore: @unchecked Sendable {
         let state: LinkState
         /// The last snapshot published for it.
         var info: ClientSession.ConnectionInfo
+        /// The Mac's id from its `HelloAck`.
+        var hostId: String?
     }
 
     // Touched only on `queue`.
@@ -440,6 +474,10 @@ final class SessionCore: @unchecked Sendable {
     /// On `queue`, in the order the link's snapshots were taken.
     private func helloAcked(_ ack: HelloAck, info: ClientSession.ConnectionInfo, generation g: UInt64) {
         guard let c = current, c.generation == g else { return }
+        current?.hostId = ack.hostId
+        if PairingAccounts.isCanonicalHostId(ack.hostId), !ack.hostName.isEmpty {
+            wifi?.config.lastHost.setName(ack.hostId, ack.hostName)
+        }
         switch c.via {
         case .usb(let peer, let paired, let secret):
             if recordForWiFi(hostId: ack.hostId, peer: peer, paired: paired, secret: secret) {
@@ -450,6 +488,41 @@ final class SessionCore: @unchecked Sendable {
         }
         publish(info, generation: g)
         if statsInterval > 0 { sendStatsRequest() }   // the overlay is showing: the new Mac too
+    }
+
+    func hostList() -> ClientSession.HostList {
+        var list = ClientSession.HostList()
+        guard let w = wifi else { return list }
+        list.selected = w.config.lastHost.selected()
+        if let c = current, c.via.isUSB { list.onCable = true }
+        let seen = Set(w.hosts.map(\.hostId))
+        list.hosts = w.config.lastHost.names()
+            .filter { id, _ in storedSecret(PairingAccounts.mac(id)) != nil }
+            .map { id, name in
+                ClientSession.SavedHost(id: id, name: name, isCurrent: current?.hostId == id, isSeen: seen.contains(id))
+            }
+            .sorted { ($0.name.localizedLowercase, $0.id) < ($1.name.localizedLowercase, $1.id) }
+        return list
+    }
+
+    func selectHost(_ id: String?) {
+        guard let w = wifi, !stopped else { return }
+        w.config.lastHost.setSelected(id)
+        log.notice("host picked: \(id ?? "automatic", privacy: .public)")
+        // A Wi-Fi link to another Mac makes way at once; the cable always stays.
+        if let id, let c = current, !c.via.isUSB, c.hostId != id {
+            current = nil
+            input.disconnect()
+            video?.disconnect()
+            c.link.close()
+            release(c.link)
+            log.notice("Wi-Fi link closed to switch hosts")
+        }
+        // An explicit switch waits for no grace or backoff.
+        w.graceUntil = 0
+        w.backoffUntil = 0
+        evaluateWiFi()
+        publish()
     }
 
     func setStatsInterval(_ ms: UInt32) {

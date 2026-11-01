@@ -812,6 +812,36 @@ func eventually(within seconds: Double = 5, _ body: () -> Bool) async -> Bool {
         #expect(await a.hellos.next() != nil)
         #expect(await eventually { noPreference.get() == a.hostId })
     }
+    /// The panel's pick (over Wi-Fi): the link to another Mac makes way at once, and only the picked Mac is
+    /// dialed; Automatic goes back to dialing any paired Mac.
+    @Test func pickingAHostSwitchesTheWiFiLinkToIt() async throws {
+        let other = ChannelAuth.randomBytes(32)
+        let a = try await WiFiMac(secret: secret, name: "A Mac"), b = try await WiFiMac(secret: other, name: "B Mac")
+        defer { a.cancel(); b.cancel() }
+        let store = RecordingSecrets([PairingAccounts.mac(a.hostId): secret, PairingAccounts.mac(b.hostId): other])
+        let lastHost = LastConnectedHost.memory()
+        lastHost.setName(a.hostId, "A Mac")
+        lastHost.setName(b.hostId, "B Mac")
+        lastHost.setName("0B5D5C4E-6A1F-4E53-9C2D-7F3A8E91B264", "never paired")   // no key: not listed
+        let session = try ClientSession(port: 0, secrets: store, hello: hello,
+                                        wifi: testWiFi(Discoveries([a.discovered(), b.discovered()]), lastHost: lastHost)) { _ in }
+        defer { session.stop() }
+        #expect(await a.hellos.next() != nil)
+        #expect(await a.links.next() != nil)   // that first link
+        #expect(await eventually { session.hostList().hosts.first { $0.id == a.hostId }?.isCurrent == true })
+        let list = session.hostList()
+        #expect(list.hosts.map(\.name) == ["A Mac", "B Mac"] && list.selected == nil && !list.onCable)
+
+        session.selectHost(b.hostId)
+        #expect(await b.hellos.next() != nil)
+        #expect(await eventually { session.hostList().hosts.first { $0.id == b.hostId }?.isCurrent == true })
+        #expect(lastHost.selected() == b.hostId)
+        #expect(await a.links.next(within: 0.5) == nil, "A isn't dialed again while B is picked")
+
+        session.selectHost(nil)
+        #expect(await eventually { lastHost.selected() == nil })
+        #expect(session.hostList().hosts.first { $0.id == b.hostId }?.isCurrent == true, "automatic keeps the link")
+    }
 }
 
 // MARK: The loop's policies over Wi-Fi
