@@ -34,6 +34,10 @@ pub struct HostConfig {
     /// `helloTimeout`, `busyDrain`).
     pub wifi: WifiAdmission,
     pub tuning: Tuning,
+    /// How long lain's display outlives a session whose link went away (the iPad's app left the screen, the
+    /// cable came out), so that the iPad's next session of the same size takes it back ([`crate::keeper`]).
+    /// Zero, the default here as in Swift, removes it at once; `lain-hostd` keeps it 30 s by default.
+    pub display_keep_alive: Duration,
 }
 
 impl Default for HostConfig {
@@ -45,6 +49,7 @@ impl Default for HostConfig {
             input: InputConfig::default(),
             wifi: WifiAdmission::default(),
             tuning: Tuning::default(),
+            display_keep_alive: Duration::ZERO,
         }
     }
 }

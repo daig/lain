@@ -21,6 +21,7 @@ use tracing::{debug, error, info, warn};
 
 use crate::config::HostConfig;
 use crate::connection::{HostConnection, host_setup};
+use crate::keeper::DisplayKeeper;
 use crate::status::HostStatus;
 use crate::util::{Cancel, Power, UsbMuxDialer};
 use crate::video::{SessionVideo, StartError, Streaming, display_spec};
@@ -268,6 +269,8 @@ struct Inner<P: Platform> {
     acceptor: Mutex<Option<LinkAcceptor<P::Secrets>>>,
     /// Ends the usbmuxd watcher and the network intake.
     run: Cancel,
+    /// lain's display between sessions ([`HostConfig::display_keep_alive`]).
+    keeper: Arc<DisplayKeeper<P::Display>>,
 }
 
 /// The host runtime (Swift: `HostSession`, §5.7): watches usbmuxd, dials lain on an attached iPad, admits
@@ -309,7 +312,9 @@ impl<P: Platform> HostSession<P> {
     pub fn start(platform: P, config: HostConfig, usbmux: UsbMuxClient, wifi: Option<WifiStreams>) -> Self {
         let power = Arc::new(Power::new(platform.power().clone()));
         let (statuses, _) = broadcast::channel(256);
+        let keeper = DisplayKeeper::new(platform.display().clone(), config.display_keep_alive);
         let inner = Arc::new(Inner {
+            keeper,
             platform: Arc::new(platform),
             config,
             usbmux,
@@ -407,10 +412,12 @@ impl<P: Platform> HostSession<P> {
     /// session's display is gone. Idempotent.
     pub fn stop(&self) -> impl Future<Output = ()> + Send + 'static {
         let videos = self.inner.stop_now();
+        let keeper = self.inner.keeper.clone();
         async move {
             for video in videos {
                 video.wait_until_stopped().await;
             }
+            keeper.clear().await;
         }
     }
 }
@@ -419,6 +426,11 @@ impl<P: Platform> Drop for HostSession<P> {
     /// Dropping the session stops it, without waiting for the display's removal.
     fn drop(&mut self) {
         self.inner.stop_now();
+        // A display kept for a return that won't come: removed in the background, as the session's own is.
+        if let Ok(runtime) = tokio::runtime::Handle::try_current() {
+            let keeper = self.inner.keeper.clone();
+            runtime.spawn(async move { keeper.clear().await });
+        }
     }
 }
 
@@ -452,6 +464,7 @@ impl<P: Platform> Inner<P> {
                 return s.retiring.clone();
             }
             s.stopped = true;
+            self.keeper.close();
             let device = s.device.take();
             let connection = s.live.take().map(|l| l.connection);
             s.live_model = None;
@@ -1107,6 +1120,7 @@ impl<P: Platform> Inner<P> {
                 connection.realtime.clone(),
                 connection.video_channel.clone(),
                 on_end,
+                &self.keeper,
             )
             .await;
         match started {
