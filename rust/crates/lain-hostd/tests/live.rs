@@ -9,7 +9,7 @@
 //!   (Mesa's vendor file) and `LIBVA_DRIVER_NAME=radeonsi` set. No GPU library is loaded: video starts only
 //!   for an iPad's session.
 //! - Raises its own soft `RLIMIT_NOFILE` to 4096.
-//! - Owns `dev.sub.lain.Host` on the session bus (exits 1 if a lain host already runs; the test then fails).
+//! - Owns `dev.sub.lain.Host` on the session bus (if a lain host already runs, it exits 0 at once and the test fails).
 //! - Reads, or creates once, `~/.config/lain/host-id`, and reads `hostname1`'s PrettyHostname on the system bus.
 //! - Probes the Secret Service (the login keyring's default collection; no secret is read or written while no
 //!   iPad connects, except by the Wi-Fi listener below). Falls back to `~/.config/lain/secrets` only if there's

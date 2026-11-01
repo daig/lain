@@ -4,7 +4,8 @@
 //! `lain-hostd.service` in `$XDG_CONFIG_HOME/systemd/user`, bound to `graphical-session.target`, and
 //! enables or disables it through `org.freedesktop.systemd1`'s `Manager` on the session bus
 //! (`EnableUnitFiles`, `DisableUnitFiles`, `Reload`). Like the agent, systemd restarts it after a crash
-//! (`Restart=on-failure`), and a clean exit stays exited.
+//! (`Restart=on-failure`), and a clean exit stays exited. So does exit status 2, `lain-hostd`'s refusal of its
+//! config file (`RestartPreventExitStatus=2`): a restart would only refuse it again.
 //!
 //! Intended differences from Swift:
 //! - No `requiresApproval` state: systemd asks no one.
@@ -109,6 +110,7 @@ impl UnitFile {
              ExecStart={exec}\n\
              Restart=on-failure\n\
              RestartSec=2\n\
+             RestartPreventExitStatus=2\n\
              \n\
              [Install]\n\
              WantedBy={SESSION_TARGET}\n",
