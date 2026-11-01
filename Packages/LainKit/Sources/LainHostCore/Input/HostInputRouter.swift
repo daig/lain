@@ -27,6 +27,8 @@ public struct HostInputRouter: Sendable {
 
     public let sink: any InputSink
     public private(set) var pinch: PinchZoomMapper
+    /// Right Option as lain's system key (`SystemKey`).
+    public private(set) var systemKey: SystemKey
     /// The client's modifier state as of its last key or button event.
     public private(set) var modifiers: ModifierFlags = []
     private var loggedRotate = false
@@ -34,9 +36,10 @@ public struct HostInputRouter: Sendable {
     public private(set) var scrollPhaseOpen = false
     public private(set) var momentumOpen = false
 
-    public init(sink: any InputSink, pinch: PinchZoomMapper = PinchZoomMapper()) {
+    public init(sink: any InputSink, pinch: PinchZoomMapper = PinchZoomMapper(), systemKey: Bool = false) {
         self.sink = sink
         self.pinch = pinch
+        self.systemKey = SystemKey(isEnabled: systemKey)
     }
 
     public mutating func handle(_ envelope: Envelope) -> Outcome { handle(envelope.message) }
@@ -45,13 +48,14 @@ public struct HostInputRouter: Sendable {
         switch message {
         case .keyEvent(let e):
             modifiers = e.modifiers
-            sink.key(e)
+            for k in systemKey.key(e) { sink.key(k) }
             return .injected(pointer: nil)
         case .pointerMove(let m):
             sink.move(m)
             return .injected(pointer: CGPoint(x: m.x, y: m.y))
-        case .pointerButton(let b):
+        case .pointerButton(var b):
             modifiers = b.modifiers
+            b.modifiers = systemKey.buttonModifiers(b.modifiers)
             sink.button(b)
             return .injected(pointer: CGPoint(x: b.x, y: b.y))
         case .scroll(let s):
@@ -77,7 +81,19 @@ public struct HostInputRouter: Sendable {
         momentumOpen = false
         pinch.reset()
         modifiers = []
+        systemKey.reset()
         sink.releaseAll()
+    }
+
+    /// A Right Option release waiting to be called a tap (`SystemKey.pendingTap`): the caller runs
+    /// `flushSystemKeyTap` with it after `SystemKey.tapDelayNs`.
+    public var pendingSystemKeyTap: UInt64? { systemKey.pendingTap }
+
+    /// The tap timer: Mission Control, unless something has resolved the release since.
+    public mutating func flushSystemKeyTap(_ tap: UInt64) -> Bool {
+        let keys = systemKey.flushTap(tap)
+        for k in keys { sink.key(k) }
+        return !keys.isEmpty
     }
 
     private mutating func noteScroll(_ s: Scroll) {

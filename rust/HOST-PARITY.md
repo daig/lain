@@ -11,7 +11,7 @@ for while using it. This note lists them, and the client changes they depend on,
   it"). Rebuild the Mac host *and* the iPad client from `main` together.
 - Nothing below changes the wire format.
 
-## 1. Display keep-alive (Linux: done; Mac host: to port)
+## 1. Display keep-alive (Linux: done; Mac host: done, not yet on hardware)
 
 When the iPad's app leaves the screen (an app switch), iPadOS drops lain's connections at once. The Mac host then
 removes its virtual display, so windows jump to another display and don't come back, and the return rebuilds
@@ -22,22 +22,34 @@ everything.
   put; the picture is back about 35 ms after the link). Capture stopped on the desktop, another size, the timeout,
   stopping the host remove it. Video stops while kept; input and power are released as usual.
   Code: `rust/crates/lain-host/src/keeper.rs`, `tests/keepalive.rs`.
-- **Mac host:** `HostSession` removes the display at session end. Port: keep the `CGVirtualDisplay` for the same
-  time and reuse it when the next `Hello` asks for the same spec.
+- **Mac host (`host-parity`, 2026-11-01):** `DisplayKeeper` holds the `CGVirtualDisplay` for
+  `displayKeepAliveSeconds` (default 30; Off, 10 s – 5 min in the menu) after a pipeline is stopped (link gone,
+  takeover); the next session's `VirtualStreamedDisplayProvider` takes it back if its geometry (`keeperKey`:
+  size and scale) matches and the display is still active. A capture failure removes it; quitting removes it.
+  Code: `LainHostCore/Display/DisplayKeeper.swift`, `Video/StreamedDisplay.swift`; tests `DisplayKeeperTests`,
+  `M3EndToEndTests.aSessionsEndKeepsItsDisplayForTheNext`.
 
-## 2. Resume after the OS stops screen sharing (Linux: done; Mac host: check)
+## 2. Resume after the OS stops screen sharing (Linux: done; Mac host: done, not yet on hardware)
 
 GNOME's top-bar "Stop sharing" ends lain's display; lain then resumes by itself (closes the link, the iPad
 reconnects into a fresh session), at most once per 10 s; `resume_after_stop` (on), `lain resume` by hand.
-Code: `lain-host` `HostSession::resume_video`, `tests/resume.rs`. On the Mac, check what macOS's own screen-capture
-"Stop" does to lain's capture, and whether the same resume makes sense.
+Code: `lain-host` `HostSession::resume_video`, `tests/resume.rs`.
 
-## 3. Settings from the host itself (Linux: done; Mac host: menu has some)
+Mac host: macOS's own "Stop" (the screen-recording indicator) ends lain's `SCStream` with `userStopped`; the
+display itself stays. The session goes input only, keeps the display (§1), and with **Resume Video After Stop**
+(on) closes the link 1 s later, at most once per 10 s, so the iPad reconnects onto the same display; **Resume
+Video** in the menu does it by hand. Code: `HostSession.resumeAfterStop`, `resumeVideo`; test
+`M3EndToEndTests.captureStoppedByTheUserResumesOnceOnTheKeptDisplay`.
+
+## 3. Settings from the host itself (Linux: done; Mac host: done, not yet on hardware)
 
 Linux: `lain` CLI, a tray menu and the D-Bus interface `dev.sub.lain.Host1`, each written to `config.toml`:
 scale (1–3; the closest the desktop supports is applied, live), keep-alive (live), Wi-Fi on/off (live),
-resume-after-stop (live), Start at login, bitrate (next start). Mac host: its menu shows status and Start at Login.
-The scale and keep-alive settings are the ones worth adding there.
+resume-after-stop (live), Start at login, bitrate (next start). Mac host: the menu now has Display Scale, Keep Display After Disconnect, Resume Video After Stop and Right
+Option Is the System Key (`HostPreferences`, in the app's defaults). Scale presets 1.5–2.5 pixels per point
+(2 = 1376×1032 pt); a scale other than 2 renders at 2× of its points and capture scales that to the panel's
+2752×2064 (or streams the smaller backing size, above 2). Scale and system key reconnect the live session to
+apply; keep-alive applies to the next display kept.
 
 Note on scale: Linux makes lain's display at 2× by default, as the Mac host does (1376×1032 points on a 13" iPad
 Pro). GNOME draws its interface larger than macOS at the same scale, which is why Linux needed the setting first.
@@ -72,10 +84,15 @@ What is where today:
 - **Linux host (`lain-input`, `InputConfig::system_key`, on):** does the right-hand column, telling Right from Left
   Option by their own key events. The Cmd+Space and Cmd+H rows also work from the client's remap today.
   Code: `rust/crates/lain-input/src/router.rs`, `tests/router.rs` ("the system key").
-- **Mac host:** **to do** the middle column for the arrows and the tap: Right Option + arrows as Ctrl + arrows,
-  and a lone Right Option tap as Mission Control (Ctrl+Up). The Command rows need nothing once the client sends
-  Command, or the host can map Right Option to Command itself, which would then make the client's remap
-  unnecessary for the Mac.
+- **Mac host (done, not yet on hardware):** `SystemKey` (in `HostInputRouter`) does the middle column itself:
+  Right Option never reaches the Mac; held with a key it is Command (Left Command pressed, held while Right
+  Option is, so Tab cycles the switcher); with the arrows Ctrl(+fn)+arrow chords; tapped alone, Ctrl+Up; with a
+  click, a Command-click. So the client's remap is unnecessary for the Mac host.
+- **Both hosts, today's client:** the client's remap sends Right Opt-Tab as *Right Option up, Left Command
+  down, Tab*. A host that treats that release as a tap opens Mission Control / the overview before the switch
+  (Linux's `the_system_key_taps_and_holds_as_command` doesn't cover it). The Mac host only calls a release a tap
+  once the next event isn't a Command press, or 60 ms pass (`SystemKey.tapDelayNs`). Linux should do the same,
+  or the client should stop remapping Right Option (the hosts do it now) and keep its remap for Left Option off.
 
 Not yet checked on the iPad: whether Ctrl + arrows, fn + arrows, Globe combos and the function-row keys arrive (a
 key log in the client's HUD would settle it in minutes).

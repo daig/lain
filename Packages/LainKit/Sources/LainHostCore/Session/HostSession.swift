@@ -65,6 +65,11 @@ public final class HostSession: Sendable {
         public var setup: (@Sendable () -> HostSetup)?
         /// The protocol versions offered (PROTOCOL-VERSIONING §3.2). nil: `VersionList.offered`.
         public var versions: VersionList?
+        /// The owner's settings (system key, resume after stop), read as each session starts.
+        public var preferences: @Sendable () -> HostPreferences
+        /// Holds lain's display between sessions (rust/HOST-PARITY.md §1); the video pipelines hand their
+        /// display to it. Closed (its display removed) by `stop()`. nil: no keep-alive.
+        public var displayKeeper: DisplayKeeper?
 
         public init(usbmux: USBMuxClient = USBMuxClient(), secrets: any SecretStore = KeychainSecretStore(),
                     sink: any InputSink, display: any DisplayProvider = DisplayLayoutProvider.system(),
@@ -73,8 +78,12 @@ public final class HostSession: Sendable {
                     now: @escaping @Sendable () -> UInt64 = { MonotonicClock.now() },
                     video: (@Sendable () -> HostVideoPipeline)? = nil,
                     identity: HostIdentity? = nil, wifi: HostWiFiConfig? = nil,
-                    setup: (@Sendable () -> HostSetup)? = nil, versions: VersionList? = nil) {
+                    setup: (@Sendable () -> HostSetup)? = nil, versions: VersionList? = nil,
+                    preferences: @escaping @Sendable () -> HostPreferences = { HostPreferences() },
+                    displayKeeper: DisplayKeeper? = nil) {
             self.video = video
+            self.preferences = preferences
+            self.displayKeeper = displayKeeper
             self.setup = setup
             self.versions = versions
             self.usbmux = usbmux
@@ -116,6 +125,11 @@ public final class HostSession: Sendable {
         /// lain on the iPad closing realtime right after our `ChannelHello` this many times in a row is
         /// taken for an app that speaks another protocol (a v1 app closes without answering).
         public var closesBeforeUpdateHint = 3
+        /// After the owner stops capture from the Mac's menu bar, the session restarts (with video) this long
+        /// later, if `HostPreferences.resumeAfterStop`; a second stop within `resumeMinGap` of the last
+        /// automatic resume stays stopped (input only) until `resumeVideo()`.
+        public var resumeDelay: Duration = .seconds(1)
+        public var resumeMinGap: Duration = .seconds(10)
         /// Tests only: runs in `run()` right after the connection is registered.
         var afterRegistering: (@Sendable () -> Void)?
         public init() {}
@@ -189,6 +203,8 @@ public final class HostSession: Sendable {
         /// lain on the iPad shares no protocol version with this one (PROTOCOL-VERSIONING §8); cleared by
         /// the next link that comes up, or when the device dialed detaches.
         var peerGap: VersionGap?
+        /// When video last resumed by itself after a stop on the Mac (`Tuning.resumeMinGap`).
+        var lastAutoResume: ContinuousClock.Instant?
 
         /// The status is derived, never pushed (decision 8): connected only while the session whose
         /// `HelloAck` went out is live; otherwise what the USB side is doing.
@@ -403,6 +419,39 @@ public final class HostSession: Sendable {
         listener?.cancel()
         acceptor?.cancel()
         connection?.finish()
+        // Nothing is kept from now on; a kept display goes (in the background: the session's own teardown
+        // retires its display to the closed keeper, which refuses it).
+        if let keeper = deps.displayKeeper { Task { await keeper.close() } }
+    }
+
+    /// The video error after the owner stopped capture from the Mac's menu bar.
+    static let stoppedOnTheMac = "capture stopped on the Mac"
+
+    /// Whether the live session's video was stopped from the Mac's menu bar (`resumeVideo`).
+    public var isVideoStoppedOnTheMac: Bool {
+        state.withLock { s in s.live != nil && s.videoError == Self.stoppedOnTheMac }
+    }
+
+    /// Starts video again after the owner stopped it on the Mac: closes the link, and the iPad reconnects
+    /// into a fresh session (the display itself was kept). false: nothing was stopped.
+    @discardableResult
+    public func resumeVideo() -> Bool {
+        guard let connection = state.withLock({ s in s.videoError == Self.stoppedOnTheMac ? s.live?.connection : nil }) else {
+            return false
+        }
+        log.notice("resuming video: closing the link so that the iPad reconnects")
+        connection.link.close()
+        return true
+    }
+
+    /// Ends the live session so that the iPad reconnects into a new one, which picks up settings read at
+    /// a session's start (the display's scale, the system key). false: no session.
+    @discardableResult
+    public func reconnect() -> Bool {
+        guard let connection = state.withLock({ $0.live?.connection }) else { return false }
+        log.notice("reconnecting for new settings")
+        connection.link.close()
+        return true
     }
 
     /// Delivers status changes in order: one computed before a newer one that already went out is
@@ -790,6 +839,27 @@ public final class HostSession: Sendable {
         log.notice("session ended")
     }
 
+    /// Capture was stopped on the Mac: resumes after `Tuning.resumeDelay` if the owner wants that and the
+    /// last automatic resume is at least `Tuning.resumeMinGap` ago.
+    private func resumeAfterStop() {
+        guard deps.preferences().resumeAfterStop else { return }
+        let now = ContinuousClock.now
+        let due = state.withLock { s -> Bool in
+            if let last = s.lastAutoResume, now - last < tuning.resumeMinGap { return false }
+            s.lastAutoResume = now
+            return true
+        }
+        guard due else {
+            log.notice("capture stopped on the Mac again within \(self.tuning.resumeMinGap, privacy: .public): staying input only")
+            return
+        }
+        // A moment for the desktop to settle.
+        Task { [weak self, delay = tuning.resumeDelay] in
+            try? await Task.sleep(for: delay)
+            self?.resumeVideo()
+        }
+    }
+
     /// Starts the connection's video, if it has any. Returns the chroma streamed, or nil without video.
     /// A failure (no Screen Recording grant, say) leaves an input-only session on the main display.
     private func startVideo(_ connection: HostConnection, hello: Hello) async -> ChromaFormat? {
@@ -799,10 +869,13 @@ public final class HostSession: Sendable {
             try await video.start(hello: hello, videoChannel: link.video, sendRealtime: { link.realtime.send($0) },
                                   onError: { [weak self, weak connection] error in
                                       if error is CaptureStoppedByUser {
-                                          // The owner stopped it: keep the session, input only, until the next attach.
-                                          log.notice("video capture stopped by the user; input only until the next attach")
+                                          // The owner stopped it: keep the session, input only; then, if the owner
+                                          // wants that, start again by itself (rust/HOST-PARITY.md §2).
+                                          log.notice("video capture stopped by the user; input only")
                                           video.stop()
-                                          self?.state.withLock { s in if s.video === video { s.videoError = "capture stopped on the Mac" } }
+                                          self?.state.withLock { s in if s.video === video { s.videoError = Self.stoppedOnTheMac } }
+                                          if let self, let connection { self.sendSetup(to: connection) }
+                                          self?.resumeAfterStop()
                                           return
                                       }
                                       // Capture stopped on its own: end the session; the reconnect starts afresh.
@@ -868,7 +941,7 @@ final class HostConnection: Sendable {
         self.tuning = tuning
         var warp = tuning.warp
         warp.reset()
-        rt = Mutex(Realtime(router: HostInputRouter(sink: deps.sink), warp: warp))
+        rt = Mutex(Realtime(router: HostInputRouter(sink: deps.sink, systemKey: deps.preferences().systemKey), warp: warp))
     }
 
     /// Takes the display-sleep assertion unless the connection has already been finished (a detach or
@@ -961,21 +1034,36 @@ final class HostConnection: Sendable {
             break
         }
         let now = deps.now()
-        let declare = rt.withLock { s -> Bool in
-            guard !s.finished else { return false }
+        let (declare, tap) = rt.withLock { s -> (Bool, UInt64?) in
+            guard !s.finished else { return (false, nil) }
+            let before = s.router.pendingSystemKeyTap
             switch s.router.handle(message) {
             case .notInput, .ignored:
-                return false
+                return (false, nil)
             case .injected(let pointer):
                 s.warp.noteInput(pointer: pointer, atNs: now)
             case .released:
                 s.warp.noteInput(pointer: nil, atNs: now)
             }
-            if let last = s.lastActivityNs, now < last &+ tuning.userActivityIntervalNs { return false }
+            let after = s.router.pendingSystemKeyTap
+            let tap = after != before ? after : nil
+            if let last = s.lastActivityNs, now < last &+ tuning.userActivityIntervalNs { return (false, tap) }
             s.lastActivityNs = now
-            return true
+            return (true, tap)
         }
+        if let tap { scheduleSystemKeyTap(tap) }
         if declare { activityQueue.async { [deps] in deps.power.declareUserActivity() } }
+    }
+
+    /// A Right Option release becomes a tap (Mission Control) unless the next event resolved it first: the
+    /// client's own Command press, from an older client's remap (`SystemKey`).
+    private func scheduleSystemKeyTap(_ tap: UInt64) {
+        link.realtime.queue.asyncAfter(deadline: .now() + .nanoseconds(Int(SystemKey.tapDelayNs))) { [weak self] in
+            self?.rt.withLock { s in
+                guard !s.finished else { return }
+                _ = s.router.flushSystemKeyTap(tap)
+            }
+        }
     }
 
     private func startTimers() {

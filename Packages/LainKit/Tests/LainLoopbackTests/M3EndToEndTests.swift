@@ -52,16 +52,44 @@ import Testing
     /// The lain virtual display: "created" by the video pipeline, and listed among the active displays
     /// only while it exists.
     final class FakeLainDisplay: StreamedDisplayProvider, ActiveDisplaySource {
-        private let state = Mutex((alive: false, created: 0, destroyed: 0))
+        private let state = Mutex((alive: false, created: 0, destroyed: 0, reused: 0))
         /// Like the window server, the display leaves the active list a while after it is released.
         let removalDelayMs: Int
-        init(removalDelayMs: Int = 0) { self.removalDelayMs = removalDelayMs }
+        /// Keeps the display between sessions, as `VirtualStreamedDisplayProvider` does with one.
+        let keeper: DisplayKeeper?
+        init(removalDelayMs: Int = 0, keeper: DisplayKeeper? = nil) {
+            self.removalDelayMs = removalDelayMs
+            self.keeper = keeper
+        }
         var alive: Bool { state.withLock { $0.alive } }
         var created: Int { state.withLock { $0.created } }
         var destroyed: Int { state.withLock { $0.destroyed } }
+        /// Sessions that took the kept display back.
+        var reused: Int { state.withLock { $0.reused } }
+
+        /// The one display, while the keeper holds it.
+        final class Kept: KeepableDisplay {
+            let owner: FakeLainDisplay
+            init(_ owner: FakeLainDisplay) { self.owner = owner }
+            var isUsable: Bool { owner.alive }
+            func remove() async {
+                owner.destroy()
+                await owner.waitUntilRemoved()
+            }
+        }
+
+        func retire() async {
+            if let keeper, alive, keeper.keep(Kept(self), key: "lain") { return }
+            destroy()
+            await waitUntilRemoved()
+        }
 
         func create() async throws -> StreamedDisplay {
-            state.withLock { $0.alive = true; $0.created += 1 }
+            if let keeper, await keeper.take(key: "lain") != nil {
+                state.withLock { $0.reused += 1 }
+            } else {
+                state.withLock { $0.alive = true; $0.created += 1 }
+            }
             return StreamedDisplay(displayID: M3EndToEndTests.lainID, pixelWidth: M3EndToEndTests.pixelWidth,
                                    pixelHeight: M3EndToEndTests.pixelHeight, bounds: M3EndToEndTests.lainBounds, refreshRate: 120)
         }
@@ -314,10 +342,11 @@ import Testing
     }
 
     /// A host session over `source` with an input-only stand-in Mac; returns what the test watches.
-    static func stoppingRig(_ source: @escaping @Sendable () -> any FrameSource, tuning: HostSession.Tuning = .init()) throws
+    static func stoppingRig(_ source: @escaping @Sendable () -> any FrameSource, tuning: HostSession.Tuning = .init(),
+                            preferences: HostPreferences = HostPreferences(), keeper: DisplayKeeper? = nil) throws
         -> (host: HostSession, lain: FakeLainDisplay, mac: InputLoopbackTests.VirtualMac, client: ClientSession,
             status: Status<ClientSession.Status>, stop: @Sendable () -> Void) {
-        let lain = FakeLainDisplay()
+        let lain = FakeLainDisplay(keeper: keeper)
         let mac = InputLoopbackTests.VirtualMac(
             display: HostDisplay(displayID: 1, origin: .zero, pointSize: CGSize(width: 1680, height: 1050)),
             layout: DisplayLayout(displays: []), cursor: CGPoint(x: 100, y: 100))
@@ -329,13 +358,16 @@ import Testing
             usbmux: USBMuxClient(socketPath: mux.socketPath), secrets: InMemorySecretStore(), sink: mac,
             display: DisplayLayoutProvider(source: lain, streamedDisplayID: { nil }, cursor: { mac.cursorLocation() }),
             power: InputLoopbackTests.FakePower(), settings: { Self.settings },
-            video: { HostVideoPipeline(display: lain, frameSource: source(), cursorSource: nil) }), tuning: tuning)
+            video: { HostVideoPipeline(display: lain, frameSource: source(), cursorSource: nil) },
+            preferences: { preferences }, displayKeeper: keeper), tuning: tuning)
         host.start()
         return (host, lain, mac, client, status, { host.stop(); mux.stop(); client.stop() })
     }
 
+    static let noResume = { var p = HostPreferences(); p.resumeAfterStop = false; return p }()
+
     @Test func captureStoppedByTheUserKeepsAnInputOnlySession() async throws {
-        let rig = try Self.stoppingRig { StoppingSource { CaptureStoppedByUser() } }
+        let rig = try Self.stoppingRig({ StoppingSource { CaptureStoppedByUser() } }, preferences: Self.noResume)
         defer { rig.stop() }
         #expect(await eventually { rig.lain.created == 1 && !rig.lain.alive })
         #expect(await eventually { rig.host.videoError != nil })
@@ -347,6 +379,68 @@ import Testing
         let mark = rig.mac.inputCalls.count
         rig.client.input.mouseMoved(dx: 10, dy: 0)
         #expect(await eventually { rig.mac.inputCalls.count > mark })
+    }
+
+    /// Stopped on the Mac with resume on (rust/HOST-PARITY.md §2): the link closes, the iPad reconnects, and
+    /// the new session streams the kept display again; a second stop within the gap stays input only, until
+    /// `resumeVideo()`.
+    @Test func captureStoppedByTheUserResumesOnceOnTheKeptDisplay() async throws {
+        var tuning = HostSession.Tuning()
+        tuning.resumeDelay = .milliseconds(50)
+        let keeper = DisplayKeeper(keepFor: .seconds(30))
+        let rig = try Self.stoppingRig({ StoppingSource { CaptureStoppedByUser() } }, tuning: tuning, keeper: keeper)
+        defer { rig.stop() }
+        #expect(await eventually { rig.lain.reused == 1 })
+        #expect(rig.lain.created == 1 && rig.lain.destroyed == 0, "the same display, never rebuilt")
+        // The resumed session's capture stops too, within the gap: input only from now on.
+        #expect(await eventually { rig.host.isVideoStoppedOnTheMac })
+        try await Task.sleep(for: .milliseconds(300))
+        #expect(rig.lain.reused == 1)
+        #expect(rig.host.status == .connected(deviceModel: "iPad16,6"))
+        // By hand: once more.
+        #expect(rig.host.resumeVideo())
+        #expect(await eventually { rig.lain.reused == 2 })
+        #expect(rig.lain.created == 1)
+        rig.stop()
+        #expect(await eventually { !rig.lain.alive && !keeper.isHolding }, "stopping the host removes the kept display")
+    }
+
+    /// Capture that runs until stopped (delivers nothing).
+    final class IdleSource: FrameSource {
+        func start(_ config: FrameSourceConfig, onFrame: @escaping @Sendable (CVPixelBuffer, UInt64) -> Void,
+                   onError: @escaping @Sendable (any Error) -> Void) async throws {}
+        func stop() async {}
+    }
+
+    /// The display keep-alive (rust/HOST-PARITY.md §1): a session whose link went away leaves its display to
+    /// the next one; without a keeper, each session makes its own.
+    @Test func aSessionsEndKeepsItsDisplayForTheNext() async throws {
+        let keeper = DisplayKeeper(keepFor: .seconds(30))
+        let rig = try Self.stoppingRig({ IdleSource() }, keeper: keeper)
+        defer { rig.stop() }
+        #expect(await eventually { rig.lain.created == 1 && rig.host.videoStats != nil })
+        #expect(rig.host.reconnect())
+        #expect(await eventually { rig.lain.reused == 1 && rig.host.videoStats != nil })
+        #expect(rig.lain.created == 1 && rig.lain.destroyed == 0 && rig.lain.alive)
+
+        let plain = try Self.stoppingRig({ IdleSource() })
+        defer { plain.stop() }
+        #expect(await eventually { plain.lain.created == 1 && plain.host.videoStats != nil })
+        #expect(plain.host.reconnect())
+        #expect(await eventually { plain.lain.created == 2 && plain.host.videoStats != nil })
+        #expect(plain.lain.destroyed == 1)
+    }
+
+    /// Capture that fails on its own takes its display with it: never kept.
+    @Test func aCaptureFailureIsNotKept() async throws {
+        struct Broken: Error {}
+        var tuning = HostSession.Tuning()
+        tuning.captureRetryInterval = .milliseconds(100)
+        let keeper = DisplayKeeper(keepFor: .seconds(30))
+        let rig = try Self.stoppingRig({ StoppingSource { Broken() } }, tuning: tuning, keeper: keeper)
+        defer { rig.stop() }
+        #expect(await eventually { rig.lain.created >= 2 })
+        #expect(rig.lain.reused == 0)
     }
 
     @Test func recurringCaptureErrorsBackOff() async throws {

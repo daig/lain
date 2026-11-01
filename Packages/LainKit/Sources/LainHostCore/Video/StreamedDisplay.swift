@@ -36,45 +36,64 @@ public protocol StreamedDisplayProvider: Sendable {
     /// It runs its course even on a cancelled task: a failed start waits here on the session's own task,
     /// which a detach cancels.
     func waitUntilRemoved() async
+    /// The session using the display ended (its link went away, or a takeover): the display is kept for
+    /// the next session if the provider has a keeper (`DisplayKeeper`), else removed and waited out.
+    func retire() async
 }
 
 extension StreamedDisplayProvider {
     public func waitUntilRemoved() async {}
+
+    /// The default: removed, as `destroy()`.
+    public func retire() async {
+        destroy()
+        await waitUntilRemoved()
+    }
 }
 
 #if os(macOS)
 /// The real provider: a `VirtualDisplay` (the only user of the private API, invariant 5) in the 13" iPad
-/// Pro's native mode, 2752×2064 px at 2× and 120 Hz. **Never sets an origin** in Extend mode: macOS
-/// remembers the display's arrangement by its persistent UUID, and the owner arranges it once in System
-/// Settings › Displays (§5.1, decided 2026-09-28).
+/// Pro's native mode, 2752×2064 px at 2× and 120 Hz (or the spec's scale, `HostPreferences.displayScale`).
+/// **Never sets an origin** in Extend mode: macOS remembers the display's arrangement by its persistent
+/// UUID, and the owner arranges it once in System Settings › Displays (§5.1, decided 2026-09-28).
+///
+/// With a `keeper`, a session's end hands the display over (`retire`), and the next session of the same
+/// geometry takes it back (`create`) instead of making a new one (rust/HOST-PARITY.md §1).
 public final class VirtualStreamedDisplayProvider: StreamedDisplayProvider {
     public let spec: VirtualDisplay.Spec
     public let refreshRate: Int
+    public let keeper: DisplayKeeper?
     private let display = Mutex<VirtualDisplay?>(nil)
     /// The display `destroy()` last released, until it has left the active list.
     private let removed = Mutex<CGDirectDisplayID?>(nil)
 
-    public init(spec: VirtualDisplay.Spec = VirtualDisplay.Spec(), refreshRate: Int = 120) {
+    public init(spec: VirtualDisplay.Spec = VirtualDisplay.Spec(), refreshRate: Int = 120, keeper: DisplayKeeper? = nil) {
         self.spec = spec
         self.refreshRate = refreshRate
+        self.keeper = keeper
     }
 
     public func create() async throws -> StreamedDisplay {
         let spec = self.spec
-        // Created on the main thread, as the benches (and DeskPad) do.
-        let vd = try await MainActor.run { try VirtualDisplay(spec) }
-        display.withLock { $0 = vd }
+        let log = Telemetry.logger("vdisplay")
+        let vd: VirtualDisplay
+        if let kept = await keeper?.take(key: spec.keeperKey) as? KeptVirtualDisplay, let reused = kept.takeDisplay() {
+            vd = reused
+            display.withLock { $0 = vd }
+            log.notice("streaming the kept display \(vd.displayID)")
+        } else {
+            // Created on the main thread, as the benches (and DeskPad) do.
+            vd = try await MainActor.run { try VirtualDisplay(spec) }
+            display.withLock { $0 = vd }
+        }
         do {
             try await vd.waitUntilActive()
-            if vd.selectNativeMode(refreshRate: Double(refreshRate)) == nil {
-                Telemetry.logger("vdisplay").error("native \(spec.pixelWidth)×\(spec.pixelHeight) @\(self.refreshRate) Hz mode not offered; streaming the current mode")
+            if !vd.isInStreamingMode, vd.selectNativeMode(refreshRate: Double(refreshRate)) == nil {
+                log.error("the \(spec.pointWidth)×\(spec.pointHeight) pt (\(spec.backingWidth)×\(spec.backingHeight) px) @\(self.refreshRate) Hz mode isn't offered; streaming the current mode")
             }
             // The mode switch lands asynchronously; wait (bounded) until the window server reports it.
             let deadline = Date().addingTimeInterval(2)
-            while Date() < deadline {
-                if let m = CGDisplayCopyDisplayMode(vd.displayID), m.pixelWidth == spec.pixelWidth, m.pixelHeight == spec.pixelHeight {
-                    break
-                }
+            while Date() < deadline, !vd.isInStreamingMode {
                 try await Task.sleep(for: .milliseconds(20))
             }
         } catch {
@@ -82,10 +101,13 @@ public final class VirtualStreamedDisplayProvider: StreamedDisplayProvider {
             throw error
         }
         let mode = CGDisplayCopyDisplayMode(vd.displayID)
-        let result = StreamedDisplay(displayID: vd.displayID, pixelWidth: mode?.pixelWidth ?? spec.pixelWidth,
-                                     pixelHeight: mode?.pixelHeight ?? spec.pixelHeight, bounds: CGDisplayBounds(vd.displayID),
+        let inSpec = vd.isInStreamingMode
+        // In the spec's mode, capture scales the backing store to the stream size; otherwise the current mode's own pixels.
+        let width = inSpec ? spec.streamWidth : (mode?.pixelWidth ?? spec.streamWidth)
+        let height = inSpec ? spec.streamHeight : (mode?.pixelHeight ?? spec.streamHeight)
+        let result = StreamedDisplay(displayID: vd.displayID, pixelWidth: width, pixelHeight: height, bounds: CGDisplayBounds(vd.displayID),
                                      refreshRate: mode.map { Int($0.refreshRate.rounded()) }.flatMap { $0 > 0 ? $0 : nil } ?? refreshRate)
-        Telemetry.logger("vdisplay").notice("streamed display \(result.displayID): \(result.pixelWidth)×\(result.pixelHeight) px at \(result.refreshRate) Hz, bounds \(String(describing: result.bounds))")
+        log.notice("streamed display \(result.displayID): \(result.pixelWidth)×\(result.pixelHeight) px at \(result.refreshRate) Hz, bounds \(String(describing: result.bounds))")
         return result
     }
 
@@ -109,5 +131,41 @@ public final class VirtualStreamedDisplayProvider: StreamedDisplayProvider {
         await VirtualDisplay.waitUntilGone(id)
         removed.withLock { if $0 == id { $0 = nil } }
     }
+
+    public func retire() async {
+        guard let removed = handOver() else { return }
+        await VirtualDisplay.waitUntilGone(removed)
+    }
+
+    /// Gives the display to the keeper, or releases it (synchronously, so no reference outlives this call):
+    /// the id to wait out when it was released.
+    private func handOver() -> CGDirectDisplayID? {
+        guard let vd = display.withLock({ d -> VirtualDisplay? in defer { d = nil }; return d }) else { return nil }
+        if let keeper, keeper.keep(KeptVirtualDisplay(vd), key: spec.keeperKey) { return nil }
+        return vd.displayID
+    }
+}
+
+/// A `VirtualDisplay` held by the `DisplayKeeper` between sessions.
+final class KeptVirtualDisplay: KeepableDisplay {
+    private let display: Mutex<VirtualDisplay?>
+
+    init(_ display: VirtualDisplay) { self.display = Mutex(display) }
+
+    var isUsable: Bool {
+        guard let id = display.withLock({ $0?.displayID }) else { return false }
+        return VirtualDisplay.activeDisplays().contains(id)
+    }
+
+    /// Hands the display to a new session (once).
+    func takeDisplay() -> VirtualDisplay? { display.withLock { d in defer { d = nil }; return d } }
+
+    func remove() async {
+        guard let id = release() else { return }
+        await VirtualDisplay.waitUntilGone(id)
+    }
+
+    /// Drops the last reference (removing the display, S2) before returning its id.
+    private func release() -> CGDirectDisplayID? { takeDisplay()?.displayID }
 }
 #endif
