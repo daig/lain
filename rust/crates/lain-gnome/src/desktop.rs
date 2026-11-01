@@ -122,7 +122,10 @@ mod tests {
         let m = d.contract_monitors();
         assert_eq!(m.len(), 2);
         assert_eq!(m[0], Monitor { id: 1, bounds: RectF::new(0.0, 0.0, 3840.0, 2160.0), primary: true, lain: false });
-        assert_eq!(m[1], Monitor { id: 2, bounds: RectF::new(3840.0, 0.0, 1376.0, 1032.0), primary: false, lain: true });
+        assert_eq!(
+            m[1],
+            Monitor { id: 2, bounds: RectF::new(3840.0, 0.0, 1376.0, 1032.0), primary: false, lain: true }
+        );
         assert!(d.has_other_display());
         assert_eq!(d.lain().unwrap().mode, Some((2752, 2064, 120.0)));
         // Unmarked when lain's display isn't recorded (another client's virtual monitor).

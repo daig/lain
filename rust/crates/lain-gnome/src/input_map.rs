@@ -299,7 +299,10 @@ mod tests {
     #[test]
     fn keys_buttons_and_scrolls() {
         let mut m = mapper(RectF::new(3840.0, 0.0, 1376.0, 1032.0));
-        assert_eq!(m.map(&InputAction::Key { code: 42, down: true }, None), vec![InputCall::Key { code: 42, down: true }]);
+        assert_eq!(
+            m.map(&InputAction::Key { code: 42, down: true }, None),
+            vec![InputCall::Key { code: 42, down: true }]
+        );
         assert_eq!(
             m.map(&InputAction::Button { code: 0x111, down: false }, None),
             vec![InputCall::Button { code: 0x111, down: false }]
