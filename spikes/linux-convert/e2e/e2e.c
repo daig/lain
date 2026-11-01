@@ -23,7 +23,9 @@
 //            [--loop main|thread] [--pipeline] [--dump out.h265] [--refdump out.nv12]
 // --loop thread runs PipeWire on its own thread, so Mutter's buffers are taken and returned while we convert or
 // encode (with main, the stream is serviced only between requests). --pipeline converts the next picture on the
-// GFX engine while the previous one encodes on VCN (still one encode outstanding).
+// GFX engine while the previous one encodes on VCN (still one encode outstanding). While a conversion is waited
+// for and an encode is in flight, the conversion's fence and the encode's coded buffer are polled alternately in
+// 50 us steps, so the AU is collected and timed when the encode finishes, not when the conversion does.
 #define _GNU_SOURCE
 #include <EGL/egl.h>
 #include <EGL/eglext.h>
@@ -457,6 +459,83 @@ static struct {
 static void lock(void) { if (S.tl) pw_thread_loop_lock(S.tl); }
 static void unlock(void) { if (S.tl) pw_thread_loop_unlock(S.tl); }
 
+// The loop's run state. A job is one picture: converted into out[oi] ("ready"), then encoding ("ej").
+struct job { struct pw_buffer *pb; uint64_t pts, arrival, c0, c1, submit, gpu; int oi; };
+static struct {
+    encoder enc;
+    struct job ej;
+    int enc_busy;
+    FILE *out;
+    size_t bytes, first_au;
+    int first_vps, first_irap, last_out;
+    long last_enc_index;
+    long collected_in_conv; // AUs collected while a conversion was in flight (pipelined)
+} R = {.last_out = -1, .last_enc_index = -1};
+
+// Collects the AU of the encode in flight if it finishes within timeout_ns; 1 if it did. The AU's time is taken
+// here, so it must be called as soon as possible after the encode finishes: also from inside the conversion's
+// wait (see wait_conversion), not only after it, or an AU that finishes during a conversion is timestamped when the
+// conversion ends.
+static int collect(uint64_t timeout_ns) {
+    size_t au;
+    int irap, vps;
+    if (!enc_collect(S.va, &R.enc, timeout_ns, R.out, &au, &irap, &vps)) return 0;
+    uint64_t t_au = now_ns();
+    struct job *ej = &R.ej;
+    R.enc_busy = 0;
+    if (ej->pb) { lock(); pw_stream_queue_buffer(S.stream, ej->pb); unlock(); }
+    if (S.conv == CONV_GL && S.implicit_sync) {
+        GLuint64 a = 0, z = 0;
+        glGetQueryObjectui64v(S.q[0], GL_QUERY_RESULT, &a);
+        glGetQueryObjectui64v(S.q[1], GL_QUERY_RESULT, &z);
+        ej->gpu = z - a;
+    }
+    if (S.encoded == 0) { R.first_au = au; R.first_vps = vps; R.first_irap = irap; }
+    S.encoded++;
+    R.bytes += au;
+    R.last_enc_index = S.encoded - 1;
+    R.last_out = ej->oi;
+    if (S.measuring && S.n < MAXF) {
+        S.w_encoded++;
+        S.cap_au[S.n] = (int64_t)(t_au - ej->pts);
+        S.arr_au[S.n] = (int64_t)(t_au - ej->arrival);
+        S.conv_t[S.n] = (int64_t)(ej->c1 - ej->c0);
+        S.conv_gpu[S.n] = (int64_t)ej->gpu;
+        S.ready_wait[S.n] = (int64_t)(ej->submit - ej->c1);
+        S.enc_t[S.n] = (int64_t)(t_au - ej->submit);
+        S.n++;
+    }
+    return 1;
+}
+
+// Waits for a conversion: the GL fence (fence != 0) or the VPP output surface. While an encode is in flight it
+// polls both in 50 us steps, so the AU is collected (and timed) while the conversion runs, not after it.
+static void wait_conversion(GLsync fence, VASurfaceID surf) {
+    static int no_sync2;
+    uint64_t deadline = now_ns() + 1000000000ull;
+    GLbitfield flags = GL_SYNC_FLUSH_COMMANDS_BIT;
+    for (;;) {
+        int poll = R.enc_busy;
+        uint64_t step = poll ? 50000ull : 1000000000ull;
+        if (fence) {
+            GLenum r = glClientWaitSync(fence, flags, step);
+            flags = 0;
+            if (r == GL_ALREADY_SIGNALED || r == GL_CONDITION_SATISFIED) return;
+            if (r == GL_WAIT_FAILED) DIE("glClientWaitSync failed");
+        } else if (!no_sync2) {
+            VAStatus st = vaSyncSurface2(S.va, surf, step);
+            if (st == VA_STATUS_SUCCESS) return;
+            if (st == VA_STATUS_ERROR_UNIMPLEMENTED) {
+                no_sync2 = 1;
+                fprintf(stderr, "note: vaSyncSurface2 unimplemented: VPP waits block, AU times are late\n");
+            } else if (st != VA_STATUS_ERROR_TIMEDOUT) DIE("vaSyncSurface2: %s", vaErrorStr(st));
+        }
+        if (!fence && no_sync2) { CHECK(vaSyncSurface(S.va, surf)); return; }
+        if (now_ns() > deadline) DIE("conversion timeout");
+        if (poll && collect(50000)) R.collected_in_conv++;
+    }
+}
+
 static void on_param_changed(void *data, uint32_t id, const struct spa_pod *param) {
     (void)data;
     if (!param || id != SPA_PARAM_Format) return;
@@ -639,8 +718,7 @@ int main(int argc, char **argv) {
                    .value.i = VA_SURFACE_ATTRIB_USAGE_HINT_ENCODER |
                               (S.conv == CONV_GL ? VA_SURFACE_ATTRIB_USAGE_HINT_EXPORT : VA_SURFACE_ATTRIB_USAGE_HINT_VPP_WRITE)}}};
     CHECK(vaCreateSurfaces(S.va, VA_RT_FORMAT_YUV420, W, H, S.out, NOUT, oattr, 2));
-    encoder enc;
-    enc_init(S.va, &enc, S.fps, S.out, NOUT);
+    enc_init(S.va, &R.enc, S.fps, S.out, NOUT);
 
     if (S.conv == CONV_VPP) {
         VAConfigID vcfg;
@@ -744,21 +822,16 @@ int main(int argc, char **argv) {
     unlock();
     if (threaded && pw_thread_loop_start(S.tl) < 0) DIE("pw_thread_loop_start");
 
-    FILE *out = dump ? fopen(dump, "wb") : NULL;
-    if (dump && !out) DIE("open %s", dump);
+    R.out = dump ? fopen(dump, "wb") : NULL;
+    if (dump && !R.out) DIE("open %s", dump);
     uint64_t start = now_ns(), measure_from = start + (uint64_t)(warmup * 1e9), end = start + (uint64_t)(seconds * 1e9);
     uint64_t cpu0 = 0, wall0 = 0;
-    long last_enc_index = -1;
-    int last_out = -1;
-    size_t bytes = 0, first_au = 0;
-    int first_vps = 0, first_irap = 0;
-    // A job is one picture: converted into out[oi] ("ready"), then encoding ("enc").
-    struct job { struct pw_buffer *pb; uint64_t pts, arrival, c0, c1, submit, gpu; int oi; } ready = {0}, ej = {0};
-    int have_ready = 0, enc_busy = 0;
+    struct job ready = {0};
+    int have_ready = 0;
     if (!threaded) pw_loop_enter(l);
     for (;;) {
         uint64_t t = now_ns();
-        if (t >= end && !enc_busy) break;
+        if (t >= end && !R.enc_busy) break;
         if (!S.measuring && t >= measure_from) {
             lock(); // on_process reads these on PipeWire's thread
             S.measuring = 1;
@@ -770,10 +843,10 @@ int main(int argc, char **argv) {
         // ---- 1. take the newest picture and convert it (when nothing converted waits for the encoder) ----
         struct pw_buffer *pb = NULL;
         uint64_t pts = 0, arrival = 0;
-        if (!threaded) pw_loop_iterate(l, (!have_ready && !enc_busy && !S.newest) ? 5 : 0);
+        if (!threaded) pw_loop_iterate(l, (!have_ready && !R.enc_busy && !S.newest) ? 5 : 0);
         if (!have_ready && t < end) {
             lock();
-            if (threaded && !S.newest && !enc_busy) {
+            if (threaded && !S.newest && !R.enc_busy) {
                 struct timespec abst;
                 pw_thread_loop_get_time(S.tl, &abst, 5 * SPA_NSEC_PER_MSEC);
                 pw_thread_loop_timed_wait_full(S.tl, &abst);
@@ -802,9 +875,7 @@ int main(int argc, char **argv) {
                 glQueryCounter(S.q[1], GL_TIMESTAMP);
                 GLsync fence = glFenceSync(GL_SYNC_GPU_COMMANDS_COMPLETE, 0);
                 glFlush();
-                if (!S.implicit_sync) {
-                    if (glClientWaitSync(fence, GL_SYNC_FLUSH_COMMANDS_BIT, 1000000000ull) == GL_TIMEOUT_EXPIRED) DIE("fence timeout");
-                }
+                if (!S.implicit_sync) wait_conversion(fence, VA_INVALID_SURFACE);
                 glDeleteSync(fence);
             } else {
                 S.pp.surface = s->surf;
@@ -815,7 +886,7 @@ int main(int argc, char **argv) {
                 CHECK(vaBeginPicture(S.va, S.vpp_ctx, S.out[oi]));
                 CHECK(vaRenderPicture(S.va, S.vpp_ctx, &S.ppbuf, 1));
                 CHECK(vaEndPicture(S.va, S.vpp_ctx));
-                CHECK(vaSyncSurface(S.va, S.out[oi]));
+                wait_conversion(0, S.out[oi]);
             }
             uint64_t c1 = now_ns();
             if (S.conv == CONV_GL && !S.implicit_sync) { // finished: the results are there
@@ -831,45 +902,15 @@ int main(int argc, char **argv) {
             have_ready = 1;
         }
         // ---- 2. submit the converted picture when the encoder is free ----
-        if (!enc_busy && have_ready) {
+        if (!R.enc_busy && have_ready) {
             ready.submit = now_ns();
-            enc_submit(S.va, &enc, S.out[ready.oi]);
-            ej = ready;
+            enc_submit(S.va, &R.enc, S.out[ready.oi]);
+            R.ej = ready;
             have_ready = 0;
-            enc_busy = 1;
+            R.enc_busy = 1;
         }
         // ---- 3. collect the AU: at once (serial) or polling, so step 1 can run meanwhile (--pipeline) ----
-        if (enc_busy) {
-            size_t au;
-            int irap, vps;
-            uint64_t wait = !S.pipeline ? 1000000000ull : (have_ready ? 1000000ull : 250000ull);
-            if (enc_collect(S.va, &enc, wait, out, &au, &irap, &vps)) {
-                uint64_t t_au = now_ns();
-                enc_busy = 0;
-                if (ej.pb) { lock(); pw_stream_queue_buffer(S.stream, ej.pb); unlock(); }
-                if (S.conv == CONV_GL && S.implicit_sync) {
-                    GLuint64 a = 0, z = 0;
-                    glGetQueryObjectui64v(S.q[0], GL_QUERY_RESULT, &a);
-                    glGetQueryObjectui64v(S.q[1], GL_QUERY_RESULT, &z);
-                    ej.gpu = z - a;
-                }
-                if (S.encoded == 0) { first_au = au; first_vps = vps; first_irap = irap; }
-                S.encoded++;
-                bytes += au;
-                last_enc_index = S.encoded - 1;
-                last_out = ej.oi;
-                if (S.measuring && S.n < MAXF) {
-                    S.w_encoded++;
-                    S.cap_au[S.n] = (int64_t)(t_au - ej.pts);
-                    S.arr_au[S.n] = (int64_t)(t_au - ej.arrival);
-                    S.conv_t[S.n] = (int64_t)(ej.c1 - ej.c0);
-                    S.conv_gpu[S.n] = (int64_t)ej.gpu;
-                    S.ready_wait[S.n] = (int64_t)(ej.submit - ej.c1);
-                    S.enc_t[S.n] = (int64_t)(t_au - ej.submit);
-                    S.n++;
-                }
-            }
-        }
+        if (R.enc_busy) collect(!S.pipeline ? 1000000000ull : (have_ready ? 1000000ull : 250000ull));
     }
     if (have_ready && ready.pb) { lock(); pw_stream_queue_buffer(S.stream, ready.pb); unlock(); }
     uint64_t wall = now_ns() - wall0, cpu = cpu_ns() - cpu0;
@@ -880,10 +921,12 @@ int main(int argc, char **argv) {
     double ws = wall / 1e9;
     printf("{\"ev\":\"summary\",\"conv\":\"%s\",\"sync\":\"%s\",\"loop\":\"%s\",\"pipeline\":%d,\"window_s\":%.2f,\"delivered_per_s\":%.1f,"
            "\"encoded_per_s\":%.1f,\"dropped_per_s\":%.1f,\"cursor_only_total\":%ld,\"encoded_total\":%ld,"
-           "\"cpu_pct\":%.1f,\"mbps\":%.1f,\"first_au\":%zu,\"first_irap\":%d,\"first_vps\":%d,\"last_index\":%ld}\n",
+           "\"cpu_pct\":%.1f,\"mbps\":%.1f,\"first_au\":%zu,\"first_irap\":%d,\"first_vps\":%d,\"last_index\":%ld,"
+           "\"au_collected_during_conversion\":%ld}\n",
            S.conv == CONV_GL ? "gl" : "vpp", S.implicit_sync ? "implicit" : "cpu", threaded ? "thread" : "main", S.pipeline, ws, S.w_delivered / ws,
            S.w_encoded / ws, S.w_dropped / ws, S.cursor_only, S.encoded, cpu * 100.0 / wall,
-           bytes * 8 / ((now_ns() - start) / 1e9) / 1e6, first_au, first_irap, first_vps, last_enc_index);
+           R.bytes * 8 / ((now_ns() - start) / 1e9) / 1e6, R.first_au, R.first_irap, R.first_vps, R.last_enc_index,
+           R.collected_in_conv);
     // The interval and arrival arrays are filled per delivered picture; the others per encode.
     int nd = S.nd, ni = 0;
     for (int i = 0; i < nd; i++) if (S.interval[i] >= 0) S.interval[ni++] = S.interval[i];
@@ -895,13 +938,13 @@ int main(int argc, char **argv) {
     summary("encode (submit -> AU mapped)", S.enc_t, S.n);
     summary("PTS -> arrival (delivered pictures)", S.arrival_minus_pts, nd);
     summary("PTS interval (delivered pictures)", S.interval, ni);
-    if (out) fclose(out);
+    if (R.out) fclose(R.out);
     // The last encoded frame's NV12, for the decode check (its surface is not reused after the loop).
-    if (refdump && last_out >= 0) {
+    if (refdump && R.last_out >= 0) {
         VAImageFormat fmt = {.fourcc = VA_FOURCC_NV12, .byte_order = VA_LSB_FIRST, .bits_per_pixel = 12};
         VAImage img;
         CHECK(vaCreateImage(S.va, &fmt, W, H, &img));
-        CHECK(vaGetImage(S.va, S.out[last_out], 0, 0, W, H, img.image_id));
+        CHECK(vaGetImage(S.va, S.out[R.last_out], 0, 0, W, H, img.image_id));
         uint8_t *m;
         CHECK(vaMapBuffer(S.va, img.buf, (void **)&m));
         if (img.num_planes != 2 || (uint64_t)img.offsets[1] + (uint64_t)img.pitches[1] * (H / 2) > img.data_size ||
@@ -913,7 +956,7 @@ int main(int argc, char **argv) {
         for (int y = 0; y < H / 2; y++) fwrite(m + img.offsets[1] + (size_t)y * img.pitches[1], 1, W, rf);
         fclose(rf);
         CHECK(vaUnmapBuffer(S.va, img.buf));
-        printf("{\"ev\":\"refdump\",\"frame_index\":%ld,\"file\":\"%s\"}\n", last_enc_index, refdump);
+        printf("{\"ev\":\"refdump\",\"frame_index\":%ld,\"file\":\"%s\"}\n", R.last_enc_index, refdump);
     }
     lock();
     pw_stream_disconnect(S.stream);

@@ -1,0 +1,40 @@
+{"result": "before", "same_as_brief": true, "layout": {"monitors": [{"connector": "HDMI-1", "vendor": "SAM", "product": "Odyssey G95NC", "current_mode": "3840x2160@60.000"}], "logical_monitors": [{"x": 0, "y": 0, "scale": 1.0, "transform": 0, "primary": true, "connectors": ["HDMI-1"]}], "layout_mode": 1}}
+=== e2e: /home/user/code/lain/.claude/worktrees/wf_1bf6fc09-0af-4/spikes/linux-convert/e2e/e2e 64 --conv gl --loop thread --pipeline --seconds 12 --warmup 2 (22:54:31)
+loadavg before: 0.16 0.33 0.38 1/1650 64781; gpu_busy before: 0%
+libva info: VA-API version 1.23.0
+libva info: User environment variable requested driver 'radeonsi'
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/radeonsi_drv_video.so
+libva info: Found init function __vaDriverInit_1_23
+libva info: va_openDriver() returns 0
+{"ev":"gl","renderer":"AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic)"}
+{"ev":"state","state":"connecting","error":""}
+{"ev":"state","state":"paused","error":""}
+{"ev":"format","format":8,"width":2752,"height":2064,"max_framerate":"120/1","modifier":144115188080057091}
+{"ev":"format","format":8,"width":2752,"height":2064,"max_framerate":"120/1","modifier":144115188080057091}
+{"ev":"state","state":"streaming","error":""}
+{"ev":"import","fd":26,"offset":0,"stride":11264,"size":24510464}
+{"result": "virtual", "connector": "Meta-0", "mode": "2752x2064@120.000"}
+{"ev":"import","fd":27,"offset":0,"stride":11264,"size":24510464}
+{"ev":"import","fd":29,"offset":0,"stride":11264,"size":24510464}
+{"ev":"import","fd":30,"offset":0,"stride":11264,"size":24510464}
+{"ev":"import","fd":31,"offset":0,"stride":11264,"size":24510464}
+{"ev":"import","fd":32,"offset":0,"stride":11264,"size":24510464}
+{"ev":"import","fd":33,"offset":0,"stride":11264,"size":24510464}
+{"ev":"import","fd":28,"offset":0,"stride":11264,"size":24510464}
+{"ev":"summary","conv":"gl","sync":"cpu","loop":"thread","pipeline":1,"window_s":10.00,"delivered_per_s":120.0,"encoded_per_s":120.0,"dropped_per_s":0.0,"cursor_only_total":1,"encoded_total":1425,"cpu_pct":1.9,"mbps":59.3,"first_au":44835,"first_irap":1,"first_vps":1,"last_index":1424,"au_collected_during_conversion":996}
+  capture (PTS) -> AU mapped               n=1200 p50=13.20 p95=14.72 p99=15.41 max=16.33 mean=13.32 ms
+  arrival -> AU mapped                     n=1200 p50=13.10 p95=14.61 p99=15.20 max=16.19 mean=13.21 ms
+  convert (submit -> done, CPU)            n=1200 p50=3.86 p95=5.24 p99=6.49 max=7.09 mean=3.80 ms
+  convert (GPU timer queries)              n=1200 p50=0.70 p95=1.04 p99=1.38 max=2.43 mean=0.75 ms
+  converted, waiting for the encoder       n=1200 p50=0.00 p95=0.97 p99=2.33 max=3.28 mean=0.14 ms
+  encode (submit -> AU mapped)             n=1200 p50=7.94 p95=8.50 p99=8.87 max=9.64 mean=7.97 ms
+  PTS -> arrival (delivered pictures)      n=1200 p50=0.10 p95=0.16 p99=0.39 max=1.00 mean=0.11 ms
+  PTS interval (delivered pictures)        n=1199 p50=8.33 p95=8.36 p99=8.41 max=14.76 mean=8.34 ms
+{"ev":"state","state":"paused","error":""}
+{"ev":"state","state":"unconnected","error":""}
+nvidia-guard: no non-AMD GPU node was opened
+gpu_busy during: mean 61%, max 100%, 117 samples
+loadavg after: 0.13 0.32 0.37 10/1714 65184; gpu_busy after: 0%; exit 0
+{"result": "gtkprobe", "ticks_per_s": [118, 120, 120, 119, 120, 120, 120, 120, 120, 120, 120, 120, 120], "guard_rc": 0}
+session closed by Mutter
+{"result": "after", "same_as_before": true, "same_as_brief": true, "layout": {"monitors": [{"connector": "HDMI-1", "vendor": "SAM", "product": "Odyssey G95NC", "current_mode": "3840x2160@60.000"}], "logical_monitors": [{"x": 0, "y": 0, "scale": 1.0, "transform": 0, "primary": true, "connectors": ["HDMI-1"]}], "layout_mode": 1}}

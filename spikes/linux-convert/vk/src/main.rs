@@ -3,7 +3,8 @@
 //!
 //! - Input: a ring of BGRx (XRGB8888) DMA-BUFs allocated with GBM at exactly the modifier Mutter's screen-cast
 //!   streams offer (0x200000000401b03), imported into Vulkan as images (VK_EXT_image_drm_format_modifier),
-//!   and filled once with scrolling-text content by a buffer-to-image copy.
+//!   and filled once with scrolling-text content (or, with `--content allcolors`, all 2^24 colours and random
+//!   pixels) by a buffer-to-image copy.
 //! - Output (`--out`): `buffer`, a plain Vulkan storage buffer; `va-export`, NV12 surfaces created by libva
 //!   (the kind the encoder takes) exported as DMA-BUFs and imported as Vulkan buffers, written in place
 //!   (needs a LINEAR surface); `va-import`, a Vulkan buffer exported as a DMA-BUF and imported into libva as
@@ -141,6 +142,27 @@ fn text_frame(w: usize, h: usize, offset: usize, period: usize) -> Vec<u8> {
     out
 }
 
+/// `--content allcolors`: ring frames 0-2 hold every one of the 2^24 colours exactly once, one per pixel (colour =
+/// frame * w * h + pixel index, R in the high byte); the rest of frame 2 and every later frame hold random pixels, so
+/// 2x2 blocks mix unrelated colours. Check every ring frame (`--check` = `--ring`) to cover them all.
+fn allcolors_frame(w: usize, h: usize, frame: usize) -> Vec<u8> {
+    let hash = |a: u64| {
+        let mut x = a.wrapping_mul(0x9E37_79B9_7F4A_7C15);
+        x ^= x >> 29;
+        x = x.wrapping_mul(0xBF58_476D_1CE4_E5B9);
+        x ^ (x >> 32)
+    };
+    let mut out = vec![0u8; w * h * 4];
+    for p in 0..w * h {
+        let mut c = (frame * w * h + p) as u64;
+        if frame >= 3 || c >= 1 << 24 {
+            c = hash((frame as u64) << 32 | p as u64) & 0xff_ffff;
+        }
+        out[4 * p..4 * p + 4].copy_from_slice(&[c as u8, (c >> 8) as u8, (c >> 16) as u8, 255]);
+    }
+    out
+}
+
 /// The CPU reference: tightly packed Y (w*h) and interleaved CbCr (w*h/2), in f64.
 fn reference(bgrx: &[u8], w: usize, h: usize) -> (Vec<u8>, Vec<u8>) {
     let q = |v: f64| (v + 0.5).floor().clamp(0.0, 255.0) as u8;
@@ -179,17 +201,18 @@ fn compare(name: &str, got: &[u8], want: &[u8]) -> (u32, f64) {
     assert_eq!(got.len(), want.len(), "{name}: length");
     let mut max = 0u32;
     let mut sum = 0u64;
-    let mut over1 = 0usize;
+    let (mut over1, mut off1) = (0usize, 0usize);
     for (a, b) in got.iter().zip(want) {
         let d = (*a as i32 - *b as i32).unsigned_abs();
         max = max.max(d);
         sum += d as u64;
+        off1 += (d == 1) as usize;
         if d > 1 {
             over1 += 1;
         }
     }
     let mean = sum as f64 / got.len() as f64;
-    print!(" {name}: max {max} mean {mean:.5} (>1: {over1})");
+    print!(" {name}: max {max} mean {mean:.5} (off by 1: {off1}, >1: {over1})");
     (max, mean)
 }
 
@@ -710,6 +733,11 @@ fn main() {
     let queue = args.str("queue", "compute");
     let (wx, wy, words): (u32, u32, u32) = (args.get("wx", 64), args.get("wy", 1), args.get("words", 1));
     let strided = args.get::<u32>("strided", 0) != 0;
+    let content_mode = args.str("content", "terminal");
+    assert!(content_mode == "terminal" || content_mode == "allcolors", "--content terminal|allcolors");
+    let content_of = |i: usize| -> Vec<u8> {
+        if content_mode == "allcolors" { allcolors_frame(w as usize, h as usize, i) } else { text_frame(w as usize, h as usize, i * 18, ring * 18) }
+    };
     assert!(w % 4 == 0 && h % 2 == 0 && w <= 8192 && h <= 4352, "size {w}x{h}");
     assert!((1..=1024).contains(&(wx * wy)) && (1..=16).contains(&words));
     assert!(ring >= 1 && ring <= 32 && frames <= 20_000 && checks <= ring);
@@ -804,8 +832,6 @@ fn main() {
         vk::MemoryPropertyFlags::HOST_VISIBLE | vk::MemoryPropertyFlags::HOST_COHERENT,
     );
     let staging_ptr = unsafe { dev.map_memory(staging_mem, 0, frame_bytes, vk::MemoryMapFlags::empty()).unwrap() as *mut u8 };
-    let step = 18usize;
-    let period = ring * step;
     let mut images = Vec::new();
     let t = Instant::now();
     for i in 0..ring {
@@ -817,7 +843,7 @@ fn main() {
         }
         let (image, view) = gpu.import_image(&bo, w, h);
         unsafe { libc::close(bo.fd) };
-        let content = text_frame(w as usize, h as usize, i * step, period);
+        let content = content_of(i);
         assert_eq!(content.len() as u64, frame_bytes);
         unsafe { std::ptr::copy_nonoverlapping(content.as_ptr(), staging_ptr, content.len()) };
         gpu.one_shot(|cb| unsafe {
@@ -1226,7 +1252,7 @@ fn main() {
             }
             got.push(("vulkan", gy_, guv));
         }
-        let content = text_frame(w as usize, h as usize, i * step, period);
+        let content = content_of(i);
         let (ry, ruv) = reference(&content, w as usize, h as usize);
         let t = gpu_ms(i);
         for (via, gy_, guv) in &got {
