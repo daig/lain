@@ -208,6 +208,8 @@ impl<P: Platform> HostConnection<P> {
             return;
         }
         let _ = ended.wait_for(|e| *e).await;
+        // A `finish` racing the start above may have drained the list before every task was in it.
+        lock(&self.tasks).drain(..).for_each(|t| t.abort());
     }
 
     /// Idempotent teardown: stop video (the display goes in the background), stop sampling, close the
@@ -335,6 +337,8 @@ impl<P: Platform> HostConnection<P> {
     /// watch, so a change goes out when it happens.
     async fn layout_loop(&self) {
         let mut monitors = self.platform.display().monitors();
+        // A change between the first layout (sent before `run`) and this watch would otherwise wait for the next.
+        self.send_layout_if_changed();
         loop {
             tokio::select! {
                 changed = monitors.changed() => if changed.is_err() { return },
