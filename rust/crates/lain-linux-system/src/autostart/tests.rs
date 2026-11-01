@@ -33,6 +33,7 @@ fn the_unit_is_bound_to_the_graphical_session() {
          ExecStart=/home/dai/.local/bin/lain-hostd\n\
          Restart=on-failure\n\
          RestartSec=2\n\
+         RestartPreventExitStatus=2\n\
          \n\
          [Install]\n\
          WantedBy=graphical-session.target\n"

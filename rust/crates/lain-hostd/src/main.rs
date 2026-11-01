@@ -3,8 +3,11 @@
 //! Everything it composes is in the library; this file only builds the real parts, which talk to the desktop,
 //! usbmuxd, the Secret Service, systemd and Avahi.
 //!
-//! Exit status: 0 after SIGINT or SIGTERM; 1 if another lain host is running, or the session bus or GNOME can't
-//! be reached; 2 if the config file is refused.
+//! Exit status:
+//! - 0 after SIGINT or SIGTERM, and when another lain host is already running (as Swift's `settleInstance`
+//!   exits 0 when it hands over), so that systemd's `Restart=on-failure` doesn't start it again;
+//! - 1 if the session bus or GNOME can't be reached, which systemd retries;
+//! - 2 if the config file is refused, which the unit doesn't retry (`RestartPreventExitStatus=2`).
 
 use std::path::PathBuf;
 use std::process::ExitCode;
@@ -123,7 +126,7 @@ async fn run(args: Args) -> ExitCode {
         Ok(true) => {}
         Ok(false) => {
             error!("another lain host is running (it owns {BUS_NAME}); exiting");
-            return ExitCode::FAILURE;
+            return ExitCode::SUCCESS;
         }
         Err(e) => {
             error!("couldn't own {BUS_NAME}: {e}");
@@ -179,16 +182,17 @@ async fn run(args: Args) -> ExitCode {
         },
         None => None,
     };
-    let daemon = Daemon::start(platform, host, UsbMuxClient::default(), advertiser, config.daemon_options()).await;
-
+    // Watched before the session starts: a signal while Daemon::start runs (up to its setup timeout) waits here
+    // and stops the daemon in order, rather than killing it with the session already up.
     let (mut term, mut int) = match (signal(SignalKind::terminate()), signal(SignalKind::interrupt())) {
         (Ok(term), Ok(int)) => (term, int),
         (Err(e), _) | (_, Err(e)) => {
             error!("couldn't watch for signals: {e}");
-            daemon.shutdown().await;
             return ExitCode::FAILURE;
         }
     };
+    let daemon = Daemon::start(platform, host, UsbMuxClient::default(), advertiser, config.daemon_options()).await;
+
     tokio::select! {
         _ = term.recv() => info!("SIGTERM: stopping"),
         _ = int.recv() => info!("SIGINT: stopping"),
