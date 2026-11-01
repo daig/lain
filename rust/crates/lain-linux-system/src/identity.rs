@@ -6,8 +6,9 @@
 //! Bonjour TXT record), so it needs no secret store, and a file keeps working when the keyring is locked.
 //! Copying the home directory to another machine copies the id with it, which the Keychain prevents.
 
-use std::fs;
+use std::fs::{self, OpenOptions};
 use std::io;
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::{Path, PathBuf};
 use std::time::Duration;
 
@@ -36,25 +37,33 @@ pub fn new_host_id() -> String {
     uuid::Uuid::new_v4().hyphenated().to_string().to_uppercase()
 }
 
+/// Where a malformed host id file's contents are kept when it is replaced, for recovery by hand.
+pub const HOST_ID_CORRUPT_FILE: &str = "host-id.corrupt";
+
+/// The lock file (`flock`) that serializes replacing a malformed host id, across processes.
+pub const HOST_ID_LOCK_FILE: &str = "host-id.lock";
+
 /// The stored host id from `lain_dir`/`host-id`, created on first use (Swift: `HostIdentity.load`).
 ///
-/// Created once and atomically: a second process racing to create it reads the winner's id. A malformed
-/// file is replaced, as Swift replaces a malformed Keychain item. Fails if the file can't be read or
-/// written, so that Wi-Fi stays off rather than advertising an id that changes (as in Swift).
+/// Created once and atomically: a second process racing to create it reads the winner's id. Surrounding
+/// ASCII whitespace (a hand edit's CRLF or extra newline) is ignored and the file left as it is (an
+/// intended difference: Swift's Keychain item can't be hand-edited; lowercase stays malformed, as in
+/// Swift). Any other malformed contents are replaced, as Swift replaces a malformed
+/// Keychain item; the old contents are kept in `host-id.corrupt`, and the replacement is made under an
+/// exclusive lock on `host-id.lock`, so loaders racing to replace it all return the one id left on disk
+/// (Swift's Keychain version has that race). Fails if the file can't be read or written, so that Wi-Fi
+/// stays off rather than advertising an id that changes (as in Swift).
 pub fn load_or_create_host_id(lain_dir: &Path) -> Result<String> {
     let path = lain_dir.join(HOST_ID_FILE);
     paths::ensure_private_dir(lain_dir).map_err(|e| paths::io_error("creating", lain_dir, e))?;
-    // Two rounds at most: the second reads what a concurrent creator wrote.
-    for _ in 0..2 {
+    // A few rounds at most: a later one reads what a concurrent creator wrote.
+    for _ in 0..3 {
         match read_host_id(&path)? {
             Some(Ok(id)) => return Ok(id),
-            Some(Err(malformed)) => {
-                warn!(path = %path.display(), contents = %malformed.escape_debug(), "host id malformed; replacing it");
-                let id = new_host_id();
-                paths::replace_atomically(&path, format!("{id}\n").as_bytes(), 0o600)
-                    .map_err(|e| paths::io_error("writing", &path, e))?;
-                info!(%id, "new host id");
-                return Ok(id);
+            Some(Err(_)) => {
+                if let Some(id) = replace_malformed(lain_dir, &path)? {
+                    return Ok(id);
+                }
             }
             None => {
                 let id = new_host_id();
@@ -71,13 +80,45 @@ pub fn load_or_create_host_id(lain_dir: &Path) -> Result<String> {
     Err(PlatformError::Failed(format!("{} keeps changing", path.display())))
 }
 
-/// `None`: no file. `Some(Err(contents))`: a file that isn't one canonical id.
-fn read_host_id(path: &Path) -> Result<Option<std::result::Result<String, String>>> {
+/// Replaces a malformed `path` under the lock, unless another loader already has: returns the id now on
+/// disk, or `None` if the file has gone (the caller then creates it).
+fn replace_malformed(lain_dir: &Path, path: &Path) -> Result<Option<String>> {
+    let lock_path = lain_dir.join(HOST_ID_LOCK_FILE);
+    let lock = OpenOptions::new()
+        .write(true)
+        .create(true)
+        .truncate(false)
+        .mode(0o600)
+        .open(&lock_path)
+        .map_err(|e| paths::io_error("opening", &lock_path, e))?;
+    lock.lock().map_err(|e| paths::io_error("locking", &lock_path, e))?;
+    // Read again under the lock: a loader that held it first may have replaced the file already.
+    let malformed = match read_host_id(path)? {
+        Some(Ok(id)) => return Ok(Some(id)),
+        None => return Ok(None),
+        Some(Err(malformed)) => malformed,
+    };
+    let contents = String::from_utf8_lossy(&malformed);
+    warn!(path = %path.display(), contents = %contents.escape_debug(), "host id malformed; replacing it");
+    let backup = lain_dir.join(HOST_ID_CORRUPT_FILE);
+    paths::replace_atomically(&backup, &malformed, 0o600).map_err(|e| paths::io_error("writing", &backup, e))?;
+    let id = new_host_id();
+    paths::replace_atomically(path, format!("{id}\n").as_bytes(), 0o600)
+        .map_err(|e| paths::io_error("writing", path, e))?;
+    info!(%id, backup = %backup.display(), "new host id; the malformed one is kept");
+    Ok(Some(id))
+}
+
+/// `None`: no file. `Some(Err(contents))`: a file that isn't one canonical id (surrounding ASCII
+/// whitespace aside).
+fn read_host_id(path: &Path) -> Result<Option<std::result::Result<String, Vec<u8>>>> {
     match fs::read(path) {
         Ok(bytes) => {
-            let text = String::from_utf8_lossy(&bytes);
-            let id = text.strip_suffix('\n').unwrap_or(&text);
-            Ok(Some(if is_canonical_host_id(id) { Ok(id.to_owned()) } else { Err(text.into_owned()) }))
+            let id = std::str::from_utf8(&bytes).map(str::trim_ascii).ok().filter(|id| is_canonical_host_id(id));
+            Ok(Some(match id {
+                Some(id) => Ok(id.to_owned()),
+                None => Err(bytes),
+            }))
         }
         Err(e) if e.kind() == io::ErrorKind::NotFound => Ok(None),
         Err(e) => Err(paths::io_error("reading", path, e)),
@@ -192,6 +233,51 @@ mod tests {
             let id = load_or_create_host_id(&dir).unwrap();
             assert!(is_canonical_host_id(&id));
             assert_eq!(fs::read_to_string(dir.join(HOST_ID_FILE)).unwrap(), format!("{id}\n"));
+            // The old contents are kept, 0600, for recovery by hand.
+            assert_eq!(fs::read_to_string(dir.join(HOST_ID_CORRUPT_FILE)).unwrap(), malformed);
+            assert_eq!(fs::metadata(dir.join(HOST_ID_CORRUPT_FILE)).unwrap().permissions().mode() & 0o777, 0o600);
+        }
+    }
+
+    /// Review S5: a hand edit's CRLF, trailing space or extra newline keeps the id (and every Wi-Fi pairing
+    /// made under it).
+    #[test]
+    fn surrounding_whitespace_keeps_the_id() {
+        let config = tempfile::tempdir().unwrap();
+        let dir = paths::lain_dir(config.path());
+        fs::create_dir_all(&dir).unwrap();
+        let id = "6F9619FF-8B86-D011-B42D-00C04FC964FF";
+        for written in [format!("{id}\r\n"), format!("{id} \n"), format!("{id}\n\n"), format!(" \t{id}")] {
+            fs::write(dir.join(HOST_ID_FILE), &written).unwrap();
+            assert_eq!(load_or_create_host_id(&dir).unwrap(), id, "{written:?}");
+            assert_eq!(fs::read_to_string(dir.join(HOST_ID_FILE)).unwrap(), written, "left as it is");
+        }
+        assert!(!dir.join(HOST_ID_CORRUPT_FILE).exists());
+    }
+
+    /// Review S4: loaders racing to replace a malformed id all return the one left on disk.
+    #[test]
+    fn racing_replacers_of_a_malformed_id_agree() {
+        for _ in 0..50 {
+            let config = tempfile::tempdir().unwrap();
+            let dir = paths::lain_dir(config.path());
+            fs::create_dir_all(&dir).unwrap();
+            fs::write(dir.join(HOST_ID_FILE), "garbage").unwrap();
+            let barrier = std::sync::Barrier::new(4);
+            let ids: Vec<String> = std::thread::scope(|s| {
+                let handles: Vec<_> = (0..4)
+                    .map(|_| {
+                        s.spawn(|| {
+                            barrier.wait();
+                            load_or_create_host_id(&dir).unwrap()
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            let on_disk = fs::read_to_string(dir.join(HOST_ID_FILE)).unwrap();
+            assert!(ids.iter().all(|id| format!("{id}\n") == on_disk), "returned {ids:?}, on disk {on_disk:?}");
+            assert_eq!(fs::read_to_string(dir.join(HOST_ID_CORRUPT_FILE)).unwrap(), "garbage");
         }
     }
 
