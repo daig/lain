@@ -159,7 +159,12 @@ def main():
             except Exception as e:
                 emit("restore_via_unconsumed_stream", ok=False, error=str(e))
             if not restored:
-                restore_pointer(a, ppath, pprobe, home)
+                # Session A may already be closed by Mutter (exp6.jsonl lines 18-19): never let a failed restore
+                # skip the cleanup below.
+                try:
+                    restore_pointer(a, ppath, pprobe, home)
+                except Exception as e:
+                    emit("restore_failed", via="session A", error=str(e))
         if ei:
             ei.close()
         if b:
