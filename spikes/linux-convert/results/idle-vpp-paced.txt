@@ -1,0 +1,23 @@
+=== vpp-idle-paced: vpp/vpp --in-std bt709 --src gbm --fps 120 --seconds 10 --check 3 (21:51:04)
+loadavg before: 0.41 0.60 0.44 1/1154 149857; gpu_busy before: 0%
+loadavg before: 0.41 0.60 0.44 1/1166 149905
+device /dev/dri/by-path/pci-0000:79:00.0-render (/dev/dri/renderD130): VA-API 1.23, Mesa Gallium driver 26.0.8-1ubuntu0.3 for AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic)
+  vpp surface formats: NV12 YV12 I420 P010 P016 P012 Y800 UYVY YUY2 422V 444P RGBA BGRA RGBX BGRX ARGB AB30 AR30 XB30 XR30 [mem 0x68000001]
+  gbm bo: modifier 0x0200000000401b03, 1 plane(s), stride 11264, offset 0
+filled 8 BGRx gbm surfaces in 58 ms
+  NV12 output surface: modifier 0x0200000000401b03, Y pitch 2816, UV pitch 3072
+  pipeline caps: input standards 0 0 0 0; output standards 1 2 1 0; pipeline_flags 0x0 filter_flags 0x0
+config: src gbm, filter default, in-std bt709, out-std bt709, range full, siting center, sync surface, inflight 1, fps 120
+check frame 0: Y max 0 mean 0.0000 | Cb max 1 mean 0.0091 | Cr max 1 mean 0.0418 (|err| 0/1/2/>2: Y 5680128/0/0/0 Cb 1407109/12923/0/0 Cr 1360728/59304/0/0)
+    background pixel (0,0): Y 21 Cb 140 Cr 134 (reference 21 140 134)
+check frame 2: Y max 0 mean 0.0000 | Cb max 1 mean 0.0093 | Cr max 1 mean 0.0417 (|err| 0/1/2/>2: Y 5680128/0/0/0 Cb 1406832/13200/0/0 Cr 1360853/59179/0/0)
+check frame 5: Y max 0 mean 0.0000 | Cb max 1 mean 0.0091 | Cr max 1 mean 0.0414 (|err| 0/1/2/>2: Y 5680128/0/0/0 Cb 1407066/12966/0/0 Cr 1361223/58809/0/0)
+check overall (3 frames): Y max 0 mean 0.0000 | Cb max 1 mean 0.0092 | Cr max 1 mean 0.0416
+gpu_busy_percent during the run: mean 47%, max 100% (1815 samples)
+run: 1200 conversions in 10.00 s = 120.0 conversions/s (0 ticks skipped); cpu 8.1% of one core
+  vaEndPicture -> sync (per conversion): n=1200 p50=3.657 p95=4.102 p99=5.118 max=5.832 mean=3.644 ms
+  CPU submit (map params + Begin/Render/End): n=1200 p50=0.096 p95=0.110 p99=0.124 max=0.161 mean=0.092 ms
+loadavg after: 0.35 0.58 0.44 1/1193 150140
+nvidia-guard: no non-AMD GPU node was opened
+gpu_busy during: mean 48%, max 100%, 101 samples
+loadavg after: 0.35 0.58 0.44 1/1176 150147; gpu_busy after: 0%; exit 0

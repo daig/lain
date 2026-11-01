@@ -1,0 +1,51 @@
+{"result": "before", "same_as_brief": true, "layout": {"monitors": [{"connector": "HDMI-1", "vendor": "SAM", "product": "Odyssey G95NC", "current_mode": "3840x2160@60.000"}], "logical_monitors": [{"x": 0, "y": 0, "scale": 1.0, "transform": 0, "primary": true, "connectors": ["HDMI-1"]}], "layout_mode": 1}}
+{"result": "virtual", "connector": "Meta-0", "mode": "2752x2064@120.000"}
+=== vk-load-paced: vk/target/release/vkconvert --out vk-tiled --wx 16 --wy 8 --check 1 --frames 1200 --fps 120 (22:20:42)
+loadavg before: 0.28 0.37 0.18 1/1301 13894; gpu_busy before: 100%
+device: AMD Ryzen 9 9950X 16-Core Processor (RADV RAPHAEL_MENDOCINO) (RADV Mesa 26.0.8-1ubuntu0.3), render 226:130, queue family 1 (compute-only), timestamp period 10 ns
+shader: storage images, workgroup 16x8, one 2x2 block per invocation, 931 SPIR-V words
+input: GBM XRGB8888 modifier 0x200000000401b03, stride 11264, offset 0, 24510464 bytes
+filled 8 input frames in 110.219885ms
+libva info: VA-API version 1.23.0
+libva info: User environment variable requested driver 'radeonsi'
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/radeonsi_drv_video.so
+libva info: Found init function __vaDriverInit_1_23
+libva info: va_openDriver() returns 0
+libva: Mesa Gallium driver 26.0.8-1ubuntu0.3 for AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic)
+Vulkan tiled NV12: Y SubresourceLayout { offset: 0, size: 6488064, row_pitch: 2816, array_pitch: 0, depth_pitch: 0 }, CbCr SubresourceLayout { offset: 6488064, size: 3538944, row_pitch: 3072, array_pitch: 0, depth_pitch: 0 }, 10027008 bytes; vaCreateSurfaces status 0
+dispatch: 86x129 workgroups for 2752x2064
+check frame 0 (read back via libva, 0.660 ms GPU): Y: max 0 mean 0.00000 (>1: 0) CbCr: max 0 mean 0.00000 (>1: 0)
+check frame 0 (read back via vulkan, 0.660 ms GPU): Y: max 0 mean 0.00000 (>1: 0) CbCr: max 0 mean 0.00000 (>1: 0)
+correctness: worst max abs error Y 0 CbCr 0 -> PASS
+timed: 1200 frames in 9.99 s (120.1 fps), pacing 120 Hz
+GPU (timestamps): n 1200 mean 0.999 p50 0.860 p95 1.703 p99 2.729 max 3.522 ms
+submit -> fence: n 1200 mean 1.090 p50 0.950 p95 1.836 p99 2.862 max 3.625 ms
+effective bandwidth at GPU p50: 36.3 GB/s (31.2 MB per frame)
+nvidia-guard: no non-AMD GPU node was opened
+gpu_busy during: mean 66%, max 100%, 100 samples
+loadavg after: 0.24 0.36 0.18 1/1318 14214; gpu_busy after: 0%; exit 0
+=== vk-load-full: vk/target/release/vkconvert --out vk-tiled --wx 16 --wy 8 --check 1 --frames 1200 --fps 0 (22:20:57)
+loadavg before: 0.22 0.35 0.18 2/1291 14234; gpu_busy before: 99%
+device: AMD Ryzen 9 9950X 16-Core Processor (RADV RAPHAEL_MENDOCINO) (RADV Mesa 26.0.8-1ubuntu0.3), render 226:130, queue family 1 (compute-only), timestamp period 10 ns
+shader: storage images, workgroup 16x8, one 2x2 block per invocation, 931 SPIR-V words
+input: GBM XRGB8888 modifier 0x200000000401b03, stride 11264, offset 0, 24510464 bytes
+filled 8 input frames in 119.131412ms
+libva info: VA-API version 1.23.0
+libva info: User environment variable requested driver 'radeonsi'
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/radeonsi_drv_video.so
+libva info: Found init function __vaDriverInit_1_23
+libva info: va_openDriver() returns 0
+libva: Mesa Gallium driver 26.0.8-1ubuntu0.3 for AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic)
+Vulkan tiled NV12: Y SubresourceLayout { offset: 0, size: 6488064, row_pitch: 2816, array_pitch: 0, depth_pitch: 0 }, CbCr SubresourceLayout { offset: 6488064, size: 3538944, row_pitch: 3072, array_pitch: 0, depth_pitch: 0 }, 10027008 bytes; vaCreateSurfaces status 0
+dispatch: 86x129 workgroups for 2752x2064
+check frame 0 (read back via libva, 0.661 ms GPU): Y: max 0 mean 0.00000 (>1: 0) CbCr: max 0 mean 0.00000 (>1: 0)
+check frame 0 (read back via vulkan, 0.661 ms GPU): Y: max 0 mean 0.00000 (>1: 0) CbCr: max 0 mean 0.00000 (>1: 0)
+correctness: worst max abs error Y 0 CbCr 0 -> PASS
+timed: 1200 frames in 1.35 s (891.1 fps), pacing none
+GPU (timestamps): n 1200 mean 1.061 p50 0.676 p95 3.252 p99 3.653 max 5.019 ms
+submit -> fence: n 1200 mean 1.106 p50 0.719 p95 3.304 p99 3.708 max 5.092 ms
+effective bandwidth at GPU p50: 46.2 GB/s (31.2 MB per frame)
+nvidia-guard: no non-AMD GPU node was opened
+gpu_busy during: mean 87%, max 100%, 16 samples
+loadavg after: 0.22 0.35 0.18 1/1296 14328; gpu_busy after: 0%; exit 0
+{"result": "gtkprobe", "ticks_per_s": [115, 120, 119, 120, 120, 120, 119, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120, 120], "guard_rc": -15}
