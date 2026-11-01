@@ -6,7 +6,7 @@
 // exported sync file) that is waited on before the surface would go to the encoder.
 //
 // Usage: glconv [--wg 16x8] [--input texel|image|u32] [--frames 600] [--ring 8] [--pace 120]
-//               [--sync gl|fd] [--verify 3] [--size WxH] [--sweep] [--info]
+//               [--sync gl|fd] [--verify 3] [--size WxH] [--sweep] [--info] [--content terminal|allcolors]
 // --sweep runs 15 cases (about 75 s at the defaults): pass --frames 120 or run cases one by one.
 #define _GNU_SOURCE
 #include <EGL/egl.h>
@@ -91,8 +91,21 @@ static uint32_t hash3(uint32_t a, uint32_t b, uint32_t c) {
     return h;
 }
 static const uint8_t palette[5][3] = {{230, 230, 230}, {120, 220, 120}, {250, 200, 80}, {110, 170, 250}, {240, 110, 140}};
+// --content allcolors: ring frames 0-2 hold every one of the 2^24 colours exactly once, one per pixel (colour =
+// frame * w * h + pixel index, with R in the high byte), and the rest of frame 2 and every later frame hold random
+// pixels, so 2x2 blocks mix unrelated colours. Verify every ring frame (--verify = --ring) to cover them all.
+static int content_allcolors;
+static void gen_allcolors(uint8_t *dst, int w, int h, int frame) {
+    for (size_t p = 0; p < (size_t)w * h; p++) {
+        uint64_t c = (uint64_t)frame * w * h + p;
+        if (frame >= 3 || c >= (1u << 24)) c = hash3((uint32_t)p, (uint32_t)frame, 11) & 0xffffff;
+        dst[4 * p] = c & 255; dst[4 * p + 1] = (c >> 8) & 255; dst[4 * p + 2] = (c >> 16) & 255;
+        dst[4 * p + 3] = (uint8_t)(p * 13);
+    }
+}
 // BGRx, with junk in x (Mutter leaves it undefined).
 static void gen_frame(uint8_t *dst, int w, int h, int frame) {
+    if (content_allcolors) { gen_allcolors(dst, w, h, frame); return; }
     int scroll = frame * 18;
     for (int y = 0; y < h; y++) {
         int yy = y + scroll, line = yy / 18, r = yy % 18;
@@ -259,6 +272,7 @@ int main(int argc, char **argv) {
         else if (!strcmp(a, "--sync")) { use_fd = !strcmp(v, "fd"); i++; }
         else if (!strcmp(a, "--sweep")) sweep = 1;
         else if (!strcmp(a, "--info")) info = 1;
+        else if (!strcmp(a, "--content")) { content_allcolors = !strcmp(v, "allcolors"); if (!content_allcolors && strcmp(v, "terminal")) DIE("--content terminal|allcolors"); i++; }
         else DIE("unknown option %s", a);
     }
     if (ring_n < 1 || ring_n > MAXRING || (W | H) & 1) DIE("bad ring/size");
@@ -543,11 +557,12 @@ int main(int argc, char **argv) {
             ref_nv12(cpu, W, H, Yref, UVref);
             int maxy = 0, maxc = 0;
             double sumy = 0, sumc = 0;
-            long hist[3] = {0};
+            long hist[3] = {0}, yhist[3] = {0};
             for (int y = 0; y < H; y++)
                 for (int x = 0; x < W; x++) {
                     int d = abs(m[vimg.offsets[0] + (size_t)y * vimg.pitches[0] + x] - Yref[(size_t)y * W + x]);
                     sumy += d; if (d > maxy) maxy = d;
+                    yhist[d > 2 ? 2 : d]++;
                 }
             for (int y = 0; y < H / 2; y++)
                 for (int x = 0; x < W; x++) {
@@ -557,8 +572,8 @@ int main(int argc, char **argv) {
                 }
             VACHECK(vaUnmapBuffer(va, vimg.buf));
             printf("    verify ring frame %d via VA surface %d: Y max %d mean %.5f | CbCr max %d mean %.5f "
-                   "(CbCr off by 1: %ld, >1: %ld)\n", ri, oi, maxy, sumy / ((double)W * H), maxc,
-                   sumc / ((double)W * H / 2), hist[1], hist[2]);
+                   "(Y off by 1: %ld, >1: %ld; CbCr off by 1: %ld, >1: %ld)\n", ri, oi, maxy, sumy / ((double)W * H), maxc,
+                   sumc / ((double)W * H / 2), yhist[1], yhist[2], hist[1], hist[2]);
         }
         glDeleteProgram(prog);
     }

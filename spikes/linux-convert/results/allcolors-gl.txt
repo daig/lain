@@ -1,0 +1,41 @@
+=== gl-allcolors: gl/glconv --wg 16x8 --frames 120 --pace 0 --ring 8 --verify 8 --content allcolors (22:52:09)
+loadavg before: 0.26 0.44 0.42 1/1680 61481; gpu_busy before: 0%
+loadavg before: 0.26 0.44 0.42 1/1685 61522
+gpu_busy_percent before: 0
+device /dev/dri/by-path/pci-0000:79:00.0-render (/dev/dri/renderD130), gbm backend drm
+EGL 1.5 Mesa Project 1.5
+GL 4.6 (Core Profile) Mesa 26.0.8-1ubuntu0.3 | AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic) | AMD
+GL_EXT_EGL_image_storage 1, GL_OES_EGL_image 1, GL_ARB_timer_query 1 (core in 3.3), EGL_ANDROID_native_fence_sync 1
+libva info: VA-API version 1.23.0
+libva info: User environment variable requested driver 'radeonsi'
+libva info: Trying to open /usr/lib/x86_64-linux-gnu/dri/radeonsi_drv_video.so
+libva info: Found init function __vaDriverInit_1_23
+libva info: va_openDriver() returns 0
+VA 1.23 Mesa Gallium driver 26.0.8-1ubuntu0.3 for AMD Ryzen 9 9950X 16-Core Processor (radeonsi, raphael_mendocino, ACO, DRM 3.64, 7.0.0-38-generic)
+VA surface export: NV12 2752x2064, 1 objects, 2 layers
+  object 0: size 10027008, modifier 0x0200000000401b03
+  layer 0: R8  , object 0, offset 0, pitch 2816
+  layer 1: GR88, object 0, offset 6488064, pitch 3072
+Y texture internal format 0x8229, UV 0x822b
+input BO: XR24 2752x2064, modifier 0x0200000000401b03, 1 plane(s), stride 11264
+filled 8 input BOs in 80 ms (input texture internal format 0x8051)
+note: the imported XR24 texture is GL_RGB8, which is not an image-unit format: --input image|u32 read garbage (verification fails); use --input texel
+case wg 16x8 input texelFetch, 120 frames, pace 0 Hz, sync glClientWaitSync
+  shader 16x8 texel compiled+linked in 2.2 ms
+    run: 120 conversions in 0.09 s = 1348.4 conversions/s
+    GPU (timer queries)    p50 0.659  p95 0.718  p99 0.756  max 0.773  mean 0.665 ms
+    CPU dispatch->fence    p50 0.727  p95 0.810  p99 1.073  max 1.306  mean 0.741 ms
+    CPU dispatch->flush    p50 0.044  p95 0.070  p99 0.352  max 0.595  mean 0.053 ms
+    verify ring frame 1 via VA surface 0: Y max 1 mean 0.00007 | CbCr max 1 mean 0.00001 (Y off by 1: 418, >1: 0; CbCr off by 1: 41, >1: 0)
+    verify ring frame 4 via VA surface 1: Y max 1 mean 0.00007 | CbCr max 1 mean 0.00005 (Y off by 1: 422, >1: 0; CbCr off by 1: 154, >1: 0)
+    verify ring frame 7 via VA surface 2: Y max 1 mean 0.00008 | CbCr max 1 mean 0.00005 (Y off by 1: 454, >1: 0; CbCr off by 1: 146, >1: 0)
+    verify ring frame 2 via VA surface 0: Y max 1 mean 0.00009 | CbCr max 1 mean 0.00004 (Y off by 1: 511, >1: 0; CbCr off by 1: 105, >1: 0)
+    verify ring frame 5 via VA surface 1: Y max 1 mean 0.00008 | CbCr max 1 mean 0.00006 (Y off by 1: 427, >1: 0; CbCr off by 1: 175, >1: 0)
+    verify ring frame 0 via VA surface 2: Y max 1 mean 0.00007 | CbCr max 0 mean 0.00000 (Y off by 1: 421, >1: 0; CbCr off by 1: 0, >1: 0)
+    verify ring frame 3 via VA surface 0: Y max 1 mean 0.00008 | CbCr max 1 mean 0.00005 (Y off by 1: 442, >1: 0; CbCr off by 1: 156, >1: 0)
+    verify ring frame 6 via VA surface 1: Y max 1 mean 0.00007 | CbCr max 1 mean 0.00005 (Y off by 1: 422, >1: 0; CbCr off by 1: 145, >1: 0)
+gpu_busy_percent after: 0
+loadavg after: 0.26 0.44 0.42 1/1703 61548
+nvidia-guard: no non-AMD GPU node was opened
+gpu_busy during: mean 39%, max 99%, 5 samples
+loadavg after: 0.26 0.44 0.42 1/1681 61553; gpu_busy after: 0%; exit 0

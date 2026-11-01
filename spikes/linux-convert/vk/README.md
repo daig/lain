@@ -81,9 +81,12 @@ with the kernel log clean before and after every run, and the guard reporting no
 | `buffer` | 64×1, 2 blocks per invocation | 120 Hz | 3.45 / 3.86 ms | — | — |
 | `va-import` (linear libva surface) | 8×8 | 120 Hz | 1.35 / 1.54 ms | 2.33 / 2.63 ms | exact, libva readback, 3 frames |
 
-- **Correctness:** every checked frame matches the CPU reference exactly (max and mean absolute error 0 on
-  Y and on CbCr), in every output that works. That includes the frames libva reads back from the
-  `vk-tiled` and `va-import` surfaces.
+- **Correctness:** on the terminal content (five colours on a background, no blending), every checked frame
+  matches the CPU reference exactly (max and mean absolute error 0 on Y and on CbCr), in every output that
+  works. That includes the frames libva reads back from the `vk-tiled` and `va-import` surfaces. Over all
+  2^24 colours plus random pixels (`--content allcolors --ring 8 --check 8`, vk-tiled), it is **max error 1**
+  in Y and CbCr, from f32 rounding at ties (under 0.01% of samples, identical through libva and Vulkan;
+  `../results/allcolors-vk.txt`). "exact" in the table means on the terminal content.
 - **Speed:** the pass takes 0.65–0.7 ms of GPU time when the GPU is kept busy, about 44 GB/s against
   31.2 MB per frame. Paced at 120 Hz, as lain would run it, it takes 1.2–1.3 ms, presumably because the
   iGPU clocks down between frames (`pp_dpm_sclk` steps 600/700/2200 MHz; not measured per run).

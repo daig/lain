@@ -35,8 +35,10 @@ seconds, run one GPU program at a time, and check `journalctl -k` for amdgpu fau
 
 ## Findings (preliminary: 240 frames per case, one short run each, desktop idle, load about 0.1)
 
-Correctness: **exact.** Y and CbCr max error 0, mean 0, over 3 frames (16x8), and 1 frame for every other
-shape and sync mode.
+Correctness: exact **on this test content** (a terminal: five palette colours and one antialiasing blend on a dark
+background). Y and CbCr max error 0, mean 0, over 3 frames (16x8), and 1 frame for every other shape and sync
+mode. Over all 2^24 colours plus random pixels (`--content allcolors --ring 8 --verify 8`) it is **max error 1**
+in Y and CbCr, from f32 rounding at ties (under 0.01% of samples; `../results/allcolors-gl.txt`).
 
 | Case (texelFetch input) | GPU, timer queries p50 / p95 | dispatch to fence signalled, p50 / p95 |
 |---|---|---|
