@@ -317,6 +317,11 @@ public final class HostSession: Sendable {
         state.withLock { s in s.live != nil ? s.video : nil }.flatMap { $0.isRunning ? $0.stats : nil }
     }
 
+    /// The live session's streamed display (nil when no session has video).
+    public var streamedDisplay: StreamedDisplay? {
+        state.withLock { s in s.live != nil ? s.video : nil }?.streamedDisplay
+    }
+
     /// Why the current session streams no video, if it failed to start.
     public var videoError: String? { state.withLock { $0.videoError } }
 
