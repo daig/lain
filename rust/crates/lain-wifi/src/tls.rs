@@ -252,4 +252,78 @@ mod tests {
         table.replace(Vec::<Vec<u8>>::new());
         assert!(clone.is_empty());
     }
+
+    /// Both ends of a handshake over memory with the given contexts.
+    async fn handshake(server: SslContext, client: SslContext) -> (Result<SslRefs, String>, Result<SslRefs, String>) {
+        use std::pin::Pin;
+        let (a, b) = tokio::io::duplex(64 * 1024);
+        let mut s = tokio_openssl::SslStream::new(Ssl::new(&server).unwrap(), a).unwrap();
+        let mut c = tokio_openssl::SslStream::new(Ssl::new(&client).unwrap(), b).unwrap();
+        let (sr, cr) = tokio::join!(Pin::new(&mut s).accept(), Pin::new(&mut c).connect());
+        let done = |r: Result<(), openssl::ssl::Error>, ssl: &SslRef| {
+            r.map(|()| SslRefs { tls: NegotiatedTls::of(ssl), check: check_negotiated(ssl), chosen: chosen(ssl) })
+                .map_err(|e| e.to_string())
+        };
+        (done(sr, s.ssl()), done(cr, c.ssl()))
+    }
+
+    struct SslRefs {
+        tls: Option<NegotiatedTls>,
+        check: Result<NegotiatedTls, WiFiError>,
+        chosen: Option<Chosen>,
+    }
+
+    /// The post-handshake check refuses anything but 0xCCAC, as Swift's `becameReady` does: here two peers
+    /// built by hand settle on plain PSK (0xCCAB, no forward secrecy).
+    #[tokio::test]
+    async fn only_the_required_suite_passes_the_check() {
+        let psk = WiFiPsk::new(&[9; 32]);
+        let plain = |method: SslMethod| {
+            let mut b = SslContext::builder(method).unwrap();
+            b.set_max_proto_version(Some(SslVersion::TLS1_2)).unwrap();
+            b.set_cipher_list("PSK-CHACHA20-POLY1305").unwrap();
+            b
+        };
+        let mut server = plain(SslMethod::tls_server());
+        let key = *psk.key();
+        server.set_psk_server_callback(move |_, _, out| {
+            out[..32].copy_from_slice(&key);
+            Ok(32)
+        });
+        let mut client = plain(SslMethod::tls_client());
+        let identity = psk.identity().to_owned();
+        client.set_psk_client_callback(move |_, _, id, out| {
+            id[..identity.len()].copy_from_slice(identity.as_bytes());
+            id[identity.len()] = 0;
+            out[..32].copy_from_slice(&key);
+            Ok(32)
+        });
+        let (s, c) = handshake(server.build(), client.build()).await;
+        let (s, c) = (s.unwrap(), c.unwrap());
+        let plain_suite = NegotiatedTls { version: 0x0303, cipher_suite: 0xCCAB };
+        assert_eq!((s.tls, c.tls), (Some(plain_suite), Some(plain_suite)));
+        assert_eq!(s.check, Err(WiFiError::UnexpectedTls(Some(plain_suite))));
+        assert_eq!(c.check, Err(WiFiError::UnexpectedTls(Some(plain_suite))));
+    }
+
+    /// The server's callback records which pairing it chose, on that connection only.
+    #[tokio::test]
+    async fn the_callback_records_the_chosen_secret() {
+        let table = PskTable::with_secrets([[1u8; 32], [2; 32]]);
+        let server = || server_context(table.clone()).unwrap();
+        let (s, c) = handshake(server(), client_context(&WiFiPsk::new(&[2; 32])).unwrap()).await;
+        let s = s.unwrap();
+        assert_eq!(s.check, Ok(NegotiatedTls::REQUIRED));
+        assert_eq!(c.unwrap().check, Ok(NegotiatedTls::REQUIRED));
+        let chosen = s.chosen.expect("recorded");
+        assert_eq!((chosen.identity.as_str(), chosen.secret.as_slice()), (WiFiPsk::new(&[2; 32]).identity(), &[2u8; 32][..]));
+        // An unknown identity fails, and records nothing.
+        let (s, c) = handshake(server(), client_context(&WiFiPsk::new(&[3; 32])).unwrap()).await;
+        assert!(s.is_err() && c.is_err());
+        // A new pairing is taken without a new context.
+        let context = server();
+        table.replace([[3u8; 32]]);
+        let (s, _) = handshake(context, client_context(&WiFiPsk::new(&[3; 32])).unwrap()).await;
+        assert_eq!(s.unwrap().chosen.unwrap().secret, vec![3; 32]);
+    }
 }
