@@ -15,6 +15,8 @@ public enum MessageType: UInt8, Sendable, CaseIterable {
     case channelAccept = 0x0E
     /// v4: the Mac's setup state (permissions, why there's no video).
     case hostSetup = 0x0F
+    /// v5: the iPad asks for host stats (`statsRequest`), and the Mac sends them (`hostStats`).
+    case statsRequest = 0x10, hostStats = 0x11
     case videoConfig = 0x20, videoFrame = 0x21, frameAck = 0x24
     case cursorShape = 0x40, cursorSelect = 0x41, cursorWarp = 0x42
     case keyEvent = 0x50, pointerMove = 0x51, pointerButton = 0x52, scroll = 0x53, gesture = 0x54, releaseAll = 0x55
@@ -40,6 +42,7 @@ public enum MessageType: UInt8, Sendable, CaseIterable {
     public var since: UInt8 {
         switch self {
         case .hostSetup: 4
+        case .statsRequest, .hostStats: 5
         default: 3
         }
     }

@@ -134,31 +134,31 @@ final class NSLockish: Sendable {
         let (a, b) = MemoryStream.pair()
         let ca = MessageChannel(stream: a, label: "a"), cb = MessageChannel(stream: b, label: "b")
         ca.start(); cb.start()
-        let accept = ChannelAccept(chosen: 3, versions: VersionList.supported)
+        let accept = ChannelAccept(chosen: 4, versions: VersionList.supported)
         #expect(ca.send(.channelAccept(accept)))
-        ca.setVersion(3)
+        ca.setVersion(4)
         ca.send(.ping(Ping(id: 1, sentAtNs: 0)))
         let first = try await cb.next(timeoutSeconds: 2)
         #expect(first.header.version == LainProtocol.handshakeVersion && first.message == .channelAccept(accept))
-        cb.setVersion(3)   // before reading the session frame that follows
+        cb.setVersion(4)   // before reading the session frame that follows
         let second = try await cb.next(timeoutSeconds: 2)
-        #expect(second.header.version == 3 && second.message == .ping(Ping(id: 1, sentAtNs: 0)))
+        #expect(second.header.version == 4 && second.message == .ping(Ping(id: 1, sentAtNs: 0)))
     }
 
     @Test func aFrameInAnotherVersionClosesTheChannel() async {
         let (a, b) = MemoryStream.pair()
-        let ca = MessageChannel(stream: a, label: "a", version: 4), cb = MessageChannel(stream: b, label: "b", version: 3)
+        let ca = MessageChannel(stream: a, label: "a", version: 5), cb = MessageChannel(stream: b, label: "b", version: 4)
         ca.start(); cb.start()
         let closed = Inbox<String>()
         cb.setCloseHandler { closed.put(String(describing: $0)) }
-        cb.setHandler { _ in Issue.record("delivered a v4 frame on a v3 channel") }
+        cb.setHandler { _ in Issue.record("delivered a v5 frame on a v4 channel") }
         ca.send(.ping(Ping(id: 1, sentAtNs: 0)))
-        #expect(await closed.next()?.contains("a ping frame in v4 on a channel at v3") == true)
+        #expect(await closed.next()?.contains("a ping frame in v5 on a channel at v4") == true)
     }
 
     @Test func aSessionFrameBeforeTheVersionIsSetClosesTheChannel() async {
         let (a, b) = MemoryStream.pair()
-        let ca = MessageChannel(stream: a, label: "a", version: 3), cb = MessageChannel(stream: b, label: "b")
+        let ca = MessageChannel(stream: a, label: "a", version: 4), cb = MessageChannel(stream: b, label: "b")
         ca.start(); cb.start()
         let closed = Inbox<String>()
         cb.setCloseHandler { closed.put(String(describing: $0)) }

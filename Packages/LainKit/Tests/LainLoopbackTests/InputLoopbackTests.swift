@@ -145,7 +145,9 @@ import Testing
             mux = try FakeUSBMuxd(devices: [.init(deviceID: 7, serialNumber: "IPAD-7")], targetPort: client.port)
             let deps = HostSession.Dependencies(
                 usbmux: USBMuxClient(socketPath: mux.socketPath), secrets: hostSecrets, sink: mac, display: mac,
-                power: power, settings: { InputLoopbackTests.settings })
+                power: power, settings: { InputLoopbackTests.settings },
+                // The client's own output, unchanged on the Mac: the host's system key is `SystemKeyTests`'.
+                preferences: { var p = HostPreferences(); p.systemKey = false; return p })
             host = HostSession(dependencies: deps) { hostStatus.put($0) }
             oracle = ClientInputPipeline { oracleOut.put($0) }
         }
@@ -231,16 +233,16 @@ import Testing
         let t0 = MonotonicClock.now()
         func at(_ ms: Double) -> UInt64 { t0 + UInt64(ms * 1e6) }
 
-        // 1. Keys: Opt-Tab → Cmd-Tab with hold semantics (Tab twice while Opt stays down), then a
+        // 1. Keys: Right Opt-Tab → Cmd-Tab with hold semantics (Tab twice while Opt stays down), then a
         //    held key repeating at the Mac's rate, then ReleaseAll(.focusLost) with keys held.
         var mark = rig.mac.inputCalls.count
         rig.drive { p in
-            p.keyChanged(.leftOption, isDown: true, at: at(0))
+            p.keyChanged(.rightOption, isDown: true, at: at(0))
             p.keyChanged(.tab, isDown: true, at: at(10))
             p.keyChanged(.tab, isDown: false, at: at(40))
             p.keyChanged(.tab, isDown: true, at: at(80))
             p.keyChanged(.tab, isDown: false, at: at(110))
-            p.keyChanged(.leftOption, isDown: false, at: at(150))
+            p.keyChanged(.rightOption, isDown: false, at: at(150))
             p.keyChanged(Self.keyA, isDown: true, at: at(200))
             p.tick(at: at(300))   // before the delay: nothing
             p.tick(at: at(426))   // 200 + 225: first repeat
@@ -260,7 +262,7 @@ import Testing
             default: "?"
             }
         }
-        #expect(keyUsages == ["e2↓", "e2↑", "e3↓", "2b↓", "2b↑", "2b↓", "2b↑", "e3↑",
+        #expect(keyUsages == ["e6↓", "e6↑", "e3↓", "2b↓", "2b↑", "2b↓", "2b↑", "e3↑",
                               "4↓", "4↓r", "4↓r", "4↑", "e1↓", "5↓", "R"])
         if case .key(let tab) = keys[3] { #expect(tab.modifiers == [.command]) }
         await expectSink(rig, from: mark, keys)

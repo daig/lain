@@ -110,6 +110,37 @@ public final class ClientInputPipeline {
     public enum LocalShortcut: Sendable, Equatable {
         /// Ctrl-Opt-Cmd-L: show/hide the HUD.
         case toggleHUD
+        /// Right Option, lain's system key, held alone for `overlayHoldNs`: show the overlay (true) until
+        /// it's released or another key or a click comes (false).
+        case overlay(Bool)
+    }
+
+    /// How long Right Option must be held alone to show the overlay: longer than the hosts' longest tap
+    /// (300 ms, `SystemKey.tapMaxNs`), so a hold that shows it never opens Mission Control on release.
+    public static let overlayHoldNs: UInt64 = 350_000_000
+    /// Right Option went down alone and nothing else came since (the overlay is due at this + hold).
+    private var systemKeyDownAtNs: UInt64?
+    /// The overlay is showing.
+    public private(set) var overlayShown = false
+
+    /// The overlay watch: every key event still goes to the Mac unchanged (the hosts read Right Option
+    /// themselves), this only decides what the iPad shows.
+    private func watchSystemKey(_ key: PhysicalKey, isDown: Bool, at timeNs: UInt64) {
+        if key == .rightOption, isDown {
+            // Alone: no other key held (a modifier, or the Left Option that makes it plain Option).
+            systemKeyDownAtNs = keyboard.physicalModifiers.isEmpty && keyboard.macHeldKeys.isEmpty ? timeNs : nil
+            return
+        }
+        // Its release, or anything else: Right Option + a key is a chord for the Mac, not the overlay.
+        if key == .rightOption || isDown { endOverlay() }
+    }
+
+    private func endOverlay() {
+        systemKeyDownAtNs = nil
+        if overlayShown {
+            overlayShown = false
+            onLocalShortcut(.overlay(false))
+        }
     }
 
     /// Called on the input queue when a local shortcut fires.
@@ -128,6 +159,7 @@ public final class ClientInputPipeline {
 
     /// A physical key changed (GCKeyboard usage, or Globe from UIKit).
     public func keyChanged(_ key: PhysicalKey, isDown: Bool, at timeNs: UInt64) {
+        watchSystemKey(key, isDown: isDown, at: timeNs)
         if isDown, let shortcut = localShortcut(for: key) {
             consumedKeys.insert(key)
             onLocalShortcut(shortcut)
@@ -163,6 +195,7 @@ public final class ClientInputPipeline {
 
     public func mouseButton(_ button: MouseButton, isDown: Bool, at timeNs: UInt64) {
         if isDown {
+            endOverlay()   // a click with Right Option held is a Command-click on the Mac
             guard pointerEnabled, heldButtons.set(button, down: true) else { return }
             if let stop = momentum.cancel() { send(.scroll(stop)) }   // a click stops a fling, as on the Mac
             let count = clicks.down(button, x: pointer.x, y: pointer.y, at: timeNs)
@@ -256,6 +289,10 @@ public final class ClientInputPipeline {
     public func tick(at timeNs: UInt64) {
         if let scroll = momentum.tick(at: timeNs) { send(.scroll(scroll)) }
         if let repeated = keyRepeat.tick(at: timeNs) { send(.keyEvent(repeated)) }
+        if let down = systemKeyDownAtNs, !overlayShown, timeNs &- down >= Self.overlayHoldNs, timeNs >= down {
+            overlayShown = true
+            onLocalShortcut(.overlay(true))
+        }
     }
 
     // MARK: Invariant 4
@@ -273,6 +310,7 @@ public final class ClientInputPipeline {
             send(.releaseAll(ReleaseAll(reason: reason)))
         }
         _ = keyboard.releaseAll()
+        endOverlay()
         _ = heldButtons.releaseAll(x: pointer.x, y: pointer.y)
         keyRepeat.cancel()
         clicks.reset()

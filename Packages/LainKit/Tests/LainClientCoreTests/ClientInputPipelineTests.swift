@@ -48,13 +48,13 @@ let ms: UInt64 = 1_000_000
     @Test func optTabBecomesCmdTabWithHoldSemantics() {
         let r = Recorder()
         let p = r.pipeline
-        p.keyChanged(.leftOption, isDown: true, at: 0)
+        p.keyChanged(.rightOption, isDown: true, at: 0)
         p.keyChanged(.tab, isDown: true, at: 1 * ms)
         p.keyChanged(.tab, isDown: false, at: 2 * ms)
         p.keyChanged(.tab, isDown: true, at: 3 * ms)    // cycles again with Cmd still held
         p.keyChanged(.tab, isDown: false, at: 4 * ms)
-        p.keyChanged(.leftOption, isDown: false, at: 5 * ms)
-        #expect(r.keys.map(\.usage) == [0xE2, 0xE2, 0xE3, 0x2B, 0x2B, 0x2B, 0x2B, 0xE3])
+        p.keyChanged(.rightOption, isDown: false, at: 5 * ms)
+        #expect(r.keys.map(\.usage) == [0xE6, 0xE6, 0xE3, 0x2B, 0x2B, 0x2B, 0x2B, 0xE3])
         #expect(r.keys.map(\.isDown) == [true, false, true, true, false, true, false, false])
         #expect(r.keys[3].modifiers == .command)
         #expect(r.keys.allSatisfy { !$0.isRepeat })
@@ -65,7 +65,7 @@ let ms: UInt64 = 1_000_000
         let r = Recorder()
         let p = r.pipeline
         p.learnCharacter(.key(0x0E), "H")
-        p.keyChanged(.leftOption, isDown: true, at: 0)
+        p.keyChanged(.rightOption, isDown: true, at: 0)
         p.keyChanged(.key(0x0E), isDown: true, at: 1 * ms)
         #expect(r.keys.last?.usage == 0x0E)
         #expect(r.keys.last?.modifiers == .command)

@@ -7,12 +7,12 @@ public enum LainProtocol {
     /// message says to update itself.
     public static let handshakeVersion: UInt8 = 0xFF
     /// Every protocol version this build implements, oldest first: the support window (PROTOCOL-VERSIONING
-    /// §2). Policy until a public release: the newest and the previous version. v3: negotiation (the last
-    /// breaking change); v4: `HostSetup`.
+    /// §2). Policy until a public release: the newest and the previous version. v3 (below the floor since
+    /// v5): negotiation, the last breaking change; v4: `HostSetup`; v5: `StatsRequest` and `HostStats`.
     /// Never a default argument value in a public API (take `nil` and read it in the body): a default is
     /// compiled into the caller's module, and an incremental build after a change can keep the old value
     /// there (D30). The same goes for `usbPort`.
-    public static let supportedVersions: [UInt8] = [3, 4]
+    public static let supportedVersions: [UInt8] = [4, 5]
     /// The lockstep major versions from before negotiation. A peer framing in one of them runs an older lain.
     public static let legacyVersions: ClosedRange<UInt8> = 1...2
     /// The newest version this build implements.

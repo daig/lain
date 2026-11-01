@@ -422,11 +422,11 @@ struct ClientHarness {
     }
 
     @Test(arguments: [
-        (versions((3, 1), (4, 1)), versions((3, 1), (4, 1)), UInt8(4)),
-        (versions((3, 1)), versions((3, 1), (4, 1)), UInt8(3)),          // an older dialer
-        (versions((3, 1), (4, 1)), versions((3, 1)), UInt8(3)),          // an older acceptor
-        (versions((3, 1), (4, 1)), versions((3, 1), (4, 2)), UInt8(3)),  // two builds of v4: v3 is common
-        (versions((4, 1), (5, 1)), versions((3, 1), (4, 1)), UInt8(4)),
+        (versions((4, 1), (5, 1)), versions((4, 1), (5, 1)), UInt8(5)),
+        (versions((4, 1)), versions((4, 1), (5, 1)), UInt8(4)),          // an older dialer
+        (versions((4, 1), (5, 1)), versions((4, 1)), UInt8(4)),          // an older acceptor
+        (versions((4, 1), (5, 1)), versions((4, 1), (5, 2)), UInt8(4)),  // two builds of v5: v4 is common
+        (versions((5, 1), (6, 1)), versions((4, 1), (5, 1)), UInt8(5)),
     ])
     func theHighestCommonVersionWins(dialer: VersionList, acceptor: VersionList, expected: UInt8) async throws {
         let (link, client) = try await open(dialer: dialer, acceptor: acceptor)

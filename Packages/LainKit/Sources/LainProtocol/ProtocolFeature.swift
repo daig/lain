@@ -5,18 +5,21 @@
 public enum ProtocolFeature: CaseIterable, Sendable {
     /// v4: the host sends `HostSetup` after `HelloAck` and whenever its setup changes.
     case hostSetup
+    /// v5: the iPad asks for `HostStats` (`StatsRequest`) and the host sends them.
+    case hostStats
 
     /// The first version with the feature.
     public var since: UInt8 {
         switch self {
         case .hostSetup: 4
+        case .hostStats: 5
         }
     }
 
     /// The first version without it, when a newer behavior replaced it; nil while current.
     public var until: UInt8? {
         switch self {
-        case .hostSetup: nil
+        case .hostSetup, .hostStats: nil
         }
     }
 
@@ -26,6 +29,7 @@ public enum ProtocolFeature: CaseIterable, Sendable {
     public var summary: String {
         switch self {
         case .hostSetup: "setup status on the iPad"
+        case .hostStats: "the Mac's video stats on the iPad"
         }
     }
 

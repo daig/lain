@@ -60,7 +60,8 @@ public struct KeyboardProcessor: Sendable {
                 emit(key, down: true, into: &out)
                 return out
             }
-            if hold == nil, let entry = table.match(character: layout.character(for: key), modifiers: physicalModifiers) {
+            if hold == nil,
+               let entry = table.match(character: layout.character(for: key), modifiers: physicalModifiers, keys: physicalHeld) {
                 beginHold(entry, into: &out)
             }
             if key == .capsLock { capsLockOn.toggle() }

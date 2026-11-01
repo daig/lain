@@ -527,3 +527,20 @@ extension HostVideoPipeline {
     }
 }
 #endif
+
+extension HostStats {
+    /// The wire form of the pipeline's numbers (v5, for the iPad's overlay).
+    public init(_ v: HostVideoStats) {
+        func us(_ ms: Double?) -> UInt32 {
+            guard let ms, ms.isFinite, ms >= 0 else { return HostStats.none }
+            return UInt32(min(ms * 1000, Double(HostStats.none - 1)).rounded())
+        }
+        func u32(_ n: Int) -> UInt32 { UInt32(clamping: n) }
+        self.init(encodeP50Us: us(v.encodeMsP50), encodeP95Us: us(v.encodeMsP95), ackRttP50Us: us(v.ackRttMsP50),
+                  ackRttP95Us: us(v.ackRttMsP95), captured: u32(v.captured), encoded: u32(v.encoded), sent: u32(v.sent),
+                  droppedBeforeEncode: u32(v.droppedBeforeEncode), encodeFailures: u32(v.encodeFailures),
+                  keyframes: u32(v.keyframes), refinements: u32(v.refinements), inFlight: UInt8(clamping: v.inFlight),
+                  peakInFlight: UInt8(clamping: v.peakInFlight),
+                  bitsPerSecond: UInt32(clamping: Int((v.bytesPerSecond * 8).rounded())))
+    }
+}

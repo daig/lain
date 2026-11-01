@@ -431,6 +431,18 @@ import Testing
         #expect(plain.lain.destroyed == 1)
     }
 
+    /// v5: the iPad asks for the Mac's stats while its overlay shows them; the Mac sends them until asked to stop.
+    @Test func hostStatsFlowWhileAskedFor() async throws {
+        let rig = try Self.stoppingRig({ IdleSource() })
+        defer { rig.stop() }
+        #expect(await eventually { rig.host.videoStats != nil })
+        #expect(rig.client.hostStats == nil, "not unless asked")
+        rig.client.setHostStatsInterval(ms: 100)
+        #expect(await eventually { rig.client.hostStats != nil })
+        rig.client.setHostStatsInterval(ms: 0)
+        #expect(await eventually { rig.client.hostStats == nil })
+    }
+
     /// Capture that fails on its own takes its display with it: never kept.
     @Test func aCaptureFailureIsNotKept() async throws {
         struct Broken: Error {}

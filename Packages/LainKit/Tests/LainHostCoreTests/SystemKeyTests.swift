@@ -62,6 +62,18 @@ import Testing
         #expect(again.isEmpty, "once")
     }
 
+    /// A hold past `tapMaxNs` (the iPad's overlay) isn't a tap.
+    @Test func aLongHoldIsNotATap() {
+        var sk = SystemKey()
+        _ = sk.key(k(Self.rightOption, true, .option), nowNs: 1_000_000_000)
+        let out = sk.key(k(Self.rightOption, false), nowNs: 1_000_000_000 + SystemKey.tapMaxNs + 1)
+        #expect(out.isEmpty)
+        #expect(sk.pendingTap == nil)
+        _ = sk.key(k(Self.rightOption, true, .option), nowNs: 2_000_000_000)
+        _ = sk.key(k(Self.rightOption, false), nowNs: 2_000_000_000 + SystemKey.tapMaxNs)
+        #expect(sk.pendingTap != nil, "up to the limit it is")
+    }
+
     @Test func aTapIsTakenAtOnceWhenAnotherKeyFollows() {
         var sk = SystemKey()
         let out = feed(&sk, [k(Self.rightOption, true, .option), k(Self.rightOption, false), k(Self.b, true), k(Self.b, false)])

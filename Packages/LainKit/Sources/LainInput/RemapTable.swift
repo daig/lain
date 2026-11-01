@@ -12,15 +12,25 @@ public struct RemapEntry: Sendable, Equatable, Hashable {
     public var from: ModifierFlags
     public var to: ModifierFlags
     public var isEnabled: Bool
+    /// The physical keys that may supply `from` (nil: either side). Every held key that carries a `from`
+    /// modifier must be one of them.
+    public var sourceKeys: Set<PhysicalKey>?
 
     public init(name: String, character: String, modifiers: ModifierFlags, from: ModifierFlags = .option,
-                to: ModifierFlags = .command, isEnabled: Bool = true) {
+                to: ModifierFlags = .command, isEnabled: Bool = true, sourceKeys: Set<PhysicalKey>? = nil) {
         self.name = name
         self.character = character.lowercased()
         self.modifiers = modifiers
         self.from = from
         self.to = to
         self.isEnabled = isEnabled
+        self.sourceKeys = sourceKeys
+    }
+
+    /// Whether the keys held supply `from` only from `sourceKeys`.
+    func sourcesMatch(_ held: Set<PhysicalKey>) -> Bool {
+        guard let sourceKeys else { return true }
+        return held.allSatisfy { k in k.modifier.map { !from.contains($0) } ?? true || sourceKeys.contains(k) }
     }
 }
 
@@ -32,22 +42,28 @@ public struct RemapTable: Sendable, Equatable {
     /// Modifiers that take part in matching.
     public static let matchedModifiers: ModifierFlags = [.shift, .control, .option, .command]
 
-    public func match(character: String?, modifiers: ModifierFlags) -> RemapEntry? {
+    /// `keys`: the physical keys held, for entries limited to `sourceKeys` (nil: none are checked).
+    public func match(character: String?, modifiers: ModifierFlags, keys: Set<PhysicalKey>? = nil) -> RemapEntry? {
         guard let character = character?.lowercased() else { return nil }
         let held = modifiers.intersection(Self.matchedModifiers)
-        return entries.first { $0.isEnabled && $0.character == character && $0.modifiers == held }
+        return entries.first {
+            $0.isEnabled && $0.character == character && $0.modifiers == held && (keys.map($0.sourcesMatch) ?? true)
+        }
     }
 
-    /// Defaults from S5: the Cmd combos iPadOS never delivers, reached with Opt instead.
+    /// Defaults from S5: the Cmd combos iPadOS never delivers, reached with **Right** Option, lain's system key
+    /// (rust/HOST-PARITY.md §4): Left Option stays a plain Option key (accents, Opt-Space…). The hosts also
+    /// read Right Option themselves; this keeps the shortcuts working on a host that doesn't.
     public static let `default` = RemapTable(entries: [
-        RemapEntry(name: "App switcher", character: "\t", modifiers: .option),
-        RemapEntry(name: "App switcher (reverse)", character: "\t", modifiers: [.option, .shift]),
-        RemapEntry(name: "Spotlight", character: " ", modifiers: .option),
-        RemapEntry(name: "Hide", character: "h", modifiers: .option),
-        RemapEntry(name: "Quit", character: "q", modifiers: .option),
-        RemapEntry(name: "Next window", character: "`", modifiers: .option),
+        RemapEntry(name: "App switcher", character: "\t", modifiers: .option, sourceKeys: [.rightOption]),
+        RemapEntry(name: "App switcher (reverse)", character: "\t", modifiers: [.option, .shift], sourceKeys: [.rightOption]),
+        RemapEntry(name: "Spotlight", character: " ", modifiers: .option, sourceKeys: [.rightOption]),
+        RemapEntry(name: "Hide", character: "h", modifiers: .option, sourceKeys: [.rightOption]),
+        RemapEntry(name: "Quit", character: "q", modifiers: .option, sourceKeys: [.rightOption]),
+        RemapEntry(name: "Next window", character: "`", modifiers: .option, sourceKeys: [.rightOption]),
         // Cmd-Shift-5 is delivered and covers screenshots; these are available but off.
-        RemapEntry(name: "Screenshot", character: "3", modifiers: [.option, .shift], isEnabled: false),
-        RemapEntry(name: "Screenshot area", character: "4", modifiers: [.option, .shift], isEnabled: false),
+        RemapEntry(name: "Screenshot", character: "3", modifiers: [.option, .shift], isEnabled: false, sourceKeys: [.rightOption]),
+        RemapEntry(name: "Screenshot area", character: "4", modifiers: [.option, .shift], isEnabled: false,
+                   sourceKeys: [.rightOption]),
     ])
 }

@@ -8,7 +8,8 @@ import UIKit
 /// lock and feeds `ClientInput`; hosts the stream's `CAMetalLayer`, driven by `StreamRenderLoop`
 /// (CAMetalDisplayLink at 120 Hz on its own thread: input tick, newest decoded frame, local cursor);
 /// shows the connection state only while there's no video, the D19 overlay while the pointer isn't
-/// captured, and a HUD toggled with **Ctrl-Opt-Cmd-L** (matched by the character "l" the iPad layout
+/// captured, an overlay while Right Option (lain's system key) is held alone (`ClientOverlay`: the link,
+/// this iPad's and the Mac's video numbers, the settings in effect), and a HUD toggled with **Ctrl-Opt-Cmd-L** (matched by the character "l" the iPad layout
 /// produces, D18; the combo also reaches the Mac, where nothing uses it by default). The connect detail
 /// and the HUD's first line name the transport (USB, or Wi-Fi with its path and interface, §7.7). All
 /// input logic lives in `ClientInputPipeline`; this class only adapts UIKit and GameController to it.
@@ -19,6 +20,8 @@ import UIKit
 final class StreamViewController: UIViewController, UIGestureRecognizerDelegate {
     let input: ClientInput
     let video: ClientVideoPipeline
+    /// Set once the session exists: the overlay asks it for the Mac's stats while it shows.
+    var session: ClientSession?
 
     var status = ClientStatus.waitingForMac(wifi: false) {
         didSet {
@@ -32,6 +35,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     private let detailLabel = UILabel()
     private let overlay = UILabel()
     private let hud = UILabel()
+    private let overlayPanel = UILabel()
     /// Read by the render thread: draw the local cursor only while a session is up.
     private let connected = SharedFlag()
     private var renderLoop: StreamRenderLoop?
@@ -73,7 +77,10 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         // lain's own shortcuts are caught in the input pipeline (before anything reaches the Mac).
         input.setLocalShortcutHandler { shortcut in
             Task { @MainActor [weak self] in
-                if shortcut == .toggleHUD { self?.toggleHUD() }
+                switch shortcut {
+                case .toggleHUD: self?.toggleHUD()
+                case .overlay(let shown): self?.setOverlay(shown)
+                }
             }
         }
         GCMouse.mice().forEach(attach(mouse:))
@@ -226,6 +233,23 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             hud.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -8),
         ])
 
+        overlayPanel.font = .monospacedSystemFont(ofSize: 15, weight: .regular)
+        overlayPanel.textColor = .white
+        overlayPanel.backgroundColor = UIColor.black.withAlphaComponent(0.78)
+        overlayPanel.numberOfLines = 0
+        overlayPanel.isHidden = true
+        overlayPanel.isUserInteractionEnabled = false
+        overlayPanel.layer.cornerRadius = 14
+        overlayPanel.layer.masksToBounds = true
+        overlayPanel.accessibilityIdentifier = "stream.overlay"
+        overlayPanel.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(overlayPanel)
+        NSLayoutConstraint.activate([
+            overlayPanel.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            overlayPanel.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+            overlayPanel.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, multiplier: 0.9),
+        ])
+
         // 4 Hz: whether video is up (hides the connect status) and the HUD's numbers.
         uiTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
             MainActor.assumeIsolated { self?.refreshVideoState() }
@@ -238,24 +262,43 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             self.hasVideo = hasVideo
             render()
         }
-        if !hud.isHidden { hud.text = hudText() }
+        // One reading for both: the rates are since the previous `stats()` call.
+        guard !hud.isHidden || !overlayPanel.isHidden else { return }
+        let stats = video.stats()
+        if !hud.isHidden { hud.text = hudText(stats) }
+        if !overlayPanel.isHidden { overlayPanel.text = overlayText(stats) }
+    }
+
+    /// Right Option held alone: the overlay, with the Mac's stats asked for while it shows.
+    private func setOverlay(_ shown: Bool) {
+        overlayPanel.isHidden = !shown
+        session?.setHostStatsInterval(ms: shown ? ClientOverlay.hostStatsIntervalMs : 0)
+        if shown { overlayPanel.text = overlayText(video.stats()) }
+    }
+
+    private func overlayText(_ stats: VideoStats) -> String {
+        var info: ClientSession.ConnectionInfo?
+        if case .session(let i) = status { info = i }
+        // Padded by blank columns and lines: a UILabel has no insets.
+        let body = ClientOverlay.text(ClientOverlay.sections(info: info, video: stats, host: session?.hostStats))
+        return "\n" + body.split(separator: "\n", omittingEmptySubsequences: false).map { "   \($0)   " }.joined(separator: "\n") + "\n"
     }
 
     private func toggleHUD() {
         hud.isHidden.toggle()
-        if !hud.isHidden { hud.text = hudText() }
+        if !hud.isHidden { hud.text = hudText(video.stats()) }
     }
 
     /// The link first ("USB · Mac mini · protocol v4"), then whether the Mac's lain is older, then the
     /// video numbers.
-    private func hudText() -> String {
+    private func hudText(_ stats: VideoStats) -> String {
         var link = "no link"
         if case .session(let info) = status {
             link = ClientStatus.describe(info.transport) + (info.hostName.isEmpty ? "" : " · \(info.hostName)")
                 + " · protocol v\(info.protocolVersion)"
             if let note = ClientStatus.olderMacNote(info) { link += "\n" + note }
         }
-        return link + "\n" + video.stats().hudText
+        return link + "\n" + stats.hudText
     }
 
     // MARK: Pointer lock (D19)

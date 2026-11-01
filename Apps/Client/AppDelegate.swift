@@ -80,6 +80,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                 // Main-queue hops keep statuses in order (the session publishes them in order).
                 DispatchQueue.main.async { MainActor.assumeIsolated { view?.status = ClientStatus(status) } }
             }
+            view.session = session
         } catch {
             view.status = .failed("\(error)")
         }

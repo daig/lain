@@ -87,7 +87,7 @@ let hello = Hello(deviceModel: "iPad16,6", pixelWidth: 2752, pixelHeight: 2064, 
         #expect(session.input.cursor.displayPointWidth == 1376)
 
         // Input from the pipeline arrives on the host's realtime channel, in order.
-        session.input.keyChanged(.leftOption, isDown: true)
+        session.input.keyChanged(.rightOption, isDown: true)
         session.input.keyChanged(.tab, isDown: true)
         session.input.mouseMoved(dx: 4, dy: 0)
         session.input.mouseButton(.left, isDown: true)
@@ -95,7 +95,7 @@ let hello = Hello(deviceModel: "iPad16,6", pixelWidth: 2752, pixelHeight: 2064, 
         var got: [Message] = []
         for _ in 0..<7 { if let m = await received.next() { got.append(m) } }
         let keys = got.compactMap { if case .keyEvent(let e) = $0 { e.usage } else { nil } }
-        #expect(keys == [0xE2, 0xE2, 0xE3, 0x2B])   // Opt-Tab → Cmd-Tab
+        #expect(keys == [0xE6, 0xE6, 0xE3, 0x2B])   // Right Opt-Tab → Cmd-Tab
         guard got.count == 7 else { Issue.record("got \(got)"); return }
         if case .pointerMove(let m) = got[4] { #expect(m.x > 688) } else { Issue.record("expected a move: \(got[4])") }
         if case .pointerButton(let b) = got[5] { #expect(b.isDown && b.clickCount == 1) } else { Issue.record("\(got[5])") }
