@@ -529,7 +529,7 @@ fn the_clients_hold_remap() {
     let mut r = Rig::new();
     let messages = [
         key(0xE2, true, M::OPTION),
-        key(0xE2, false, M::EMPTY), // the remap releases the source…
+        key(0xE2, false, M::EMPTY),  // the remap releases the source…
         key(0xE3, true, M::COMMAND), // …presses the target…
         key(0x2B, true, M::COMMAND), // …then the key
         key(0x2B, false, M::COMMAND),
@@ -573,11 +573,8 @@ fn changing_the_map_moves_held_modifiers() {
     r.send(key(0xE2, true, M::COMMAND | M::OPTION));
     assert_eq!(r.take(), [down(KEY_LEFTCTRL), down(KEY_LEFTALT)]);
 
-    let swapped = ModifierMap {
-        command: Some(LinuxModifier::Super),
-        option: Some(LinuxModifier::Alt),
-        ..ModifierMap::default()
-    };
+    let swapped =
+        ModifierMap { command: Some(LinuxModifier::Super), option: Some(LinuxModifier::Alt), ..ModifierMap::default() };
     r.router.set_modifier_map(swapped, &mut r.out);
     assert_eq!(r.take(), [up(KEY_LEFTCTRL), down(KEY_LEFTMETA)]);
     assert_eq!(r.router.config().modifiers, swapped);
@@ -629,10 +626,7 @@ fn non_finite_positions_are_not_sent() {
     let mut r = Rig::new();
     assert_eq!(r.send(mv(f64::NAN, 1.0)), Outcome::Ignored);
     assert_eq!(r.send(mv(1.0, f64::INFINITY)), Outcome::Ignored);
-    assert_eq!(
-        r.send(button(MouseButton::Left, true, f64::NAN, 0.0, M::EMPTY)),
-        Outcome::Injected { pointer: None }
-    );
+    assert_eq!(r.send(button(MouseButton::Left, true, f64::NAN, 0.0, M::EMPTY)), Outcome::Injected { pointer: None });
     assert_eq!(r.take(), [InputAction::Button { code: BTN_LEFT, down: true }]);
 }
 
@@ -788,8 +782,10 @@ fn only_one_kinetic_continuation_ever() {
     for mode in [Momentum::Desktop, Momentum::Client] {
         for len in 1..=5u32 {
             for mut index in 0..n.pow(len) {
-                let config =
-                    InputConfig { scroll: ScrollConfig { momentum: mode, ..ScrollConfig::default() }, ..Default::default() };
+                let config = InputConfig {
+                    scroll: ScrollConfig { momentum: mode, ..ScrollConfig::default() },
+                    ..Default::default()
+                };
                 let mut r = Rig::with(config);
                 let mut desktop = Desktop::default();
                 let mut flung = false; // a stop was sent and no phase scroll since
@@ -913,12 +909,6 @@ fn a_session_drives_a_backend() {
     backend.apply(&out);
     assert_eq!(
         backend.actions(),
-        [
-            down(KEY_LEFTCTRL),
-            down(KEY_V),
-            InputAction::MoveTo(PointF::new(4.0, 2.0)),
-            up(KEY_V),
-            up(KEY_LEFTCTRL),
-        ]
+        [down(KEY_LEFTCTRL), down(KEY_V), InputAction::MoveTo(PointF::new(4.0, 2.0)), up(KEY_V), up(KEY_LEFTCTRL)]
     );
 }
