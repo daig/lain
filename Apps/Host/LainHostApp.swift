@@ -132,6 +132,8 @@ final class HostController {
 
     @ObservationIgnored private var session: HostSession?
     @ObservationIgnored private var accessPoll: Task<Void, Never>?
+    /// lain's menu is open: the once-a-second refresh leaves what it shows alone.
+    @ObservationIgnored private var menuIsOpen = false
 
     init() {
         guard !LainHostEntry.isTestHost else { return }
@@ -167,6 +169,10 @@ final class HostController {
         accessPoll = Task { [weak self] in
             while !Task.isCancelled {
                 try? await Task.sleep(for: .seconds(1))
+                // A grant, a display attached: the iPad hears about it (if its version has HostSetup).
+                session.setupChanged()
+                // Any change to what the menu shows rebuilds it, closing an open submenu: none while it's open.
+                guard self?.menuIsOpen == false else { continue }
                 let granted = InputInjector.hasAccess
                 if self?.hasAccessibility != granted { self?.hasAccessibility = granted }
                 let agent = LoginAgent.state
@@ -179,8 +185,12 @@ final class HostController {
                 if self?.peerVersionNote != note { self?.peerVersionNote = note }
                 let stopped = session.isVideoStoppedOnTheMac
                 if self?.videoStoppedOnTheMac != stopped { self?.videoStoppedOnTheMac = stopped }
-                // A grant, a display attached: the iPad hears about it (if its version has HostSetup).
-                session.setupChanged()
+            }
+        }
+        // The menu bar menu is an NSMenu: its tracking brackets the time it is open.
+        for (name, open) in [(NSMenu.didBeginTrackingNotification, true), (NSMenu.didEndTrackingNotification, false)] {
+            NotificationCenter.default.addObserver(forName: name, object: nil, queue: .main) { [weak self] _ in
+                MainActor.assumeIsolated { self?.menuIsOpen = open }
             }
         }
     }
