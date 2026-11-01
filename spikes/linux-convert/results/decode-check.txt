@@ -1,0 +1,32 @@
+=== e2e-gl-thread-pipeline (dump e2e-glp.h265, reference frame 1418) 22:31:23
+nal types: {1: 1418, 19: 1, 32: 1, 33: 1, 34: 1, 38: 1416} (32 VPS, 33 SPS, 34 PPS, 19 IDR_W_RADL, 1 TRAIL_R)
+decoded pictures: 1419; slices in stream: 1419
+errors: none
+warnings: none
+picture 1418 vs reference NV12 (every 7th sample): Y PSNR 82.42 dB, Cb 74.91 dB, Cr 75.07 dB
+18.70 s, 252060 KB
+exit 0
+=== e2e-vpp-thread-pipeline (dump e2e-vppp.h265, reference frame 1417) 22:31:42
+nal types: {1: 1417, 19: 1, 32: 1, 33: 1, 34: 1, 38: 1415} (32 VPS, 33 SPS, 34 PPS, 19 IDR_W_RADL, 1 TRAIL_R)
+decoded pictures: 1418; slices in stream: 1418
+errors: none
+warnings: none
+picture 1417 vs reference NV12 (every 7th sample): Y PSNR 82.78 dB, Cb 75.56 dB, Cr 75.17 dB
+18.21 s, 252584 KB
+exit 0
+=== e2e-gl-cpu (dump e2e-gl.h265, reference frame 1245) 22:32:00
+nal types: {1: 1245, 19: 1, 32: 1, 33: 1, 34: 1, 38: 1243} (32 VPS, 33 SPS, 34 PPS, 19 IDR_W_RADL, 1 TRAIL_R)
+decoded pictures: 1246; slices in stream: 1246
+errors: none
+warnings: none
+picture 1245 vs reference NV12 (every 7th sample): Y PSNR 82.45 dB, Cb 74.83 dB, Cr 75.13 dB
+14.41 s, 229612 KB
+exit 0
+=== e2e-vpp (dump e2e-vpp.h265, reference frame 983) 22:32:15
+nal types: {1: 983, 19: 1, 32: 1, 33: 1, 34: 1, 38: 981} (32 VPS, 33 SPS, 34 PPS, 19 IDR_W_RADL, 1 TRAIL_R)
+decoded pictures: 984; slices in stream: 984
+errors: none
+warnings: none
+picture 983 vs reference NV12 (every 7th sample): Y PSNR 82.94 dB, Cb 75.60 dB, Cr 75.33 dB
+9.90 s, 197360 KB
+exit 0
