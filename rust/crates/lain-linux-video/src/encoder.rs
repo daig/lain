@@ -9,22 +9,26 @@
 //!   picture below its budget with filler data otherwise.
 //! - lain's own VPS, SPS and PPS as packed headers on every IDR, and a packed slice header on every picture
 //!   (Mesa writes the parameter sets only with one; [`crate::bitstream`]).
-//! - Refinement re-encodes at a lower QP: the per-frame rate control caps that picture's QP at
-//!   [`REFINEMENT_MAX_QP`] (spike A: "CBR: `max_qp` caps that frame's QP"). Swift lets VideoToolbox spend the
-//!   spare budget instead; libva gives a direct cap.
+//! - Refinement re-encodes at a lower QP: the picture's `pic_init_qp` and its packed slice header's QP are
+//!   [`REFINEMENT_QP`] (as `vaenc --refine-qp` set `pic_init_qp`). Measured here: Mesa 26.0.8 ignores a per-picture
+//!   change of the rate control's `max_qp` or of the HRD with packed headers (the output was byte-identical), and
+//!   follows the initial QP. Swift lets VideoToolbox spend the spare budget instead; libva gives a direct QP. A
+//!   refinement exceeds the two-frame HRD (it is meant to: an idle desktop has the budget to spare).
 //! - The coded buffer holds a raw picture (`width × height × 1.5`), never less than four frames' budget.
 //!
 //! One picture is in flight at a time ([`HevcEncoder::submit`], then [`HevcEncoder::poll`]).
 
 use std::rc::Rc;
 
-use crate::bitstream::{SequenceHeaders, slice_header};
+use crate::bitstream::{SequenceHeaders, slice_header_qp};
 use crate::ffi::va as sys;
 use crate::va::{Display, VABufferID, VAConfigID, VAContextID, VASurfaceID, VaError};
 
-/// The QP cap of a refinement picture. Spike A re-encoded at QP 18 in a QP 30 stream (806–843 KB, 8.4–9.2 ms);
-/// 22 trades a little of that quality for smaller refinements under CBR.
-pub const REFINEMENT_MAX_QP: u32 = 22;
+/// The QP a refinement picture is coded at: its `pic_init_qp` and its slice's QP (and the rate control's
+/// `max_qp`). Spike A re-encoded at QP 18 in a QP 30 stream (806–843 KB, 8.4–9.2 ms); 22 trades a little of that
+/// quality for smaller refinements (measured 2026-11-01 on the gradient fixture at 2752×2064: Y PSNR 39.1 → 45.8 dB
+/// with one refinement of 487 KB, 46.9 dB after three).
+pub const REFINEMENT_QP: u32 = 22;
 /// The QP range of ordinary pictures (spike A's `vaenc`: the whole range).
 pub const MIN_QP: u32 = 1;
 pub const MAX_QP: u32 = 51;
@@ -315,7 +319,7 @@ impl HevcEncoder {
             window_size: 1000,
             initial_qp: 26,
             min_qp: MIN_QP,
-            max_qp: if refinement { REFINEMENT_MAX_QP } else { MAX_QP },
+            max_qp: if refinement { REFINEMENT_QP } else { MAX_QP },
             ..Default::default()
         };
         let mut rc_flags = sys::_VAEncMiscParameterRateControl__bindgen_ty_1__bindgen_ty_1::default();
@@ -329,6 +333,8 @@ impl HevcEncoder {
             sys::VAEncMiscParameterHRD { initial_buffer_fullness: fullness, buffer_size: size, ..Default::default() };
         bufs.push(va.create_misc_buffer(ctx, sys::VAEncMiscParameterTypeHRD, &hrd)?);
 
+        // A refinement starts from REFINEMENT_QP, in the picture parameters and the packed slice header alike.
+        let init_qp: i32 = if refinement { REFINEMENT_QP as i32 } else { 26 };
         let invalid = sys::VAPictureHEVC {
             picture_id: sys::VA_INVALID_SURFACE,
             flags: sys::VA_PICTURE_HEVC_INVALID,
@@ -343,7 +349,7 @@ impl HevcEncoder {
             reference_frames: [invalid; 15],
             coded_buf: self.coded,
             collocated_ref_pic_index: 0xFF,
-            pic_init_qp: 26,
+            pic_init_qp: init_qp as u8,
             nal_unit_type: if idr { 19 } else { 1 },
             ..Default::default()
         };
@@ -388,7 +394,7 @@ impl HevcEncoder {
         sf.set_slice_loop_filter_across_slices_enabled_flag(1);
         slice.slice_fields.bits = sf;
         bufs.push(va.create_buffer(ctx, sys::VAEncSliceParameterBufferType, &slice)?);
-        self.packed(sys::VAEncPackedHeaderSlice, &slice_header(idr, self.poc), bufs)?;
+        self.packed(sys::VAEncPackedHeaderSlice, &slice_header_qp(idr, self.poc, init_qp - 26), bufs)?;
 
         va.submit_picture(ctx, input, bufs)
     }
