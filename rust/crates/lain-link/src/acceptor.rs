@@ -196,9 +196,9 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// refuses new ones; every task and timer it started ends then. Delivered links are the consumer's.
 /// Must be used inside a tokio runtime.
 ///
-/// It owns its secret store (its tasks are `'static`). `Platform::secrets()` only lends `&P::Secrets`, and
-/// `lain-platform` has no `impl SecretStore for Arc<T>`, so a consumer sharing the platform's store passes
-/// a small adapter over `Arc<P>` that delegates to `p.secrets()`.
+/// It owns its secret store (its tasks are `'static`): pass a clone of the platform's handle,
+/// `p.secrets().clone()`, or an `Arc` of a store (`lain-platform` implements every bridge trait for
+/// `Arc<T>`).
 pub struct LinkAcceptor<S: SecretStore> {
     inner: Arc<Inner<S>>,
 }
