@@ -192,6 +192,27 @@ async fn a_peer_that_never_reads_cant_keep_a_closed_channel_alive() {
     assert!(all.len() < 4 * MEMORY_STREAM_BUFFER);
 }
 
+/// What the peer sends and nobody reads is held up to `INBOUND_BUFFER`; then the channel stops reading, the
+/// peer's writes wait (backpressure), and reading lets them go on. Swift buffers without bound.
+#[tokio::test(start_paused = true)]
+async fn unread_messages_are_bounded_and_reading_resumes_the_stream() {
+    let (a, mut peer) = memory_pair();
+    let mut channel = at(a, None);
+    let limit = 3 * INBOUND_BUFFER;
+    let written = flood(&mut peer, limit).await;
+    // The budget, plus what the parser and the memory pipe hold: a frame, a read chunk, the pipe.
+    let slack = 2 * bulky_frame().len() + 64 * 1024 + MEMORY_STREAM_BUFFER;
+    assert!(written < INBOUND_BUFFER + slack, "{written} bytes taken while nobody reads (limit {limit})");
+    assert!(written > INBOUND_BUFFER - slack, "only {written} bytes before the writes waited");
+    assert!(channel.close_reason().is_none(), "backpressure, not a close");
+    // Reading frees room: the peer's writes go on.
+    for _ in 0..20 {
+        let r = channel.recv_timeout(T).await.unwrap();
+        assert!(matches!(r.message, Message::Error(_)));
+    }
+    assert!(flood(&mut peer, 1).await > 0, "writes resume once messages are read");
+}
+
 // MARK: ChannelVersions
 
 #[tokio::test(start_paused = true)]

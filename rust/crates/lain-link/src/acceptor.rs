@@ -181,7 +181,9 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// The acceptor role (§7.6, §7.7 D29). Swift: `LinkAcceptor`.
 ///
 /// Every accepted connection must open with a valid `ChannelHello` within
-/// [`HELLO_TIMEOUT`](Self::HELLO_TIMEOUT) (and, pairing, its `Pair` within the same time). Realtime starts
+/// [`HELLO_TIMEOUT`](Self::HELLO_TIMEOUT) (and, pairing, its `Pair` within the same time); the secret-store
+/// reads that check it, and a pairing's store, must finish within that time too, else the connection gets
+/// `Error(internal)` and [`AcceptorEvents::rejections`] a [`TransportError::Secrets`]. Realtime starts
 /// a session, authenticated by a stored secret (or paired, where [`Pairing`] allows it); video and audio
 /// join it by session token under that session's secret, waiting up to `HELLO_TIMEOUT` for their realtime.
 /// Once all three are in, [`AcceptorEvents::links`] gets the link and the acceptor forgets the session,
@@ -193,6 +195,10 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// [`cancel`](Self::cancel), or dropping the acceptor, closes every connection not yet delivered and
 /// refuses new ones; every task and timer it started ends then. Delivered links are the consumer's.
 /// Must be used inside a tokio runtime.
+///
+/// It owns its secret store (its tasks are `'static`). `Platform::secrets()` only lends `&P::Secrets`, and
+/// `lain-platform` has no `impl SecretStore for Arc<T>`, so a consumer sharing the platform's store passes
+/// a small adapter over `Arc<P>` that delegates to `p.secrets()`.
 pub struct LinkAcceptor<S: SecretStore> {
     inner: Arc<Inner<S>>,
 }
@@ -375,7 +381,11 @@ impl<S: SecretStore> Inner<S> {
                 let Some(version) = self.options.versions.highest_common(&hello.versions) else {
                     return self.refuse_version(channel, &hello);
                 };
-                if let Err(e) = store(pair.clone()).await {
+                // Bounded like the reads (see `candidate`): a store that never finishes answers internal.
+                let stored = tokio::time::timeout_at(deadline, store(pair.clone()))
+                    .await
+                    .unwrap_or_else(|_| Err(Self::store_timed_out()));
+                if let Err(e) = stored {
                     return self.reject(
                         channel,
                         ErrorCode::INTERNAL,
@@ -387,7 +397,7 @@ impl<S: SecretStore> Inner<S> {
                 self.establish(&hello, peer, pair.secret.to_vec(), true, version, channel);
             }
             ConnectionKind::Realtime => {
-                let matched = match self.candidate(&hello).await {
+                let matched = match self.candidate(&hello, deadline).await {
                     Ok(m) => m,
                     Err(e) => {
                         return self.reject(
@@ -423,22 +433,41 @@ impl<S: SecretStore> Inner<S> {
         }
     }
 
+    /// What a secret-store call that outlived the connection's hello deadline counts as: a failed read.
+    fn store_timed_out() -> PlatformError {
+        PlatformError::Unavailable(format!("the secret store did not answer within {:?}", Self::hello_timeout()))
+    }
+
     /// The stored secret `hello` was made with, and its account (the rules are [`AcceptorOptions`]'s).
-    async fn candidate(&self, hello: &ChannelHello) -> Result<Option<(String, Vec<u8>)>, PlatformError> {
+    ///
+    /// Every read must finish by `deadline` (the connection's hello deadline); one that doesn't counts as a
+    /// failed read under the same rules. Difference from Swift, whose Keychain reads are synchronous and
+    /// unbounded: a Secret Service read can wait on a locked keyring's prompt, and without a bound every
+    /// retry of the dialer (which gave up after its accept timeout anyway) would leave one more connection
+    /// parked here. Invisible on the wire to a dialer still waiting: it gets `Error(internal)` and retries.
+    async fn candidate(
+        &self,
+        hello: &ChannelHello,
+        deadline: Instant,
+    ) -> Result<Option<(String, Vec<u8>)>, PlatformError> {
+        let bounded = |read| async move {
+            tokio::time::timeout_at(deadline, read).await.unwrap_or_else(|_| Err(Self::store_timed_out()))
+        };
         // Few candidates, in account order; each check is constant-time (§7.6).
         let matching = |all: BTreeMap<String, Vec<u8>>, skip: Option<&str>| {
             all.into_iter()
                 .find(|(account, secret)| Some(account.as_str()) != skip && ChannelAuth::is_valid(hello, secret))
         };
         let Some(primary) = &self.options.primary_account else {
-            return Ok(matching(self.secrets.all_secrets().await?, None));
+            return Ok(matching(bounded(self.secrets.all_secrets()).await?, None));
         };
-        if let Some(secret) = self.secrets.secret(primary).await?
+        let read = tokio::time::timeout_at(deadline, self.secrets.secret(primary)).await;
+        if let Some(secret) = read.unwrap_or_else(|_| Err(Self::store_timed_out()))?
             && ChannelAuth::is_valid(hello, &secret)
         {
             return Ok(Some((primary.clone(), secret)));
         }
-        match self.secrets.all_secrets().await {
+        match bounded(self.secrets.all_secrets()).await {
             Ok(all) => Ok(matching(all, Some(primary))),
             Err(e) => {
                 tracing::error!(acceptor = %self.options.label, "could not list the pairing secrets ({e}); only {primary} was tried");
