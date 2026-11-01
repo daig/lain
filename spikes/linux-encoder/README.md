@@ -10,15 +10,18 @@
   - GStreamer `vah265enc` gets exactly the same with `target-usage=2` (or 3). Its default (4) and 5–7 add a
     pre-encode pass: 9.2 ms, about 107 fps.
 - **Capture → AU at 120 Hz is out of reach at 2752×2064.** Mutter delivers BGRx/ARGB, and the BGRx→NV12 conversion
-  on the GFX engine (VA-API VPP, through `vapostproc`) adds 3.5–5.6 ms to the encode span. Measured from the tick
-  that captured the frame, converting on request gives **p50 15.5 / p95 19.4 ms at 74–88 fps**; converting every
-  frame on capture gives 120 fps but **p50 19.7 / p95 22.0 ms**. At 2064×1548 the encode span with conversion is
-  8.6 ms at 116 fps.
+  on the GFX engine (VA-API VPP, through `vapostproc`) adds about 3.5–7 ms to the encode span. Measured from the
+  tick that captured the frame, across sessions, converting on request gives **p50 15.5–18.7 / p95 19.4–22.6 ms at
+  70–88 fps**; converting every frame on capture gives **p50 19.7–24.1 / p95 22.0–26.7 ms at 91–120 fps** (120 fps
+  in one run of four). The spread follows the GFX engine's load from the desktop's compositing (40–61 % gfx busy
+  in the reruns), not CPU loadavg. At 2064×1548 the encode span with conversion is 8.6 ms at 116 fps.
 - Capture is **zero-copy**: `pipewiresrc` negotiates DMA-BUF (`AR24`, AMD tiled modifier `0x0200000000401b03`),
   and `vapostproc` imports, converts and scales it on the GPU, at 5 % of one CPU core.
-- **The GStreamer path doesn't keep off the NVIDIA cards by itself.** The VA plugin opens every render node when it
-  loads (renderD128 and renderD129 included); a pinned display context only decides which device the elements
-  use. libva directly opens only the node it is given.
+- **The GStreamer path doesn't keep off the NVIDIA cards by itself.** A registry scan loads every installed plugin
+  (nvcodec, hip and vulkan open the NVIDIA device nodes and initialise CUDA), and the VA plugin opens every render
+  node when it loads (renderD128 and renderD129 included); a pinned display context only decides which device the
+  elements use. libva directly opens only the node it is given. **Decided (2026-10-31): `lain-linux-video` uses no
+  GStreamer**; it captures with the `pipewire` crate and converts and encodes with libva on the AMD node alone.
 - **Control differs a lot.** libva gives an IDR on exactly the requested frame at the cost of a P-frame (7.2 ms,
   about 250 KB under a two-frame HRD), and any QP per frame. `vah265enc` has four problems:
   - It enforces a CPB of at least 2 s, so forced IDRs are 1.35–2.0 MB and take 13–16 ms.
@@ -41,7 +44,15 @@ GStreamer VA plugin's `plugin_init` enumerates every DRM render node through ude
 renderD128 and renderD129** and tries to load a VA driver for them. That only fails because no NVIDIA VA driver is
 installed; with `nvidia-vaapi-driver` present, the probe would initialise the reserved GPUs. The first version of
 this spike claimed the NVIDIA nodes were never opened; that was wrong (round-1 review, confirmed with
-`nvidia-guard.sh`). Since then:
+`nvidia-guard.sh`).
+
+The VA probe isn't the only one. **A GStreamer registry scan loads every installed plugin** to read its features,
+and three of them touch the NVIDIA cards when loaded: `nvcodec`, `hip` and `vulkan` open `/dev/nvidiactl`,
+`/dev/nvidia0`, `/dev/nvidia1` and `/dev/nvidia-uvm` and initialise CUDA. A cached registry avoids that scan (the
+plugins aren't loaded again while the cache is valid), but not the VA probe: the elements' plugin is loaded for
+real to be used, and its `plugin_init` opens renderD128 and renderD129 to probe them every time.
+
+Since then:
 - `encbench` picks the AMD node by PCI vendor from sysfs, picks the VA element factories whose `device-path` is that
   node, and gives every pipeline a `gst.va.display.handle` context holding a `GstVaDisplayDrm` built on it, before
   the pipeline leaves NULL (`src/va.rs`). That pins which device the elements use. It **doesn't stop the probe** at
@@ -206,6 +217,18 @@ reference, unless stated otherwise.
 
 ### Convert + encode (BGRx input, as captured)
 
+**Across sessions** (round 2 plus the reviewer's three reruns of each mode), capture → AU:
+
+| Path | capture → AU p50 ms | p95 ms | fps | runs with 120 fps |
+|---|---|---|---|---|
+| convert on request (vapostproc inline) | **15.5–18.7** | **19.4–22.6** | 70–88 | – |
+| convert on capture, newest converted frame encoded | **19.7–24.1** | **22.0–26.7** | 91–120 | 1 of 4 |
+
+The encode span with conversion was 14.1–14.2 ms in the reruns, against 7.33 ms for NV12, so the conversion costs
+about 3.5–7 ms depending on the session. **What drives the spread is the GFX engine's load from the desktop's
+compositing** (gfx busy 40–61 % in the reruns), not CPU loadavg: the reruns had load 0.97–1.22 and the round-2
+runs 0.18–0.29, and neither tracks the latency.
+
 Round 2, all 10 s, TU 2, under `fence.sh`, both latencies (see Method):
 
 | Path | capture → AU p50 / p95 ms | push → AU p50 / p95 ms | fps | CPU | load |
@@ -213,6 +236,17 @@ Round 2, all 10 s, TU 2, under `fence.sh`, both latencies (see Method):
 | convert on request (vapostproc inline) | **15.49 / 19.41** | 11.48 / 12.53 | 87.5 | 4.5 % | 0.22 |
 | convert on capture, newest converted frame encoded | **19.73 / 21.97** | 8.13 / 9.65 | 119.9 | 4.4 % | 0.18 |
 | same, `--csc-queue 1` | 19.70 / 21.83 | 8.15 / 9.45 | 119.9 | 4.3 % | 0.29 |
+
+Reviewer's reruns, another session: TU 2 under `fence.sh`, load 0.97–1.22, AMD gfx busy 40–61 %; 10 s unless stated:
+
+| Path | capture → AU p50 / p95 ms | fps | run |
+|---|---|---|---|
+| convert on request | 18.31 / 22.30 | 70.5 | 10 s |
+| convert on request | 18.69 / 22.58 | 69.9 | 10 s |
+| convert on request | 18.43 / 22.58 | 70.1 | 5 s |
+| convert on capture | 24.07 / 26.73 | 91.5 | 10 s |
+| convert on capture | 24.11 / 26.61 | 90.6 | 10 s |
+| convert on capture | 24.10 / 26.41 | 90.5 | 5 s |
 
 Round 1 (push → AU only, which isn't comparable across the two modes):
 
@@ -229,13 +263,14 @@ Round 1 (push → AU only, which isn't comparable across the two modes):
   2200 MHz under this bursty load.
 - "vapostproc in → encoder in" is 0.01 ms, because VPP work is queued, not waited for. Its cost shows up inside
   the encode span.
-- **Converting on request has the lower end-to-end latency** (capture → AU p50 15.5 against 19.7 ms; p95 19.4
-  against 22.0). Converting on capture keeps up with 120 Hz, but each frame then waits for the conversion, for the
+- **Converting on request has the lower end-to-end latency** in every session (capture → AU p50 15.5–18.7 against
+  19.7–24.1 ms; p95 19.4–22.6 against 22.0–26.7). Converting on capture gives more fps (91–120 against 70–88) but
+  reached 120 fps in only one run of four; each frame then waits for the conversion, for the
   previous encode, and in the latest slot, and the encode itself slows (8.1 ms here, 10 ms in round 1, against 7.3)
   because the GFX engine converts at 120 Hz beside the encoder on a two-CU iGPU that also composites the desktop.
   The two-buffer leaky queue in front of the conversion isn't what inflates it: one buffer gives the same.
-- Run-to-run spread is large with conversion in the path (73–88 fps on request; 92 or 120 fps on capture), as the
-  desktop's own GFX load changes.
+- Run-to-run spread is large with conversion in the path (70–88 fps on request; 90.5–120 fps on capture), as the
+  desktop's own GFX load (its compositing) changes; CPU loadavg doesn't predict it.
 
 ### Real capture: RecordMonitor HDMI-1, 3840×2160 at 60 Hz → 2752×2064, TU 2
 
@@ -334,12 +369,18 @@ TU 2 the refinements took 7.23 ms p50 and 8.00 ms p95, at 22 KB mean (10 s run, 
 
 ## Recommendation for `lain-linux-video`
 
-**Keep the GStreamer VA plugin out of the process if the "never NVIDIA" rule must be enforced.** Loading that
-plugin opens every render node (see Machine). A pinned display context fixes which device the elements use, not
-what the plugin probes. The cleanest way to keep lain off the NVIDIA cards is to keep everything VA in lain's own
-code on the AMD node it opened:
-- capture with `pipewiresrc` (the PipeWire plugin, which has no VA in it) or the `pipewire` crate, negotiating
-  DMA-BUF;
+**Decision (the lead, 2026-10-31): `lain-linux-video` uses no GStreamer at all.** It captures with the `pipewire`
+crate, and does colour conversion and encoding with libva directly, opening only the AMD render node, chosen by
+PCI vendor `0x1002` (`/sys/class/drm/renderDN/device/vendor`). The reasons, from this spike (see Machine):
+- a GStreamer registry scan loads every installed plugin, and `nvcodec`, `hip` and `vulkan` open
+  `/dev/nvidiactl`, `/dev/nvidia0`, `/dev/nvidia1` and `/dev/nvidia-uvm` and initialise CUDA when loaded;
+- the VA plugin's `plugin_init` opens renderD128 and renderD129 to probe them whenever it is loaded;
+- a cached registry avoids the first, not the second, and a pinned display context fixes which device the
+  elements use, not what the plugin probes. Only masking the nodes (`fence.sh`) kept GStreamer off them here.
+
+The GStreamer sections below stay as the record of what was measured and of the interim path; they are no longer
+the plan. The target path, all in lain's own code on the AMD node it opened:
+- capture with the `pipewire` crate, negotiating DMA-BUF (`pipewiresrc` was what this spike measured);
 - import the DMA-BUF into lain's `VADisplay` (`vaCreateSurfaces` with a DRM PRIME 2 descriptor);
 - convert BGRx → NV12 with libva VPP (what `vapostproc` does underneath, so the same GFX cost is expected; not
   measured);
@@ -349,7 +390,7 @@ None of the import or the VPP was tried here. If the VA plugin is used anyway, t
 nodes masked (`fence.sh` shows how: a private mount namespace through bubblewrap). Here a systemd user unit's
 `InaccessiblePaths=` did not take effect. The registry scan in `gst-plugin-scanner` probes the same way.
 
-**Capture and convert, as measured: GStreamer.**
+**Capture and convert, as measured: GStreamer** (interim only; see the decision above).
 
 ```
 pipewiresrc path=<node> always-copy=false
@@ -367,7 +408,8 @@ DMA-BUF in and VA surfaces out, zero-copy, with scaling for free. Use shared mem
   development package here, so the two functions are declared by hand);
 - check the node's PCI vendor (`/sys/class/drm/renderDN/device/vendor` = `0x1002`) before anything opens it.
 
-The `pipewire` crate isn't needed for this; it still needs `libclang-dev` to build.
+This GStreamer path doesn't need the `pipewire` crate; the decided path does, and the crate needs `libclang-dev`
+to build.
 
 **Encode: libva directly, as the target**, through a hand-written FFI module for the subset used (no bindgen):
 config, surfaces, context, buffers, picture submit, `vaSyncBuffer`, map. It is as fast as the best GStreamer
@@ -402,7 +444,15 @@ backend must handle:
   gate"). The bad AUs are mostly forced IDRs,
   so the client asked for an IDR, got `EncodeFailed`, and would then get P-frames off a missing IDR. (Either the
   backend does this, or `lain-platform` and `lain-media` define it; the contract says nothing today.)
+- **Escalate when a forced IDR fails again.** If the IDR forced after a bad AU is itself corrupt or missing (no
+  IRAP AU comes out), forcing again into the same filled CPB tends to give the same oversized IDR. Escalate
+  instead: rebuild the encoder session (a new `vah265enc`, or a new libva context), which resets the CPB so the
+  first IDR is small, or raise `min-qp` for the next IDR. Bound the attempts, and report `Failed` if they run out.
 - Accept 1.3–2 MB keyframes.
+- **Oversized frames after a refinement**, next to the oversized IDRs: the frame after a plain re-encode
+  refinement can be 1.8–2.0 MB (a TRAIL frame, not an IDR), close to the 2,138,808 B coded buffer, as CBR spends
+  the budget the refinement left. A little more and it would be a corrupt AU like the late IDRs; the validation
+  above catches it, and `min-qp` bounds it the same way.
 
 **`VideoSession` mapping** (as `lain-platform`'s `video.rs` documents it).
 - `start`: build the capture pipeline on `lain-gnome`'s node and the encoder. An appsink callback stores each
@@ -417,20 +467,31 @@ backend must handle:
   Mutter delivers nothing while nothing changes (4 frames in 10 s), and Swift answers a keyframe request by
   re-offering the last capture (`HostVideoPipeline.requestKeyframe`), so a slot emptied by the previous encode
   would leave the client without its IDR.
-- `encode(request)` runs on one encoder thread. The core keeps one request outstanding.
+- `encode(request)` runs on one encoder thread. The core keeps one request outstanding, and **each backend
+  accepts only one request in flight**: a second request before the first's result is a contract violation, not
+  a queue.
+  - **Watchdog.** If no access unit arrives within a bound after submit (several frame times, for example
+    100 ms), the backend emits `EncodeFailed` for that request and frees the gate; the core then asks for a
+    keyframe, since the encoder's reference state is unknown. A late AU for a timed-out request is dropped.
+  - **Errors.** A bus error from the pipeline (GStreamer) or a failing VA call (`vaEndPicture`, `vaSyncBuffer`,
+    `vaMapBuffer`, or an overflow in the coded segment's status) for one frame gives `EncodeFailed`; an error that
+    leaves the session unusable (pipeline in error state, lost device, context creation failing on a rebuild)
+    gives `Failed`.
   - `keyframe` gives an IDR with parameter sets in the Annex-B output.
   - `refinement` re-encodes the newest capture (the slot): at a lower QP with libva, as is with GStreamer.
     `lain-media` puts the refinement flag on the wire only when the encoded capture is the one the refinement
     was for, so re-encoding an older surface would be wrong.
   - `submit_ns` and `encode_done_ns` are taken around submit and map.
-- **Where to convert: on request.** Measured from capture, it has the lower latency at 2752×2064 (p50 15.5 / p95
-  19.4 ms against 19.7 / 22.0 ms on capture), and wastes no GFX work on frames never encoded. Converting on
-  capture sustains 120 fps here, against 74–88 fps on request. Confirm on `RecordVirtual` at 120 Hz in wave 3.
+- **Where to convert: on request.** Measured from capture, it has the lower latency at 2752×2064 in every session
+  (p50 15.5–18.7 / p95 19.4–22.6 ms against 19.7–24.1 / 22.0–26.7 ms on capture), and wastes no GFX work on frames
+  never encoded. Converting on capture gives 91–120 fps here (120 in one run of four), against 70–88 fps on
+  request. Confirm on `RecordVirtual` at 120 Hz in wave 3, with the gfx busy figure recorded.
 - `info()`: 4:2:0, 8-bit, `ColorTags::SRGB_FULL_RANGE`, which is true only with `colorimetry=1:3:7:1` on the
   conversion caps.
-- **Expect about 75–90 fps on request at 2752×2064** on this iGPU (capture → AU p50 about 15 ms). 120 fps needs a
-  smaller encode size (2064×1548: 8.6 ms with conversion), a cheaper conversion, or conversion on capture at
-  about 4 ms more latency.
+- **Expect about 70–88 fps on request at 2752×2064** on this iGPU (capture → AU p50 about 15.5–18.7 ms,
+  depending on the desktop's GFX load). 120 fps needs a smaller encode size (2064×1548: 8.6 ms with conversion) or
+  a cheaper conversion; conversion on capture costs about 4–5.5 ms more latency and reached 120 fps in only one
+  run of four.
 
 **Wave-3 acceptance items this spike didn't cover.**
 - Decode-verify the output (for example with `vah265dec`, or the iPad) after a forced IDR, after a refinement,
@@ -447,6 +508,9 @@ backend must handle:
 - Latency with changing content and the compositor's timestamp, and live AU sizes and bitrate with the framerate
   set.
 - No NVIDIA device opened: run the live tests under `nvidia-guard.sh` (or an equivalent strace check).
+- **A forced IDR always arrives within N attempts**, including after a corrupt or missing IDR, through the
+  escalation above (session rebuild or `min-qp`); test it on `text` content with a late IDR and a filled CPB.
+- The watchdog: a stalled encode gives `EncodeFailed` within its bound, followed by a keyframe request.
 
 ## Open questions
 
