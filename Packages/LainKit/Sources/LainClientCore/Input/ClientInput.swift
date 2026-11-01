@@ -143,6 +143,7 @@ public final class ClientInput: @unchecked Sendable {
     /// D19: the capture layer ties this to the pointer lock.
     public func setPointerEnabled(_ enabled: Bool) { perform { self.pipeline.pointerEnabled = enabled } }
     public func setInvertScroll(_ invert: Bool) { perform { self.pipeline.invertScroll = invert } }
+    public func setScrollScale(_ scale: Double) { perform { self.pipeline.scrollScale = scale } }
     public func setCurve(_ curve: AccelerationCurve) { perform { self.pipeline.curve = curve } }
     public func setRemapTable(_ table: RemapTable) { perform { self.pipeline.remapTable = table } }
 

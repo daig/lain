@@ -18,9 +18,10 @@ import Testing
     }
 
     @Test func rowsAreTheHostsThenTheOptions() {
-        #expect(ControlPanel.rows(hosts: hosts()) == [.host(nil), .host("A"), .host("B"), .pointerSpeed, .scrollDirection])
-        #expect(ControlPanel.rows(hosts: hosts(onCable: true)) == [.pointerSpeed, .scrollDirection], "no switching on the cable")
-        #expect(ControlPanel.rows(hosts: ClientSession.HostList()) == [.pointerSpeed, .scrollDirection])
+        let options: [ControlPanel.Row] = [.pointerSpeed, .scrollSpeed, .scrollDirection]
+        #expect(ControlPanel.rows(hosts: hosts()) == [.host(nil), .host("A"), .host("B")] + options)
+        #expect(ControlPanel.rows(hosts: hosts(onCable: true)) == options, "no switching on the cable")
+        #expect(ControlPanel.rows(hosts: ClientSession.HostList()) == options)
     }
 
     @Test func arrowsSelectAndReturnSwitchesHosts() {
@@ -46,6 +47,10 @@ import Testing
         top.pointerSpeed = 5
         #expect(panel.key(Self.right, hosts: h, preferences: top) == .none, "already the fastest")
         _ = panel.key(Self.down, hosts: h, preferences: p)
+        var slowerScroll = p
+        slowerScroll.scrollSpeed = 2
+        #expect(panel.key(Self.left, hosts: h, preferences: p) == .setPreferences(slowerScroll))
+        _ = panel.key(Self.down, hosts: h, preferences: p)
         var reversed = p
         reversed.reverseScroll = true
         #expect(panel.key(Self.left, hosts: h, preferences: p) == .setPreferences(reversed))
@@ -66,17 +71,18 @@ import Testing
         let headings = lines.filter { $0.style == .heading }.map(\.text)
         #expect(headings == ["STREAM", "HOSTS", "OPTIONS", "SHORTCUTS"])
         let rows = lines.filter { $0.row != nil }
-        #expect(rows.count == 5)
+        #expect(rows.count == 6)
         #expect(rows[0].isSelected && rows[0].text.hasPrefix("○ Automatic"))
         #expect(rows[1].text.hasPrefix("◉ Mac mini") && rows[1].text.hasSuffix("connected"))
         #expect(rows[2].text.hasSuffix("in reach"))
         #expect(rows[3].text.contains("●●●○○"))
-        #expect(rows[4].text.contains("Natural"))
+        #expect(rows[4].text.hasPrefix("Scroll speed") && rows[4].text.contains("●●●○○"))
+        #expect(rows[5].text.contains("Natural"))
 
         let cabled = panel.lines(info: nil, video: VideoStats(), host: nil, hosts: hosts(onCable: true),
                                  preferences: ClientPreferences())
         #expect(cabled.contains { $0.text.hasPrefix("the cable is in") })
-        #expect(cabled.filter { $0.row != nil }.count == 2, "the hosts are listed, not selectable")
+        #expect(cabled.filter { $0.row != nil }.count == 3, "the hosts are listed, not selectable")
     }
 
     @Test func theHostLineSaysWhyItHasNoNumbers() {
@@ -95,6 +101,8 @@ import Testing
         var p = ClientPreferences()
         p.pointerSpeed = 9
         #expect(p.pointerSpeed == 5)
+        p.scrollSpeed = 0
+        #expect(p.scrollSpeed == 1 && p.scrollScale == 0.5)
         p.reverseScroll = true
         p.save(to: defaults)
         #expect(ClientPreferences.load(from: defaults) == p)
