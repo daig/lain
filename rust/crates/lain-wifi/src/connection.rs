@@ -84,7 +84,11 @@ fn tls_error(e: openssl::error::ErrorStack) -> WiFiError {
 /// [`NegotiatedTls::REQUIRED`] opens, and the stream is bound to the secret the PSK callback recorded for
 /// this connection, which must name the identity OpenSSL reports. Swift: `NetworkStream.Core.open` on an
 /// accepted connection, then `becameReady`.
-pub(crate) async fn accept_tls(context: &SslContext, tcp: TcpStream, started_ns: u64) -> Result<WiFiConnection, WiFiError> {
+pub(crate) async fn accept_tls(
+    context: &SslContext,
+    tcp: TcpStream,
+    started_ns: u64,
+) -> Result<WiFiConnection, WiFiError> {
     let local_addr = tcp.local_addr()?;
     let peer_addr = tcp.peer_addr()?;
     let mut stream = SslStream::new(Ssl::new(context).map_err(tls_error)?, tcp).map_err(tls_error)?;

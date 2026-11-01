@@ -197,7 +197,8 @@ async fn streams_handed_over_outlive_the_listener_and_its_restart() {
 async fn the_listener_refuses_a_client_offering_only_plain_psk_suites() {
     let mut server = Server::new(&[secret_a()]);
     let psk = WiFiPsk::new(&secret_a());
-    let plain = hand_client(&psk, "PSK-CHACHA20-POLY1305:PSK-AES128-GCM-SHA256", (SslVersion::TLS1_2, SslVersion::TLS1_2));
+    let plain =
+        hand_client(&psk, "PSK-CHACHA20-POLY1305:PSK-AES128-GCM-SHA256", (SslVersion::TLS1_2, SslVersion::TLS1_2));
     assert!(hand_connect(server.addr(), &plain).await.is_err());
     assert!(matches!(next(&mut server.rejected, T).await, Some(WiFiError::Tls(_))));
     assert!(next(&mut server.accepted, Duration::from_millis(300)).await.is_none());
@@ -211,7 +212,8 @@ async fn only_ecdhe_psk_chacha20_poly1305_negotiates() {
     let mut server = Server::new(&[secret_a()]);
     let psk = WiFiPsk::new(&secret_a());
     let tls12 = (SslVersion::TLS1_2, SslVersion::TLS1_2);
-    let mixed = hand_client(&psk, "PSK-AES128-GCM-SHA256:ECDHE-PSK-AES128-CBC-SHA256:ECDHE-PSK-CHACHA20-POLY1305", tls12);
+    let mixed =
+        hand_client(&psk, "PSK-AES128-GCM-SHA256:ECDHE-PSK-AES128-CBC-SHA256:ECDHE-PSK-CHACHA20-POLY1305", tls12);
     let stream = hand_connect(server.addr(), &mixed).await.unwrap();
     assert_eq!(stream.ssl().current_cipher().unwrap().protocol_id(), [0xCC, 0xAC]);
     assert_eq!(stream.ssl().version2(), Some(SslVersion::TLS1_2));
@@ -275,7 +277,8 @@ async fn five_megabytes_arrive_intact_both_ways() {
         tokio::try_join!(client_write.write_all(&up2), server_write.write_all(&down2)).unwrap();
     });
     let (mut at_server, mut at_client) = (vec![0u8; total], vec![0u8; total]);
-    let reads = async { tokio::try_join!(server_read.read_exact(&mut at_server), client_read.read_exact(&mut at_client)) };
+    let reads =
+        async { tokio::try_join!(server_read.read_exact(&mut at_server), client_read.read_exact(&mut at_client)) };
     tokio::time::timeout(Duration::from_secs(20), reads).await.unwrap().unwrap();
     writers.await.unwrap();
     assert!(at_server == up && at_client == down);
@@ -342,7 +345,10 @@ async fn a_dial_cancelled_mid_handshake_leaves_no_connection() {
     let tcp = TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = tcp.local_addr().unwrap();
     let dial = tokio::spawn(async move {
-        WiFiDialer::new(addr, &secret_a()).timeout(Duration::from_secs(20)).connect(Some(ConnectionKind::Realtime)).await
+        WiFiDialer::new(addr, &secret_a())
+            .timeout(Duration::from_secs(20))
+            .connect(Some(ConnectionKind::Realtime))
+            .await
     });
     let (mut peer, _) = tcp.accept().await.unwrap();
     tokio::time::sleep(Duration::from_millis(100)).await;
