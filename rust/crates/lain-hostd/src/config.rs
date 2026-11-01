@@ -120,6 +120,9 @@ pub struct InputSection {
     pub pinch_threshold: f64,
     pub swap_iso_keys: bool,
     pub allow_system_keys: bool,
+    /// Right Option as lain's system key (`InputConfig::system_key`): Command with other keys, the three-finger
+    /// swipes with the arrows, the overview when tapped. On by default.
+    pub system_key: bool,
     pub command_shortcuts: Vec<ShortcutConfig>,
 }
 
@@ -148,6 +151,7 @@ impl From<&InputConfig> for InputSection {
             pinch_threshold: c.pinch_threshold,
             swap_iso_keys: c.swap_iso_keys,
             allow_system_keys: c.allow_system_keys,
+            system_key: c.system_key,
             command_shortcuts: c
                 .command_shortcuts
                 .iter()
@@ -410,6 +414,7 @@ impl Config {
             swap_iso_keys: i.swap_iso_keys,
             command_shortcuts,
             allow_system_keys: i.allow_system_keys,
+            system_key: i.system_key,
         }
     }
 

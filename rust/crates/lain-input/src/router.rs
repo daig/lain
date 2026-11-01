@@ -1,7 +1,10 @@
 //! The client's input messages → desktop input actions. Swift: `HostInputRouter` (policy) together with
 //! `InputInjector` (what it tracks as held), since here the backend only performs [`InputAction`]s.
 
-use crate::evdev::{BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, KEY_EQUAL, KEY_MINUS};
+use crate::evdev::{
+    BTN_LEFT, BTN_MIDDLE, BTN_RIGHT, KEY_A, KEY_EQUAL, KEY_H, KEY_LEFT, KEY_LEFTALT, KEY_LEFTCTRL, KEY_LEFTMETA,
+    KEY_MINUS, KEY_RIGHT,
+};
 use crate::keymap::{self, KEYBOARD_PAGE};
 use crate::modifiers::{CommandShortcut, LinuxModifier, ModifierMap, ModifierSet};
 use crate::pinch::PinchZoomMapper;
@@ -49,6 +52,12 @@ pub struct InputConfig {
     /// Send the [`keymap::SYSTEM_KEYS`] (Power, Sleep, screen lock, Eject) to the desktop. Off by default, as
     /// Swift never posts them.
     pub allow_system_keys: bool,
+    /// Right Option is lain's *system key*, standing in for what iPadOS keeps from the host (the developer's
+    /// design, 2026-11-01): held with another key it is Command (so Right Opt+B is Cmd+B, Ctrl+B here);
+    /// with the arrows it gives the three-finger swipes (Up: the overview, Down: the app grid, Left/Right: the
+    /// previous/next workspace); tapped alone, the overview. Left Option stays Alt. Cmd+Space (Spotlight, from
+    /// the client's remap) opens the overview, Cmd+H (Hide) is Super+H. On by default. New in the port.
+    pub system_key: bool,
 }
 
 impl Default for InputConfig {
@@ -61,6 +70,7 @@ impl Default for InputConfig {
             swap_iso_keys: false,
             command_shortcuts: CommandShortcut::DEFAULTS,
             allow_system_keys: false,
+            system_key: true,
         }
     }
 }
@@ -161,6 +171,13 @@ pub struct InputRouter {
     held_buttons: u8,
     /// What Command holds while a [`CommandShortcut`] is active (until Command is released).
     command_hold: Option<LinuxModifier>,
+    /// Which Option keys are down (from their own key events; the flags don't tell the sides apart).
+    left_option: bool,
+    right_option: bool,
+    /// Right Option went down and nothing else happened since: its release is a tap.
+    system_tap: bool,
+    /// The key whose press became a chord: its release sends nothing (no modifier sync either).
+    chorded: Option<u16>,
     logged_rotate: bool,
     /// Page-7 usages already logged as unknown.
     logged_usages: [u64; 4],
@@ -187,6 +204,10 @@ impl InputRouter {
             held_keys: HeldKeys::new(),
             held_buttons: 0,
             command_hold: None,
+            left_option: false,
+            right_option: false,
+            system_tap: false,
+            chorded: None,
             logged_rotate: false,
             logged_usages: [0; 4],
             logged_other_page: false,
@@ -335,6 +356,10 @@ impl InputRouter {
         self.pinch.reset();
         self.modifiers = ModifierFlags::EMPTY;
         self.command_hold = None;
+        self.left_option = false;
+        self.right_option = false;
+        self.system_tap = false;
+        self.chorded = None;
     }
 
     fn outcome(out: &[InputAction], start: usize, pointer: Option<PointF>) -> Outcome {
@@ -347,17 +372,64 @@ impl InputRouter {
         if e.is_repeat {
             return;
         }
+        self.modifiers = e.modifiers;
+        let is_modifier = keymap::modifier_flag(e.usage_page, e.usage).is_some();
+        if e.usage_page == KEYBOARD_PAGE {
+            match e.usage {
+                0xE2 => self.left_option = e.is_down,
+                0xE6 => {
+                    self.right_option = e.is_down;
+                    if e.is_down {
+                        self.system_tap = self.config.system_key;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if !e.modifiers.contains(ModifierFlags::OPTION) {
+            (self.left_option, self.right_option) = (false, false);
+        }
+        let system_held = self.system_key_held();
+        let flags = self.effective(e.modifiers, !is_modifier);
         if e.is_down
             && e.usage_page == KEYBOARD_PAGE
-            && e.modifiers.contains(ModifierFlags::COMMAND)
+            && flags.contains(ModifierFlags::COMMAND)
             && let Some(s) = self.config.command_shortcuts.iter().find(|s| s.usage == e.usage)
         {
             self.command_hold = Some(s.hold);
         }
-        self.sync_modifiers(e.modifiers, out);
-        if keymap::modifier_flag(e.usage_page, e.usage).is_some() {
+        if is_modifier {
+            // Right Option released with nothing else in between: a tap, the overview.
+            let tapped = !e.is_down && e.usage_page == KEYBOARD_PAGE && e.usage == 0xE6 && self.system_tap;
+            self.sync_with(flags, out);
+            if tapped {
+                self.system_tap = false;
+                self.chord(&[KEY_LEFTMETA], None, out);
+            }
             return; // a modifier key's effect is the modifier state it carries
         }
+        self.system_tap = false;
+        if !e.is_down && e.usage_page == KEYBOARD_PAGE && self.chorded == Some(e.usage) {
+            self.chorded = None;
+            return;
+        }
+        if e.is_down && e.usage_page == KEYBOARD_PAGE && self.config.system_key {
+            let swipe: Option<(&[u16], u16)> = match (system_held, e.usage) {
+                (true, 0x52) => Some((&[], KEY_LEFTMETA)), // Up: the overview (a Super tap)
+                (true, 0x51) => Some((&[KEY_LEFTMETA], KEY_A)), // Down: the app grid
+                (true, 0x50) => Some((&[KEY_LEFTCTRL, KEY_LEFTALT], KEY_LEFT)), // Left: previous workspace
+                (true, 0x4F) => Some((&[KEY_LEFTCTRL, KEY_LEFTALT], KEY_RIGHT)), // Right: next workspace
+                (_, 0x2C) if flags.contains(ModifierFlags::COMMAND) => Some((&[], KEY_LEFTMETA)), // Spotlight
+                (_, 0x0B) if flags.contains(ModifierFlags::COMMAND) => Some((&[KEY_LEFTMETA], KEY_H)), // Hide
+                _ => None,
+            };
+            if let Some((mods, key)) = swipe {
+                self.chord(mods, Some(key), out);
+                self.chorded = Some(e.usage);
+                return;
+            }
+        }
+        self.sync_with(flags, out);
         let Some(code) = self.code(e.usage_page, e.usage) else { return };
         let changed = if e.is_down { self.held_keys.insert(code) } else { self.held_keys.remove(code) };
         if changed {
@@ -396,6 +468,52 @@ impl InputRouter {
     /// order of [`ModifierSet::iter`].
     fn sync_modifiers(&mut self, flags: ModifierFlags, out: &mut Vec<InputAction>) {
         self.modifiers = flags;
+        let flags = self.effective(flags, true);
+        self.sync_with(flags, out);
+    }
+
+    /// Right Option is held, and not Left Option: the system key.
+    fn system_key_held(&self) -> bool {
+        self.config.system_key && self.right_option && !self.left_option
+    }
+
+    /// The client's flags with the system key applied: Right Option alone is Command when `as_command` (a key
+    /// or a button with it), else nothing (until another key comes, so a tap presses no modifier).
+    fn effective(&self, flags: ModifierFlags, as_command: bool) -> ModifierFlags {
+        if !(self.system_key_held() && flags.contains(ModifierFlags::OPTION)) {
+            return flags;
+        }
+        let without = flags - ModifierFlags::OPTION;
+        if as_command { without | ModifierFlags::COMMAND } else { without }
+    }
+
+    /// Sends `key` (if any) with `mods` held, alone: the modifiers held now are released first (the next event
+    /// presses what it needs again), so the desktop sees exactly this chord.
+    fn chord(&mut self, mods: &[u16], key: Option<u16>, out: &mut Vec<InputAction>) {
+        for m in self.held_modifiers.iter().rev() {
+            out.push(InputAction::Key { code: m.key(), down: false });
+        }
+        self.held_modifiers = ModifierSet::EMPTY;
+        let (mods, key) = match key {
+            // A lone modifier tap (`mods` empty and `key` a modifier, or `key` None).
+            Some(k) if mods.is_empty() => (vec![k], None),
+            k => (mods.to_vec(), k),
+        };
+        for &m in &mods {
+            out.push(InputAction::Key { code: m, down: true });
+        }
+        if let Some(k) = key {
+            out.push(InputAction::Key { code: k, down: true });
+            out.push(InputAction::Key { code: k, down: false });
+        }
+        for &m in mods.iter().rev() {
+            out.push(InputAction::Key { code: m, down: false });
+        }
+    }
+
+    /// Like [`sync_modifiers`](Self::sync_modifiers) with the system key already applied to `flags`; the
+    /// client's own flags are recorded by the caller.
+    fn sync_with(&mut self, flags: ModifierFlags, out: &mut Vec<InputAction>) {
         if !flags.contains(ModifierFlags::COMMAND) {
             self.command_hold = None;
         }
