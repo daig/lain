@@ -5,7 +5,9 @@ at 120 Hz with changing content.
 Creates the virtual monitor (2752x2064@120, scale 2, right of the physical monitor, temporarily), opens
 gtkprobe.py fullscreen on it (it animates every frame and logs the input it gets), moves the pointer over it
 and scrolls with each combination of flags. One Shift press and release goes to the probe window. The pointer
-goes back where it was at the end.
+goes back where it was at the end. Before the first scroll, before every scroll case and before the Shift, the
+virtual stream's cursor metadata must put the pointer inside the virtual monitor (require_pointer_on);
+otherwise the run stops there.
 
 The probe window takes keyboard focus for the few seconds it is open.
 """
@@ -16,7 +18,7 @@ import subprocess
 import time
 
 from mutter import (AXIS_CONTINUOUS, AXIS_FINGER, AXIS_FINISH, AXIS_WHEEL, HERE, KEY_LEFTSHIFT, DisplayConfig,
-                    Probe, Session, emit, log, pump, pump_until)
+                    Probe, Session, emit, log, pump, pump_until, require_pointer_on)
 
 W, H, FPS = 2752, 2064, 120
 PHYS = "HDMI-1"
@@ -56,8 +58,9 @@ def main():
         ppath = s.record_monitor(PHYS)
         s.start()
         assert s.wait_nodes(5)
-        vprobe = Probe(s.node(vpath), W, H, FPS, 60)
-        pprobe = Probe(s.node(ppath), 3840, 2160, 60, 60)
+        probe_s = 60 + int(float(os.environ.get("HOME_WAIT", "15")))
+        vprobe = Probe(s.node(vpath), W, H, FPS, probe_s)
+        pprobe = Probe(s.node(ppath), 3840, 2160, 60, probe_s)
         assert pump_until(lambda: vprobe.first("format") and pprobe.first("format"), 5)
         assert pump_until(lambda: any(m["connector"] != PHYS for m in dc.state()["monitors"]), 5)
         st = dc.state()
@@ -66,7 +69,10 @@ def main():
         dc.apply(1, [(0, 0, 1.0, 0, True, [(PHYS, pmode)]),
                      (3840, 0, 2.0, 0, False, [(v["connector"], v["current_mode"]["id"])])])
         pump(0.7)
-        pump_until(lambda: pprobe.of("cursor"), 2)
+        # The physical stream's metadata says "hidden" while GNOME hides the pointer (when someone types); wait
+        # up to HOME_WAIT seconds for a visible position.
+        pump_until(lambda: pprobe.of("cursor") and pprobe.of("cursor")[-1].get("valid"),
+                   float(os.environ.get("HOME_WAIT", "15")))
         home = pprobe.of("cursor")[-1] if pprobe.of("cursor") else None
         if not home or not home.get("valid"):
             emit("error", what="pointer position unknown; not injecting")
@@ -76,6 +82,7 @@ def main():
         # pointer onto the virtual monitor first (crossing the shared edge away from its top), then the window
         s.move_abs(vpath, 688, 516)
         pump(0.2)
+        emit("on_virtual", virtual_meta=require_pointer_on(vprobe, W, H, "anything"))
         gtk = Gtk(v["connector"], 14)
         assert pump_until(lambda: any(e["ev"] == "ready" for e in gtk.poll()), 6), "probe window not ready"
         emit("gtk_ready", ready=next(e for e in gtk.events if e["ev"] == "ready"))
@@ -104,6 +111,7 @@ def main():
         ]
         for label, steps in cases:
             pump(0.4)
+            require_pointer_on(vprobe, W, H, f"axis case {label}")
             n = len(gtk.poll())
             if isinstance(steps, str):
                 s.axis_discrete(int(steps[1]), int(steps[2:]))
@@ -116,6 +124,7 @@ def main():
                                          if e["ev"] in ("scroll", "scroll-begin", "scroll-end", "decelerate")])
 
         n = len(gtk.poll())
+        require_pointer_on(vprobe, W, H, "Shift")
         s.key(KEY_LEFTSHIFT, True)
         s.key(KEY_LEFTSHIFT, False)
         pump(0.3)

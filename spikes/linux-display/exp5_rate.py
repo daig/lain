@@ -49,6 +49,8 @@ def run(fps, scale, dc_before):
                       if ready and a["t"] > ready["t"] and b["t"] < ready["t"] + 3.5)
         emit("rate", requested_fps=fps, scale=scale, mode=v["current_mode"]["id"],
              negotiated=probe.first("format")["max_framerate"],
+             # the modifier of the last format event (a scale change renegotiates); 0 is LINEAR, or shm
+             modifier=hex(probe.of("format")[-1]["modifier"]),
              gtk_refresh_mhz=ready and ready["monitor"]["refresh_mhz"],
              gtk_ticks_per_s=[e["per_second"] for e in evs if e["ev"] == "frames"][1:],
              pictures_per_s=[e["window_pictures"] for e in stats[-4:]],
