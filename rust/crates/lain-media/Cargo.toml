@@ -9,6 +9,12 @@ publish.workspace = true
 [dependencies]
 lain-proto.workspace = true
 lain-platform.workspace = true
+thiserror.workspace = true
+tracing.workspace = true
+
+[dev-dependencies]
+lain-platform = { workspace = true, features = ["fake"] }
+tokio = { workspace = true, features = ["rt", "macros", "sync"] }
 
 [lints]
 workspace = true
