@@ -163,8 +163,17 @@ impl Gpu for GpuPipeline {
         self.encoder().submit(id, kind).map_err(|e| e.to_string())
     }
 
+    /// The access unit, once checked: an SPS from the driver must declare the stream's visible size
+    /// ([`crate::bitstream::check_sps_size`]: Mesa writes its own SPS at its own alignment, and keeps lain's
+    /// conformance window). A driver that aligns otherwise fails every IDR, so the engine's escalation ends the
+    /// session with the reason, rather than stream a picture the client decodes at another size.
     fn poll_encode(&mut self, timeout_ns: u64) -> Option<Result<Vec<u8>, String>> {
-        self.encoder().poll(timeout_ns).map(|r| r.map(|p| p.annexb).map_err(|e| e.to_string()))
+        let visible = (self.settings.encoder.width, self.settings.encoder.height);
+        self.encoder().poll(timeout_ns).map(|r| {
+            let annexb = r.map(|p| p.annexb).map_err(|e| e.to_string())?;
+            crate::bitstream::check_sps_size(&annexb, visible)?;
+            Ok(annexb)
+        })
     }
 
     fn rebuild_encoder(&mut self) -> Result<(), String> {

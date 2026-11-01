@@ -67,7 +67,7 @@ pub trait DisplayBackend: Send + Sync + 'static {
     ///
     /// Cancel-safe: if the future is dropped before it completes, the backend removes whatever it had
     /// created by then (Swift: `HostVideoPipeline.abandonStart`), and a later `create` isn't refused
-    /// for it.
+    /// for it. An `Err` likewise leaves nothing behind, so the caller doesn't `destroy` after one.
     fn create(&self, spec: DisplaySpec) -> impl Future<Output = Result<(StreamedDisplay, Self::Source)>> + Send;
 
     /// Removes the display and returns once it has left the monitor list (Swift: `destroy` followed by

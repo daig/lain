@@ -425,6 +425,161 @@ pub fn slice_header_qp(idr: bool, poc: u32, qp_delta: i32) -> Vec<u8> {
     nal(if idr { nal_type::IDR_W_RADL } else { nal_type::TRAIL_R }, &w)
 }
 
+// ---- reading the driver's SPS back: the visible size the client will decode
+
+/// Reads an RBSP MSB first, bounds-checked: every read past the end is `None`, so no input panics.
+struct RbspReader {
+    rbsp: Vec<u8>,
+    pos: usize,
+}
+
+impl RbspReader {
+    /// A NAL unit (from its 2-byte header, no start code): the bytes after the header with emulation
+    /// prevention removed, and the unit's type.
+    fn from_nal(unit: &[u8]) -> Option<(u8, Self)> {
+        let (&first, rest) = unit.split_first()?;
+        let body = rest.get(1..)?;
+        let mut rbsp = Vec::with_capacity(body.len());
+        let mut zeros = 0;
+        for &b in body {
+            if zeros >= 2 && b == 3 {
+                zeros = 0;
+                continue;
+            }
+            rbsp.push(b);
+            zeros = if b == 0 { zeros + 1 } else { 0 };
+        }
+        Some(((first >> 1) & 0x3F, Self { rbsp, pos: 0 }))
+    }
+
+    fn u(&mut self, n: u32) -> Option<u32> {
+        debug_assert!(n <= 32);
+        let mut v = 0u64;
+        for _ in 0..n {
+            let byte = *self.rbsp.get(self.pos / 8)?;
+            v = (v << 1) | u64::from((byte >> (7 - self.pos % 8)) & 1);
+            self.pos += 1;
+        }
+        Some(v as u32)
+    }
+
+    fn skip(&mut self, n: usize) -> Option<()> {
+        self.pos = self.pos.checked_add(n)?;
+        (self.pos <= self.rbsp.len() * 8).then_some(())
+    }
+
+    /// `ue(v)`, up to 32 bits of value (more leading zeros is no valid SPS field).
+    fn ue(&mut self) -> Option<u32> {
+        let mut zeros = 0;
+        while self.u(1)? == 0 {
+            zeros += 1;
+            if zeros > 31 {
+                return None;
+            }
+        }
+        let rest = u64::from(self.u(zeros)?);
+        u32::try_from((1u64 << zeros) + rest - 1).ok()
+    }
+}
+
+/// The visible size an SPS NAL unit (from its 2-byte header, no start code) declares: its coded
+/// `pic_width/height_in_luma_samples` less its conformance window (H.265 7.3.2.2, read only that far). `None`
+/// if the unit isn't an SPS or can't be read. Never panics.
+///
+/// The engine's check of what the driver wrote: Mesa rewrites the SPS at its own alignment and keeps lain's
+/// window ([`CODED_ALIGN`]), so a driver aligning differently would make the client decode another size.
+pub fn sps_visible_size(unit: &[u8]) -> Option<(u32, u32)> {
+    let (t, mut r) = RbspReader::from_nal(unit)?;
+    if t != nal_type::SPS {
+        return None;
+    }
+    r.u(4)?; // sps_video_parameter_set_id
+    let max_sub_layers_minus1 = r.u(3)? as usize;
+    r.u(1)?; // sps_temporal_id_nesting_flag
+    // profile_tier_level(1, max_sub_layers_minus1): the general part is 96 bits.
+    r.skip(96)?;
+    let mut present = Vec::with_capacity(max_sub_layers_minus1);
+    for _ in 0..max_sub_layers_minus1 {
+        present.push((r.u(1)? == 1, r.u(1)? == 1));
+    }
+    if max_sub_layers_minus1 > 0 {
+        r.skip(2 * (8 - max_sub_layers_minus1))?; // reserved_zero_2bits
+    }
+    for (profile, level) in present {
+        if profile {
+            r.skip(88)?;
+        }
+        if level {
+            r.skip(8)?;
+        }
+    }
+    r.ue()?; // sps_seq_parameter_set_id
+    let chroma_format_idc = r.ue()?;
+    if chroma_format_idc == 3 {
+        r.u(1)?; // separate_colour_plane_flag
+    }
+    let (width, height) = (r.ue()?, r.ue()?);
+    // SubWidthC and SubHeightC (Table 6-1).
+    let (sub_w, sub_h) = match chroma_format_idc {
+        1 => (2, 2),
+        2 => (2, 1),
+        _ => (1, 1),
+    };
+    let (mut crop_w, mut crop_h) = (0u64, 0u64);
+    if r.u(1)? == 1 {
+        let (left, right, top, bottom) = (r.ue()?, r.ue()?, r.ue()?, r.ue()?);
+        crop_w = sub_w * (u64::from(left) + u64::from(right));
+        crop_h = sub_h * (u64::from(top) + u64::from(bottom));
+    }
+    let visible_w = u64::from(width).checked_sub(crop_w)?;
+    let visible_h = u64::from(height).checked_sub(crop_h)?;
+    Some((u32::try_from(visible_w).ok()?, u32::try_from(visible_h).ok()?))
+}
+
+/// The NAL units of an Annex-B access unit, each from its header, without its start code (trailing zero bytes,
+/// which belong to the next start code, trimmed).
+pub fn nal_units(annexb: &[u8]) -> Vec<&[u8]> {
+    let mut starts = Vec::new();
+    let mut i = 0;
+    while i + 2 < annexb.len() {
+        if annexb[i] == 0 && annexb[i + 1] == 0 && annexb[i + 2] == 1 {
+            starts.push(i + 3);
+            i += 3;
+        } else {
+            i += 1;
+        }
+    }
+    starts
+        .iter()
+        .enumerate()
+        .map(|(k, &at)| {
+            let end = starts.get(k + 1).map_or(annexb.len(), |&n| n - 3);
+            let unit = &annexb[at..end.max(at)];
+            unit.iter().rposition(|&b| b != 0).map_or(&unit[..0], |last| &unit[..=last])
+        })
+        .collect()
+}
+
+/// Checks the SPS an access unit carries, if any, against the visible size lain streams: `Err` (worded for
+/// the owner) when the driver's SPS would make the client decode another size, or can't be read.
+pub fn check_sps_size(annexb: &[u8], visible: (u32, u32)) -> Result<(), String> {
+    for unit in nal_units(annexb) {
+        if unit.first().map(|b| (b >> 1) & 0x3F) != Some(nal_type::SPS) {
+            continue;
+        }
+        return match sps_visible_size(unit) {
+            Some(size) if size == visible => Ok(()),
+            Some((w, h)) => Err(format!(
+                "the encoder's SPS declares {w}×{h}, not lain's {}×{} (its coded-size alignment isn't {}×{}, \
+                 so lain's conformance window is wrong for this driver)",
+                visible.0, visible.1, CODED_ALIGN.0, CODED_ALIGN.1
+            )),
+            None => Err("the encoder's SPS can't be read".into()),
+        };
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -689,6 +844,41 @@ pub(crate) mod tests {
             assert_eq!(sps.visible(), (w, h));
             assert!(sps.coded.0.is_multiple_of(64) && sps.coded.1.is_multiple_of(16), "{w}×{h}: {:?}", sps.coded);
         }
+    }
+
+    /// The production reader agrees with the test parser on every size lain streams, and never panics.
+    #[test]
+    fn the_visible_size_is_read_back_from_an_sps() {
+        for (w, h) in [(2752, 2064), (1366, 770), (1920, 1080), (2732, 2048), (2420, 1668), (2388, 1668), (192, 128)] {
+            let headers = SequenceHeaders::new(w, h, 120, 60_000_000);
+            let sps = headers.sps();
+            let unit = &sps[4..];
+            assert_eq!(sps_visible_size(unit), Some((w, h)), "{w}×{h}");
+            assert_eq!(sps_visible_size(unit), Some(parse_sps(&sps).visible()));
+            let mut au = headers.parameter_sets();
+            au.extend(slice_header(true, 0));
+            assert_eq!(check_sps_size(&au, (w, h)), Ok(()));
+            assert!(check_sps_size(&au, (w + 2, h)).unwrap_err().contains(&format!("declares {w}×{h}")));
+            // Every truncation and a wrong type: None, no panic.
+            for len in 0..unit.len() {
+                let _ = sps_visible_size(&unit[..len]);
+            }
+            assert_eq!(sps_visible_size(&headers.pps()[4..]), None);
+        }
+        // An AU without parameter sets (a P picture) has nothing to check.
+        assert_eq!(check_sps_size(&slice_header(false, 1), (2752, 2064)), Ok(()));
+    }
+
+    #[test]
+    fn nal_units_split_an_access_unit() {
+        let h = SequenceHeaders::new(2752, 2064, 120, 60_000_000);
+        let mut au = vec![0];
+        au.extend(h.parameter_sets());
+        au.extend(slice_header(true, 0));
+        let types: Vec<u8> = nal_units(&au).iter().map(|u| (u[0] >> 1) & 0x3F).collect();
+        assert_eq!(types, [nal_type::VPS, nal_type::SPS, nal_type::PPS, nal_type::IDR_W_RADL]);
+        assert!(nal_units(&[]).is_empty());
+        assert!(nal_units(&[0, 0, 1]).iter().all(|u| u.is_empty()));
     }
 
     #[test]

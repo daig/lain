@@ -489,7 +489,7 @@ impl<G: Gpu> Engine<G> {
                     tracing::debug!(frame_id, "the encoder yielded nothing in time");
                     self.emit(VideoEvent::EncodeFailed { frame_id });
                     self.stats.failed += 1;
-                    if let Flow::Exit = self.encode_failed(idr) {
+                    if let Flow::Exit = self.encode_failed(idr, "no access unit in time") {
                         return Flow::Exit;
                     }
                 }
@@ -550,7 +550,7 @@ impl<G: Gpu> Engine<G> {
                     tracing::debug!(frame_id = request.frame_id, "submitting the encode failed: {e}");
                     self.emit(VideoEvent::EncodeFailed { frame_id: request.frame_id });
                     self.stats.failed += 1;
-                    if let Flow::Exit = self.encode_failed(idr) {
+                    if let Flow::Exit = self.encode_failed(idr, &e) {
                         return Flow::Exit;
                     }
                 }
@@ -589,13 +589,14 @@ impl<G: Gpu> Engine<G> {
                 tracing::debug!(frame_id, idr = job.idr, "the encode produced no usable access unit: {why}");
                 self.emit(VideoEvent::EncodeFailed { frame_id });
                 self.stats.failed += 1;
-                self.encode_failed(job.idr)
+                self.encode_failed(job.idr, &why)
             }
         }
     }
 
-    /// After a failed picture: the next one is an IDR, and failed IDRs escalate to a rebuild.
-    fn encode_failed(&mut self, idr: bool) -> Flow {
+    /// After a failed picture (`why`): the next one is an IDR, and failed IDRs escalate to a rebuild, whose
+    /// reason (and so a fatal end's) carries the last failure.
+    fn encode_failed(&mut self, idr: bool, why: &str) -> Flow {
         self.need_idr = true;
         if idr {
             self.failed_idrs += 1;
@@ -605,7 +606,7 @@ impl<G: Gpu> Engine<G> {
                     job.timed_out = true;
                 }
                 self.encoding = None;
-                return self.rebuild(format!("{} IDRs failed in a row", self.failed_idrs));
+                return self.rebuild(format!("{} IDRs failed in a row, the last: {why}", self.failed_idrs));
             }
         }
         Flow::Go
@@ -1060,6 +1061,7 @@ pub(crate) mod tests {
             id += 1;
         };
         assert!(end.to_string().contains("keeps failing"), "{end}");
+        assert!(end.to_string().contains("IDRs failed in a row, the last: "), "the reason is kept: {end}");
         assert_eq!(h.next(), None, "nothing follows Failed");
         assert_eq!(h.gpu.state().rebuilds, 1 + 3);
         assert_eq!(*lock(&h.capture_stops), 1, "capture is stopped");

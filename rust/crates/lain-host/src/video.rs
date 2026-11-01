@@ -62,9 +62,10 @@ struct Shared {
 /// client's `Hello`, starts capture and encode on it, and drives a [`VideoPipeline`] and a [`CursorMonitor`]
 /// in a task of its own until it is stopped or capture ends, then stops the capture and removes the display.
 ///
-/// [`stop`](Self::stop) is synchronous: nothing is sent once it returns; the capture stop and the display's
-/// removal finish in the background ([`wait_until_stopped`](Self::wait_until_stopped)). A stop while the
-/// display is still being created drops the creation, which the backend undoes (`create` is cancel-safe).
+/// [`stop`](Self::stop) is synchronous: no new output starts once it returns (one message already past the
+/// check may still go out); the capture stop and the display's removal finish in the background
+/// ([`wait_until_stopped`](Self::wait_until_stopped)). A stop while the display is still being created drops
+/// the creation, which the backend undoes (`create` is cancel-safe).
 pub(crate) struct SessionVideo {
     stop: Cancel,
     /// No display made by this video exists (true before start and after teardown).
