@@ -188,6 +188,8 @@ fn config() -> impl Strategy<Value = (InputConfig, KeyboardType)> {
                     swap_iso_keys: swap,
                     command_shortcuts: if shortcuts { CommandShortcut::DEFAULTS } else { &[] },
                     allow_system_keys: system,
+                    // The system key (Right Option) is covered by tests/router.rs; this model predates it.
+                    system_key: false,
                     ..InputConfig::default()
                 },
                 if iso { KeyboardType::Iso } else { KeyboardType::Ansi },

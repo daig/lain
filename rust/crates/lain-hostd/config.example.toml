@@ -40,6 +40,10 @@
 # swap_iso_keys = false
 # Pass Power, Sleep, screen lock and Eject on to the desktop (the Mac host never does).
 # allow_system_keys = false
+# Right Option is lain's system key, for what iPadOS keeps from the host: held with a key it is Command (Ctrl here);
+# with the arrows it gives the three-finger swipes (Up: the overview, Down: the app grid, Left/Right: the previous or
+# next workspace); tapped alone, the overview. Left Option stays Alt.
+# system_key = true
 # Command combinations that hold another desktop modifier while Command is down. A usage is a HID keyboard
 # usage (0x2B is Tab, 0x35 the key left of 1); the defaults make Cmd-Tab and Cmd-backtick GNOME's switchers
 # (Alt held). An empty list turns them off.

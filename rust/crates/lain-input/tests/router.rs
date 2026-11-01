@@ -560,7 +560,7 @@ fn command_c_is_ctrl_c() {
 
 #[test]
 fn right_hand_modifiers_hold_the_same_key() {
-    let mut r = Rig::new();
+    let mut r = Rig::with(InputConfig { system_key: false, ..InputConfig::default() });
     r.send(key(0xE7, true, M::COMMAND));
     r.send(key(0xE6, true, M::COMMAND | M::OPTION));
     r.send(key(0xE5, true, M::COMMAND | M::OPTION | M::SHIFT));
@@ -600,8 +600,8 @@ fn the_clients_hold_remap() {
         key(0xE2, true, M::OPTION),
         key(0xE2, false, M::EMPTY),  // the remap releases the source…
         key(0xE3, true, M::COMMAND), // …presses the target…
-        key(0x0B, true, M::COMMAND), // …then the key
-        key(0x0B, false, M::COMMAND),
+        key(0x14, true, M::COMMAND), // …then the key
+        key(0x14, false, M::COMMAND),
         key(0xE3, false, M::EMPTY), // Option lifted: the target is released
     ];
     for m in messages {
@@ -609,7 +609,7 @@ fn the_clients_hold_remap() {
     }
     assert_eq!(
         r.take(),
-        [down(KEY_LEFTALT), up(KEY_LEFTALT), down(KEY_LEFTCTRL), down(KEY_H), up(KEY_H), up(KEY_LEFTCTRL)]
+        [down(KEY_LEFTALT), up(KEY_LEFTALT), down(KEY_LEFTCTRL), down(KEY_Q), up(KEY_Q), up(KEY_LEFTCTRL)]
     );
 }
 
@@ -1212,4 +1212,90 @@ fn modifiers_release_in_a_fixed_order() {
     r.send(key(0xE3, true, M::SHIFT | M::COMMAND));
     assert_eq!(r.take(), [down(KEY_LEFTSHIFT), down(KEY_LEFTCTRL)]);
     assert_eq!(r.release_all(), [up(KEY_LEFTSHIFT), up(KEY_LEFTCTRL)]);
+}
+
+// MARK: The system key (Right Option)
+
+const RIGHT_OPTION: u16 = 0xE6;
+
+/// Right Option + arrows: the three-finger swipes, as GNOME's shortcuts, each chord alone (no Alt, no stray
+/// Super), and the arrow's release sends nothing.
+#[test]
+fn the_system_key_with_arrows_is_the_three_finger_swipes() {
+    let mut r = Rig::new();
+    let cases: [(u16, Vec<InputAction>); 4] = [
+        (0x52, vec![down(KEY_LEFTMETA), up(KEY_LEFTMETA)]),
+        (0x51, vec![down(KEY_LEFTMETA), down(KEY_A), up(KEY_A), up(KEY_LEFTMETA)]),
+        (
+            0x50,
+            vec![
+                down(KEY_LEFTCTRL),
+                down(KEY_LEFTALT),
+                down(KEY_LEFT),
+                up(KEY_LEFT),
+                up(KEY_LEFTALT),
+                up(KEY_LEFTCTRL),
+            ],
+        ),
+        (
+            0x4F,
+            vec![
+                down(KEY_LEFTCTRL),
+                down(KEY_LEFTALT),
+                down(KEY_RIGHT),
+                up(KEY_RIGHT),
+                up(KEY_LEFTALT),
+                up(KEY_LEFTCTRL),
+            ],
+        ),
+    ];
+    for (arrow, want) in cases {
+        r.send(key(RIGHT_OPTION, true, M::OPTION));
+        r.send(key(arrow, true, M::OPTION));
+        r.send(key(arrow, false, M::OPTION));
+        r.send(key(RIGHT_OPTION, false, M::EMPTY));
+        assert_eq!(r.take(), want, "arrow {arrow:#x}");
+    }
+}
+
+/// A Right Option tap alone opens the overview; held with a key, it is Command (Ctrl here); Left Option stays
+/// Alt, and its arrows are plain arrows.
+#[test]
+fn the_system_key_taps_and_holds_as_command() {
+    let mut r = Rig::new();
+    r.send(key(RIGHT_OPTION, true, M::OPTION));
+    r.send(key(RIGHT_OPTION, false, M::EMPTY));
+    assert_eq!(r.take(), [down(KEY_LEFTMETA), up(KEY_LEFTMETA)]);
+
+    r.send(key(RIGHT_OPTION, true, M::OPTION));
+    r.send(key(0x05, true, M::OPTION)); // B
+    r.send(key(0x05, false, M::OPTION));
+    r.send(key(RIGHT_OPTION, false, M::EMPTY));
+    assert_eq!(r.take(), [down(KEY_LEFTCTRL), down(KEY_B), up(KEY_B), up(KEY_LEFTCTRL)], "Cmd+B, no tap");
+
+    r.send(key(0xE2, true, M::OPTION));
+    r.send(key(0x50, true, M::OPTION));
+    r.send(key(0x50, false, M::OPTION));
+    r.send(key(0xE2, false, M::EMPTY));
+    assert_eq!(r.take(), [down(KEY_LEFTALT), down(KEY_LEFT), up(KEY_LEFT), up(KEY_LEFTALT)]);
+}
+
+/// The client's remapped Spotlight and Hide (Opt-Space, Opt-H arrive as Cmd-Space, Cmd-H): the overview and
+/// Super+H.
+#[test]
+fn spotlight_and_hide_become_the_overview_and_super_h() {
+    let mut r = Rig::new();
+    for (usage, want) in [
+        (0x2C, vec![down(KEY_LEFTCTRL), up(KEY_LEFTCTRL), down(KEY_LEFTMETA), up(KEY_LEFTMETA)]),
+        (
+            0x0B,
+            vec![down(KEY_LEFTCTRL), up(KEY_LEFTCTRL), down(KEY_LEFTMETA), down(KEY_H), up(KEY_H), up(KEY_LEFTMETA)],
+        ),
+    ] {
+        r.send(key(0xE3, true, M::COMMAND));
+        r.send(key(usage, true, M::COMMAND));
+        r.send(key(usage, false, M::COMMAND));
+        r.send(key(0xE3, false, M::EMPTY));
+        assert_eq!(r.take(), want, "usage {usage:#x}");
+    }
 }
