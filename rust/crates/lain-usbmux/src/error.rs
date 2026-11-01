@@ -4,18 +4,20 @@ use std::time::Duration;
 
 /// What can go wrong talking to usbmuxd (Swift: `USBMuxError`).
 ///
-/// Intended difference: Swift folds every POSIX failure into `posix(String, Int32)`. Here, failing to reach
-/// the daemon's socket is its own case, [`UsbMuxError::Unavailable`], because on Linux it is the normal state
-/// with no iOS device attached: libimobiledevice's usbmuxd is started by udev for the first device and exits
-/// after the last (`usbmuxd --systemd` implies `--enable-exit`), and it doesn't unlink its socket on exit, so
-/// the path is either missing (`NotFound`) or stale (`ConnectionRefused`). Swift's receive timeout, also a
-/// `posix` error there, is [`UsbMuxError::Timeout`].
+/// Intended difference: Swift folds every POSIX failure into `posix(String, Int32)`. Here, the daemon not
+/// running is its own case, [`UsbMuxError::Unavailable`], because on Linux it is the normal state with no iOS
+/// device attached: libimobiledevice's usbmuxd is started by udev for the first device and exits after the
+/// last (`usbmuxd --systemd` implies `--enable-exit`), and it doesn't unlink its socket on exit, so the path is
+/// either missing (`NotFound`) or stale (`ConnectionRefused`). Any other failure to connect (a permission
+/// error, say) is [`UsbMuxError::Io`] with op `"connect"`. Swift's receive timeout, also a `posix` error there,
+/// is [`UsbMuxError::Timeout`].
 #[derive(Debug, thiserror::Error)]
 pub enum UsbMuxError {
-    /// The daemon's socket couldn't be reached.
+    /// The daemon isn't running: connecting to its socket failed with `NotFound` (no socket file) or
+    /// `ConnectionRefused` (a stale one). Nothing else is reported this way.
     #[error("usbmuxd is not running at {}: {source}", path.display())]
     Unavailable { path: PathBuf, source: io::Error },
-    /// Any other socket error (Swift: `posix`).
+    /// Any other socket error, including any other failure to connect (op `"connect"`) (Swift: `posix`).
     #[error("usbmuxd {op}: {source}")]
     Io { op: &'static str, source: io::Error },
     /// A packet that isn't what the protocol allows (Swift: `protocolError`).

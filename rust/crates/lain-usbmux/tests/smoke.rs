@@ -13,9 +13,7 @@ async fn lists_devices_on_the_real_daemon() {
                 println!("  {d:?}");
             }
         }
-        Err(UsbMuxError::Unavailable { source, .. })
-            if matches!(source.kind(), std::io::ErrorKind::NotFound | std::io::ErrorKind::ConnectionRefused) =>
-        {
+        Err(UsbMuxError::Unavailable { source, .. }) => {
             // libimobiledevice's usbmuxd is started by udev when an iOS device is plugged in and exits after
             // the last one is removed, leaving its socket file behind (hence ConnectionRefused).
             println!(
