@@ -7,7 +7,7 @@ use std::pin::Pin;
 use std::time::Duration;
 
 use lain_wifi::*;
-use openssl::ssl::{Ssl, SslContext, SslMethod, SslVerifyMode, SslVersion};
+use openssl::ssl::{Ssl, SslContext, SslContextBuilder, SslMethod, SslVerifyMode, SslVersion};
 use tokio::net::TcpStream;
 use tokio::sync::mpsc;
 use tokio_openssl::SslStream;
@@ -84,6 +84,11 @@ impl Server {
 
 /// A TLS 1.2 client lain didn't build, for the suite checks (D29): `psk` with OpenSSL's `ciphers`.
 pub fn hand_client(psk: &WiFiPsk, ciphers: &str, versions: (SslVersion, SslVersion)) -> SslContext {
+    hand_client_builder(psk, ciphers, versions).build()
+}
+
+/// [`hand_client`], before it is built (to set groups or a session cache).
+pub fn hand_client_builder(psk: &WiFiPsk, ciphers: &str, versions: (SslVersion, SslVersion)) -> SslContextBuilder {
     let mut b = SslContext::builder(SslMethod::tls_client()).unwrap();
     b.set_min_proto_version(Some(versions.0)).unwrap();
     b.set_max_proto_version(Some(versions.1)).unwrap();
@@ -97,7 +102,7 @@ pub fn hand_client(psk: &WiFiPsk, ciphers: &str, versions: (SslVersion, SslVersi
         k[..32].copy_from_slice(&key);
         Ok(32)
     });
-    b.build()
+    b
 }
 
 /// A TLS 1.2 PSK server lain didn't build, holding `psk`, with OpenSSL's `ciphers`.

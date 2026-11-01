@@ -368,3 +368,96 @@ async fn a_full_queue_closes_the_connection() {
     assert!(rx.try_recv().is_ok());
     assert!(rx.try_recv().is_err());
 }
+
+/// Swift's `refresh()` leaves `status` alone when nothing changed: a refresh with the same keys, or still none,
+/// wakes no status receiver (each USB link-up refreshes; the daemon re-advertises on a change).
+#[tokio::test]
+async fn a_refresh_that_changes_nothing_leaves_the_status_watch_quiet() {
+    let store = MemorySecretStore::with([(SERIAL.to_owned(), secret_a())]);
+    let (listener, _rx) = listener(store.clone());
+    let mut status = listener.status();
+    listener.refresh();
+    reaches(&mut status, |s| s.port().is_some()).await;
+    status.mark_unchanged();
+    for _ in 0..3 {
+        listener.refresh();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!status.has_changed().unwrap(), "{:?}", *status.borrow());
+
+    // No pairing, refreshed again and again: one change to Off, then quiet.
+    store.remove_secret(SERIAL).await.unwrap();
+    listener.refresh();
+    reaches(&mut status, |s| s.port().is_none()).await;
+    status.mark_unchanged();
+    for _ in 0..3 {
+        listener.refresh();
+        tokio::time::sleep(Duration::from_millis(50)).await;
+    }
+    assert!(!status.has_changed().unwrap(), "{:?}", *status.borrow());
+}
+
+/// A store whose first listing panics, as a bug in a store or its D-Bus stack would.
+#[derive(Clone)]
+struct Panicky {
+    inner: MemorySecretStore,
+    lists: Arc<AtomicUsize>,
+}
+
+impl SecretStore for Panicky {
+    async fn secret(&self, account: &str) -> lain_platform::Result<Option<Vec<u8>>> {
+        self.inner.secret(account).await
+    }
+    async fn set_secret(&self, account: &str, secret: &[u8]) -> lain_platform::Result<()> {
+        self.inner.set_secret(account, secret).await
+    }
+    async fn remove_secret(&self, account: &str) -> lain_platform::Result<()> {
+        self.inner.remove_secret(account).await
+    }
+    async fn all_secrets(&self) -> lain_platform::Result<BTreeMap<String, Vec<u8>>> {
+        if self.lists.fetch_add(1, Ordering::SeqCst) == 0 {
+            panic!("the store's first listing panics (expected by the test)");
+        }
+        self.inner.all_secrets().await
+    }
+}
+
+/// A read that panics counts as a failed read: retried with backoff, not lost.
+#[tokio::test(start_paused = true)]
+async fn a_panicking_read_is_retried() {
+    let store = Panicky { inner: MemorySecretStore::with([(SERIAL.to_owned(), secret_a())]), lists: Arc::default() };
+    let (tx, _rx) = mpsc::channel(8);
+    let listener = WiFiListener::new(store.clone(), WiFiListenerOptions::loopback(), tx);
+    listener.refresh();
+    let mut status = listener.status();
+    // On paused time, a minute is instant; without a retry the status would stay `Starting` for good.
+    let minute = Duration::from_secs(60);
+    let off = tokio::time::timeout(minute, status.wait_for(|s| *s != WiFiStatus::Starting)).await;
+    assert_eq!(
+        *off.expect("the panicked read was applied").unwrap(),
+        WiFiStatus::Off("can't read the pairing secrets".into())
+    );
+    let t0 = tokio::time::Instant::now();
+    tokio::time::timeout(minute, status.wait_for(|s| s.port().is_some())).await.expect("retried").unwrap();
+    assert_eq!(t0.elapsed(), WiFiListenerOptions::default().retry_initial);
+    assert_eq!(store.lists.load(Ordering::SeqCst), 2);
+}
+
+/// Dropping the listener closes the hand-off at once, even after a flood scheduled a summary notice.
+#[tokio::test]
+async fn dropping_the_listener_closes_the_hand_off_at_once() {
+    let store = MemorySecretStore::with([(SERIAL.to_owned(), secret_a())]);
+    let (listener, mut rx) = listener(store);
+    listener.refresh();
+    let port = listening(&listener).await;
+    // Past the per-host cap of 8: two evictions schedule a summary.
+    let mut raws = Vec::new();
+    for _ in 0..10 {
+        raws.push(tokio::net::TcpStream::connect(addr(port)).await.unwrap());
+    }
+    tokio::time::sleep(Duration::from_millis(100)).await;
+    let t0 = Instant::now();
+    drop(listener);
+    assert!(tokio::time::timeout(T, rx.recv()).await.unwrap().is_none());
+    assert!(t0.elapsed() < Duration::from_millis(200), "{:?}", t0.elapsed());
+}
