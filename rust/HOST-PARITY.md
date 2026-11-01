@@ -1,0 +1,96 @@
+# Host parity: what the Linux host has that the Mac host and the client still need
+
+Written 2026-11-01, after the Linux host's bring-up with a real iPad (iPad16,6, `main` at the time of writing).
+The Linux host (`rust/`, `lain-hostd`) is now ahead of the Swift Mac host in a few behaviours the developer asked
+for while using it. This note lists them, and the client changes they depend on, so the Mac side can catch up.
+
+## Protocol
+
+- Both hosts and the client must run **protocol v3–v4** (negotiated versions, `HostSetup`): `main` since
+  `protocol-versioning` (`58aec59`) was merged. A v2 (pre-negotiation) client or host is refused by design ("update
+  it"). Rebuild the Mac host *and* the iPad client from `main` together.
+- Nothing below changes the wire format.
+
+## 1. Display keep-alive (Linux: done; Mac host: to port)
+
+When the iPad's app leaves the screen (an app switch), iPadOS drops lain's connections at once. The Mac host then
+removes its virtual display, so windows jump to another display and don't come back, and the return rebuilds
+everything.
+
+- **Linux:** `lain-host`'s `DisplayKeeper` keeps the display for `keep_alive_seconds` (default 30, 0–600) after
+  a session whose link went away. The next session of the same size gets the *same* display back (windows stay
+  put; the picture is back about 35 ms after the link). Capture stopped on the desktop, another size, the timeout,
+  stopping the host remove it. Video stops while kept; input and power are released as usual.
+  Code: `rust/crates/lain-host/src/keeper.rs`, `tests/keepalive.rs`.
+- **Mac host:** `HostSession` removes the display at session end. Port: keep the `CGVirtualDisplay` for the same
+  time and reuse it when the next `Hello` asks for the same spec.
+
+## 2. Resume after the OS stops screen sharing (Linux: done; Mac host: check)
+
+GNOME's top-bar "Stop sharing" ends lain's display; lain then resumes by itself (closes the link, the iPad
+reconnects into a fresh session), at most once per 10 s; `resume_after_stop` (on), `lain resume` by hand.
+Code: `lain-host` `HostSession::resume_video`, `tests/resume.rs`. On the Mac, check what macOS's own screen-capture
+"Stop" does to lain's capture, and whether the same resume makes sense.
+
+## 3. Settings from the host itself (Linux: done; Mac host: menu has some)
+
+Linux: `lain` CLI, a tray menu and the D-Bus interface `dev.sub.lain.Host1`, each written to `config.toml`:
+scale (1–3; the closest the desktop supports is applied, live), keep-alive (live), Wi-Fi on/off (live),
+resume-after-stop (live), Start at login, bitrate (next start). Mac host: its menu shows status and Start at Login.
+The scale and keep-alive settings are the ones worth adding there.
+
+Note on scale: Linux makes lain's display at 2× by default, as the Mac host does (1376×1032 points on a 13" iPad
+Pro). GNOME draws its interface larger than macOS at the same scale, which is why Linux needed the setting first.
+
+## 4. Keyboard: Right Option is the system key (Linux host: done; client and Mac host: to do)
+
+iPadOS keeps some Command shortcuts (Cmd-Tab, Cmd-Space, Cmd-H, Cmd-Q, Cmd-`, Cmd-Shift-3/4) and every three- and
+four-finger trackpad swipe for itself; they never reach the app. The developer's design: **Right Option is lain's
+system key**, standing in for what iPadOS keeps, the same physical keys on both hosts. Left Option is a plain
+Option key everywhere.
+
+| You press | Mac host should do | Linux host does |
+|---|---|---|
+| Right Opt + Tab / ` | Cmd+Tab / Cmd+` | Alt+Tab / Alt+` |
+| Right Opt + Space | Cmd+Space (Spotlight) | the overview, with search |
+| Right Opt + H / Q | Cmd+H / Cmd+Q | Super+H (minimize) / Ctrl+Q |
+| Right Opt + any other key | Cmd + that key | Ctrl + that key |
+| Right Opt + Up | Ctrl+Up: Mission Control | the overview (Super tap) |
+| Right Opt + Down | Ctrl+Down: App Exposé | the app grid (Super+A) |
+| Right Opt + Left / Right | Ctrl+Left/Right: previous / next Space | Ctrl+Alt+Left/Right: workspace |
+| Right Opt tap, alone | Mission Control | the overview |
+
+Everything else is as labelled: Command, Control, Option, Shift. On Linux, Command and Control are both Ctrl (Mac
+shortcuts in apps, terminal habits in terminals) and Option is Alt.
+
+What is where today:
+
+- **Client (`LainInput/RemapTable.swift`, `KeyboardProcessor`):** the remap turns *either* Option + Tab, Space, H, Q
+  or ` into Command + that key. **To do:** match Right Option (usage `0xE6`) only, so Left Option keeps typing
+  accents and Opt-Space, Opt-H… reach the host as themselves. Nothing else is needed from the client: the host sees
+  Right Option itself (as `0xE6`) for the arrows and the tap.
+- **Linux host (`lain-input`, `InputConfig::system_key`, on):** does the right-hand column, telling Right from Left
+  Option by their own key events. The Cmd+Space and Cmd+H rows also work from the client's remap today.
+  Code: `rust/crates/lain-input/src/router.rs`, `tests/router.rs` ("the system key").
+- **Mac host:** **to do** the middle column for the arrows and the tap: Right Option + arrows as Ctrl + arrows,
+  and a lone Right Option tap as Mission Control (Ctrl+Up). The Command rows need nothing once the client sends
+  Command, or the host can map Right Option to Command itself, which would then make the client's remap
+  unnecessary for the Mac.
+
+Not yet checked on the iPad: whether Ctrl + arrows, fn + arrows, Globe combos and the function-row keys arrive (a
+key log in the client's HUD would settle it in minutes).
+
+## 5. Client: choosing a host (planned, client only)
+
+Today the client dials the last host it used (or whichever answers first), one link at a time; a cable always wins.
+Agreed direction, step by step: first an explicit host choice (no auto-picking the most recent) with a switcher and
+shortcuts in the Ctrl-Opt-Cmd family; later, optionally, links held open to every host with a "park/focus" message
+(a v5 feature) for instant switching. Section 1's keep-alive already makes a switch keep each host's windows.
+
+## Open on the Linux side
+
+- Scroll feel; a scroll-momentum bug found by `lain-input`'s property test (its failing case is kept in
+  `tests/props.proptest-regressions`).
+- The lock screen on lain's display, unlocked from the iPad.
+- Moving windows between workspaces from the system key (Right Opt + Shift + Left/Right) is proposed, not built;
+  GNOME's own Shift+Ctrl+Alt+Left/Right works from the iPad meanwhile.
