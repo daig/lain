@@ -103,3 +103,92 @@ async fn one_host_owns_the_name() {
         tokio::time::sleep(Duration::from_millis(20)).await;
     }
 }
+
+/// A [`lain_hostd::Control`] driven by the test.
+struct FakeControl {
+    status: tokio::sync::watch::Sender<lain_host::HostStatus>,
+    wifi: tokio::sync::watch::Sender<lain_wifi::WiFiStatus>,
+    enabled: tokio::sync::watch::Sender<bool>,
+}
+
+impl lain_hostd::Control for FakeControl {
+    fn status_watch(&self) -> tokio::sync::watch::Receiver<lain_host::HostStatus> {
+        self.status.subscribe()
+    }
+    fn wifi_status(&self) -> tokio::sync::watch::Receiver<lain_wifi::WiFiStatus> {
+        self.wifi.subscribe()
+    }
+    fn wifi_enabled(&self) -> tokio::sync::watch::Receiver<bool> {
+        self.enabled.subscribe()
+    }
+    fn video_lines(&self) -> Vec<String> {
+        vec!["Video 2752×2064 4:2:0".into()]
+    }
+    fn video_problem(&self) -> String {
+        String::new()
+    }
+    fn peer_version_note(&self) -> String {
+        String::new()
+    }
+    fn set_wifi(
+        &self,
+        on: bool,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), lain_hostd::WifiControlError>> + Send + '_>>
+    {
+        self.enabled.send_replace(on);
+        self.wifi.send_replace(if on {
+            lain_wifi::WiFiStatus::Starting
+        } else {
+            lain_wifi::WiFiStatus::Off("stopped".into())
+        });
+        Box::pin(async { Ok(()) })
+    }
+    fn refresh_setup(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        Box::pin(async {})
+    }
+}
+
+/// The control interface the `lain` CLI uses: properties read the daemon, `SetWifi` switches it and writes
+/// `wifi` into config.toml, and a status change is announced (`PropertiesChanged`).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn the_control_interface_reads_switches_and_announces() {
+    let Some(bus) = TestBus::start().await else { return };
+    let daemon = bus.connect().await;
+    assert!(claim_bus_name(&daemon).await.unwrap());
+    let control = std::sync::Arc::new(FakeControl {
+        status: tokio::sync::watch::Sender::new(lain_host::HostStatus::WaitingForIPad),
+        wifi: tokio::sync::watch::Sender::new(lain_wifi::WiFiStatus::Off("no paired iPad yet".into())),
+        enabled: tokio::sync::watch::Sender::new(true),
+    });
+    let dir = tempfile::tempdir().unwrap();
+    let config = dir.path().join("config.toml");
+    std::fs::write(&config, "# mine\nscale = 1.5\n").unwrap();
+    lain_hostd::serve(&daemon, control.clone(), Some(config.clone())).await.unwrap();
+
+    let cli = bus.connect().await;
+    let host = zbus::Proxy::new(&cli, BUS_NAME, lain_hostd::OBJECT_PATH, lain_hostd::INTERFACE).await.unwrap();
+    assert_eq!(host.get_property::<String>("Status").await.unwrap(), "Waiting for iPad");
+    assert_eq!(host.get_property::<String>("WifiStatus").await.unwrap(), "Wi-Fi: off: no paired iPad yet");
+    assert_eq!(host.get_property::<Vec<String>>("VideoLines").await.unwrap(), ["Video 2752×2064 4:2:0"]);
+
+    host.call_method("SetWifi", &(false,)).await.unwrap();
+    assert!(!*control.enabled.borrow());
+    assert_eq!(std::fs::read_to_string(&config).unwrap(), "# mine\nscale = 1.5\nwifi = false\n");
+
+    let mut changes = host.receive_property_changed::<String>("Status").await;
+    control.status.send_replace(lain_host::HostStatus::WaitingForIPad); // same value: no news
+    control.status.send_replace(lain_host::HostStatus::connected_usb("iPad16,6"));
+    let seen = tokio::time::timeout(Duration::from_secs(5), async {
+        loop {
+            use futures::StreamExt;
+            let change = changes.next().await.expect("a change");
+            let value = change.get().await.unwrap();
+            if value != "Waiting for iPad" {
+                return value;
+            }
+        }
+    })
+    .await
+    .expect("announced");
+    assert_eq!(seen, lain_host::HostStatus::connected_usb("iPad16,6").title());
+}

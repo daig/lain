@@ -169,6 +169,7 @@ async fn run(args: Args) -> ExitCode {
         }
     };
     let autostart = Autostart::new(conn.clone(), &user_unit_dir(&config_home), UNIT_NAME);
+    let tray_autostart = autostart.clone();
     let platform = LinuxPlatform::new(gnome, LinuxVideo::new(LinuxVideoConfig::default()), autostart, secrets);
 
     let host = config.host_config(identity, versions);
@@ -194,6 +195,13 @@ async fn run(args: Args) -> ExitCode {
         }
     };
     let daemon = Daemon::start(platform, host, UsbMuxClient::default(), advertiser, config.daemon_options()).await;
+    // The control interface (the `lain` CLI) and the tray, on the daemon's handle.
+    let control: Arc<dyn lain_hostd::Control> = Arc::new(daemon.handle());
+    if let Err(e) = lain_hostd::serve(&conn, control.clone(), Some(config_path.clone())).await {
+        warn!("no control interface on {BUS_NAME}: {e}");
+    }
+    let program = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("lain-hostd"));
+    let tray = tokio::spawn(lain_hostd::tray::run(control, tray_autostart, program, config_path.clone()));
 
     tokio::select! {
         _ = term.recv() => info!("SIGTERM: stopping"),
@@ -207,6 +215,7 @@ async fn run(args: Args) -> ExitCode {
         error!("a second signal: exiting at once");
         std::process::exit(1);
     });
+    tray.abort();
     if tokio::time::timeout(SHUTDOWN_TIMEOUT, daemon.shutdown()).await.is_err() {
         warn!("the shutdown took longer than {SHUTDOWN_TIMEOUT:?}; exiting anyway");
     }

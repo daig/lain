@@ -20,6 +20,8 @@ lain-linux-video.workspace = true
 lain-linux-system.workspace = true
 anyhow.workspace = true
 clap.workspace = true
+# The tray icon (StatusNotifierItem), on the same zbus 5 as everything else.
+ksni.workspace = true
 # The open-file limit (getrlimit/setrlimit) without unsafe.
 rustix = { workspace = true, features = ["process"] }
 serde.workspace = true
@@ -34,6 +36,7 @@ zbus.workspace = true
 [dev-dependencies]
 lain-platform = { workspace = true, features = ["fake"] }
 lain-usbmux = { workspace = true, features = ["fake"] }
+futures.workspace = true
 tempfile.workspace = true
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros", "signal", "net", "io-util", "process"] }
 
