@@ -20,6 +20,7 @@ tracing.workspace = true
 
 [dev-dependencies]
 hex.workspace = true
+socket2.workspace = true
 lain-platform = { workspace = true, features = ["fake"] }
 tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "io-util", "net", "macros", "test-util"] }
 
