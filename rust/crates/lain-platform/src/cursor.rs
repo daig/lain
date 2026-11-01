@@ -4,7 +4,9 @@ use std::hash::{Hash, Hasher};
 use std::sync::Arc;
 
 /// One cursor image as it goes on the wire: premultiplied BGRA, rows packed, rendered at `scale`; the
-/// hotspot in logical pixels from the top-left.
+/// hotspot in logical pixels from the top-left. The scale is an integer, as on the wire: a platform keeps
+/// lain's display at the spec's integer scale, re-applying it if the owner picks a fractional one. GNOME's
+/// stream metadata gives RGBA, which the backend swaps to BGRA.
 #[derive(Debug, Clone)]
 pub struct CursorImage {
     pub pixel_width: u16,
