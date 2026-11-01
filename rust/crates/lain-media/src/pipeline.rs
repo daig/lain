@@ -2,8 +2,8 @@
 //! `VideoConfig` bookkeeping of `LainMedia/VideoEncoder.swift`).
 
 use lain_platform::{
-    Chroma, Clock, EncodeConfig, EncodeRequest, EncodedFrame, PlatformError, StreamInfo, StreamedDisplay,
-    VideoEvent, VideoSession,
+    Chroma, Clock, EncodeConfig, EncodeRequest, EncodedFrame, PlatformError, StreamInfo, StreamedDisplay, VideoEvent,
+    VideoSession,
 };
 use lain_proto::{
     ChromaFormat, FrameAck, HeaderFlags, KeyframeReason, KeyframeRequest, Message, VideoCodec, VideoConfig, VideoFrame,
@@ -30,7 +30,13 @@ pub struct PipelineOptions {
 
 impl Default for PipelineOptions {
     fn default() -> Self {
-        Self { max_in_flight: 2, frame_rate: 120, average_bit_rate: 60_000_000, idle_refinement_ms: 150, max_refinements: 2 }
+        Self {
+            max_in_flight: 2,
+            frame_rate: 120,
+            average_bit_rate: 60_000_000,
+            idle_refinement_ms: 150,
+            max_refinements: 2,
+        }
     }
 }
 
@@ -401,7 +407,8 @@ impl<S: VideoSession, C: Clock> VideoPipeline<S, C> {
             return self.failed();
         } else {
             let candidate = self.video_config(au.parameter_sets);
-            let same = self.config.as_ref().is_some_and(|c| VideoConfig { config_id: c.config_id, ..candidate.clone() } == *c);
+            let same =
+                self.config.as_ref().is_some_and(|c| VideoConfig { config_id: c.config_id, ..candidate.clone() } == *c);
             if same { None } else { Some(candidate) }
         };
         if config.is_none() && self.config.is_none() {
