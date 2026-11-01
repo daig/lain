@@ -11,6 +11,7 @@
 mod live;
 mod stats;
 mod synth;
+mod va;
 
 use std::collections::HashMap;
 use std::time::Duration;
@@ -232,9 +233,15 @@ fn main() {
     let mut argv = std::env::args().skip(1);
     let mode = argv.next().unwrap_or_default();
     let args = Args::parse(argv);
+    if mode != "synth" && mode != "live" {
+        eprintln!("usage: encbench synth|live [--key value]... (see README.md)");
+        std::process::exit(2);
+    }
+    // The AMD node, its element factories and a display context pinned to it, before any pipeline exists.
+    let va = va::Va::new(args.map.get("render-node").map(|s| s.as_str()));
     match mode.as_str() {
-        "synth" => synth::run(&args),
-        "live" => live::run(&args),
+        "synth" => synth::run(&args, &va),
+        "live" => live::run(&args, &va),
         _ => {
             eprintln!("usage: encbench synth|live [--key value]... (see README.md)");
             std::process::exit(2);

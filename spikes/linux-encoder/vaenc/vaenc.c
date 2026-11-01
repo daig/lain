@@ -3,7 +3,9 @@
 //
 // A ring of NV12 surfaces with scrolling terminal-like content is filled once on the CPU; the timed loop
 // never touches pixels. Each frame: parameter buffers → vaBeginPicture/RenderPicture/EndPicture →
-// vaSyncBuffer → vaMapBuffer, one frame at a time (lain's one request outstanding), ticked at --fps.
+// vaSyncBuffer → vaMapBuffer, one frame at a time (lain's one request outstanding). Ticks at --fps
+// "capture" ring frames; each new encode takes the newest tick not yet encoded, skipping any it fell
+// behind on (encbench's model). Refinements go straight after their frame, without waiting for a tick.
 // All times are CLOCK_MONOTONIC.
 //
 // Build: make -C vaenc     Run: vaenc/vaenc --help
@@ -225,23 +227,32 @@ int main(int argc, char **argv) {
     FILE *out = dump ? fopen(dump, "wb") : NULL;
 
     const int ctb = 64, ctus = ((w + ctb - 1) / ctb) * ((h + ctb - 1) / ctb);
-    int frames = (int)(seconds * fps);
+    int ticks = (int)(seconds * fps), frames = 2 * ticks + 8; // encodes at most: one per tick plus refinements
     uint64_t *lat = calloc(frames, 8), *lat_idr = calloc(frames, 8), *lat_ref = calloc(frames, 8);
-    uint64_t *submit = calloc(frames, 8);
+    uint64_t *submit = calloc(frames, 8), *cap = calloc(frames, 8);
+    int n_cap = 0, skipped = 0;
+    long last_tick = -1, tick = 0;
     int n_lat = 0, n_idr = 0, n_ref = 0, idr_ok = 0, idr_bad = 0, idr_vps = 0;
     double bytes_total = 0, bytes_normal = 0, bytes_ref = 0;
     int poc = 0, cur = 0, normal_count = 0, refine_pending = 0, ring_idx = 0, prev_refine = 0;
     uint64_t period = 1000000000ull / fps, start = now_ns(), cpu0 = cpu_ns();
     for (int f = 0; f < frames; f++) {
-        // Tick: one frame at a time, no earlier than its tick.
-        uint64_t due = start + f * period, now = now_ns();
-        if (now < due) {
-            struct timespec ts = {due / 1000000000ull, due % 1000000000ull};
-            clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
-        }
         int refine = refine_pending > 0;
         if (refine) refine_pending--;
-        else ring_idx = f % ring_n;
+        else {
+            // The newest tick not yet encoded; wait for the next one if none is new.
+            tick = (long)((now_ns() - start) / period);
+            if (tick <= last_tick) {
+                uint64_t due = start + (last_tick + 1) * period;
+                struct timespec ts = {due / 1000000000ull, due % 1000000000ull};
+                clock_nanosleep(CLOCK_MONOTONIC, TIMER_ABSTIME, &ts, NULL);
+                tick = (long)((now_ns() - start) / period);
+            }
+            if (tick >= ticks) break;
+            skipped += tick - last_tick - 1;
+            last_tick = tick;
+            ring_idx = tick % ring_n;
+        }
         int idr = f == 0 || (!refine && idr_every && normal_count && normal_count % idr_every == 0);
         if (idr) poc = 0;
         int frame_qp = cqp ? qp : 26;
@@ -367,6 +378,7 @@ int main(int argc, char **argv) {
             lat[n_lat++] = t2 - t0;
             bytes_normal += size;
         }
+        if (!refine && f > 0) cap[n_cap++] = t2 - (start + tick * period);
         // Around each of the first two refinements: the frame before, the refinements, the frame after.
         if (refine_every && f < 2 * (refine_every + 2) + 2 &&
             (refine || prev_refine || refine_pending || (normal_count + 1) % refine_every == 0))
@@ -381,11 +393,14 @@ int main(int argc, char **argv) {
         cur ^= 1;
     }
     uint64_t wall = now_ns() - start, cpu = cpu_ns() - cpu0;
-    printf("run: %dx%d %s%s at %d Hz ticks, %d frames in %.2f s = %.1f fps; cpu %.1f%% of one core; %.1f Mbps\n", w,
-           h, rc_name, quality ? " (quality level set)" : "", fps, frames, wall / 1e9, frames * 1e9 / wall,
+    printf("run: %dx%d %s%s at %d Hz ticks: %d content encodes in %.2f s = %.1f fps (%d of %d ticks skipped), %d "
+           "refinements; cpu %.1f%% of one core; %.1f Mbps\n",
+           w, h, rc_name, quality ? " (quality level set)" : "", fps, normal_count, wall / 1e9,
+           normal_count * 1e9 / wall, skipped, ticks, n_ref,
            cpu * 100.0 / wall, bytes_total * 8 / (wall / 1e9) / 1e6);
     summary("normal: params → AU mapped", lat, n_lat);
     summary("normal: CPU submit (params + Begin/Render/End)", submit, n_lat);
+    summary("content: tick of the frame encoded → AU mapped", cap, n_cap);
     printf("  normal AU mean %.1f KB\n", n_lat ? bytes_normal / n_lat / 1e3 : 0);
     if (n_idr) {
         summary("forced IDR", lat_idr, n_idr);

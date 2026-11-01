@@ -14,6 +14,7 @@ use zbus::blocking::{Connection, Proxy};
 use zbus::zvariant::{OwnedObjectPath, Value};
 
 use crate::stats::summary;
+use crate::va::{Va, assert_no_foreign_gpu_fds};
 use crate::{Args, BusySampler, bus_error, configure_encoder, cpu_ns, is_irap, loadavg, nal_types, now_ns};
 
 #[derive(Default, Clone)]
@@ -25,7 +26,7 @@ struct Rec {
     irap: bool,
 }
 
-pub fn run(args: &Args) {
+pub fn run(args: &Args, va: &Va) {
     let w: u32 = args.get("width", 2752);
     let h: u32 = args.get("height", 2064);
     let seconds: f64 = args.get("seconds", 10.0);
@@ -59,14 +60,26 @@ pub fn run(args: &Args) {
     let keepalive: u32 = args.get("keepalive-ms", 0);
     let colorimetry = args.str("colorimetry", "");
     let colorimetry = if colorimetry.is_empty() { String::new() } else { format!(",colorimetry={colorimetry}") };
+    // Mutter's stream is variable-rate (framerate 0/1), and vah265enc then budgets CBR per frame as if
+    // at 30 fps. --enc-fps N states the rate on the encoder's input caps (capssetter), as lain must.
+    let enc_fps: u32 = args.get("enc-fps", 0);
+    let fps_fix = if enc_fps > 0 {
+        format!("capssetter caps=\"video/x-raw(memory:VAMemory),framerate={enc_fps}/1\" ! ")
+    } else {
+        String::new()
+    };
+    // pixel-aspect-ratio=1/1: without it, scaling 16:9 into a 4:3 size gives PAR 4/3 caps.
     let desc = format!(
         "pipewiresrc name=pw path={node} always-copy=false do-timestamp=true keepalive-time={keepalive}{src_caps} ! \
-         vapostproc name=pp ! video/x-raw(memory:VAMemory),format=NV12,width={w},height={h}{colorimetry} ! \
-         vah265enc name=enc ! video/x-h265,profile=main ! fakesink sync=false async=false"
+         {} name=pp ! video/x-raw(memory:VAMemory),format=NV12,width={w},height={h},pixel-aspect-ratio=1/1{colorimetry} ! \
+         {fps_fix}{} name=enc ! video/x-h265,profile=main ! fakesink sync=false async=false",
+        va.postproc, va.h265enc
     );
     let pipeline = gst::parse::launch(&desc).unwrap().downcast::<gst::Pipeline>().unwrap();
+    va.pin(&pipeline);
     let enc = pipeline.by_name("enc").unwrap();
     configure_encoder(&enc, args);
+    assert_eq!(enc.property::<String>("device-path"), va.node, "encoder not on the pinned node");
 
     // Matched in order (the encoder rewrites timestamps; nothing between pipewiresrc and the encoder
     // drops or reorders): capture times queue up at the source, move on at the encoder's input.
@@ -124,11 +137,15 @@ pub fn run(args: &Args) {
             if let Some(c) = pipeline.by_name("pp").unwrap().static_pad("src").unwrap().current_caps() {
                 println!("vapostproc out caps: {c}");
             }
+            if let Some(c) = enc.static_pad("sink").unwrap().current_caps() {
+                println!("encoder in caps: {c}");
+            }
             printed_caps = true;
         }
     }
     let wall = now_ns() - t0;
     let cpu = cpu_ns() - cpu0;
+    assert_no_foreign_gpu_fds();
     let gfx = busy.finish();
     let load_after = loadavg();
     pipeline.set_state(gst::State::Null).unwrap();
@@ -145,7 +162,13 @@ pub fn run(args: &Args) {
     println!("{}", summary("pipewiresrc out → AU (CSC + scale + encode)", &tot_ns));
     println!("IRAP pictures: {}", done.iter().filter(|r| r.irap).count());
     let sizes: Vec<u64> = done.iter().map(|r| r.size as u64).collect();
-    println!("AU size mean {:.1} KB", crate::stats::mean(&sizes) / 1e3);
+    println!(
+        "AU size mean {:.1} KB, max {:.1} KB; {:.1} Mbps at the delivered rate; {:.0} KB per frame at 60 Mbps / 120 fps",
+        crate::stats::mean(&sizes) / 1e3,
+        sizes.iter().max().copied().unwrap_or(0) as f64 / 1e3,
+        sizes.iter().sum::<u64>() as f64 * 8.0 / (wall as f64 / 1e9) / 1e6,
+        60e6 / 8.0 / 120.0 / 1e3
+    );
     println!("cpu: {:.1}% of one core; amd gfx busy mean {gfx:.0}%", cpu as f64 * 100.0 / wall as f64);
     println!("loadavg after: {load_after}");
 }

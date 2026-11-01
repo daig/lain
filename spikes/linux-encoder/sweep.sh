@@ -9,5 +9,5 @@ while IFS= read -r line; do
     [[ -z "$line" || "$line" == \#* ]] && continue
     echo "== $line"
     # shellcheck disable=SC2086
-    "$bin" synth --seconds "$secs" $line 2>&1 | grep -E 'loadavg|run:|cpu:|encode \(|push →|AU size|forced IDR|IRAP|sequence|^(Normal|Idr|Refine):|STALL|panicked'
+    "$bin" synth --seconds "$secs" $line 2>&1 | grep -E 'loadavg|run:|cpu:|encode \(|push →|capture \(|AU size|forced IDR|IRAP|corrupt|sequence|^(Normal|Idr|Refine):|STALL|panicked'
 done
