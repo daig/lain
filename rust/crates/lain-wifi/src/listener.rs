@@ -2,7 +2,7 @@
 
 use std::io;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::sync::{Arc, Mutex, MutexGuard, Weak};
 use std::time::Duration;
 
 use lain_platform::clock::now_ns;
@@ -163,6 +163,8 @@ impl TlsPskListener {
             intake.pending.remove_all()
         };
         pending.iter().for_each(AbortHandle::abort);
+        // A scheduled summary may not outlive the listener; say now what it would have said.
+        log_summary(&self.shared);
     }
 }
 
@@ -205,17 +207,55 @@ fn bind_exactly(addr: SocketAddr) -> io::Result<std::net::TcpListener> {
     Ok(socket.into())
 }
 
-/// How long the accept loop rests after an accept error (out of descriptors, say), so it can't spin.
+/// How long the accept loop rests after running out of descriptors or memory, so it can't spin.
 const ACCEPT_ERROR_PAUSE: Duration = Duration::from_millis(100);
 
+/// Whether an `accept` error means the process or the system is out of a resource, so the loop pauses.
+/// Every other error belongs to the one connection (Linux's accept(2) passes on the new connection's pending
+/// network errors, ECONNABORTED, ENETDOWN, EPROTO, EHOSTUNREACH and the like, to be treated like EAGAIN):
+/// the loop takes the next connection at once. No Swift counterpart: Network.framework accepts for it.
+pub(crate) fn accept_error_is_exhaustion(error: &io::Error) -> bool {
+    matches!(error.raw_os_error(), Some(libc::EMFILE | libc::ENFILE | libc::ENOBUFS | libc::ENOMEM))
+}
+
+/// Rate-limits the accept loop's warnings to one per [`DropReports::WINDOW`], counting the rest into the
+/// next one.
+#[derive(Debug, Default)]
+pub(crate) struct AcceptWarnings {
+    window_start_ns: Option<u64>,
+    suppressed: usize,
+}
+
+impl AcceptWarnings {
+    /// For an exhaustion error at `now_ns`: `Some(n)` to warn now, with `n` errors suppressed since the last
+    /// warning; `None` to stay quiet.
+    pub(crate) fn exhausted(&mut self, now_ns: u64) -> Option<usize> {
+        let window = DropReports::WINDOW.as_nanos() as u64;
+        match self.window_start_ns {
+            Some(start) if now_ns.saturating_sub(start) < window => {
+                self.suppressed += 1;
+                None
+            }
+            _ => {
+                self.window_start_ns = Some(now_ns);
+                Some(std::mem::take(&mut self.suppressed))
+            }
+        }
+    }
+}
+
 async fn accept_loop(listener: TcpListener, shared: Arc<Shared>) {
+    let mut warnings = AcceptWarnings::default();
     loop {
         match listener.accept().await {
             Ok((tcp, peer)) => admit(&shared, tcp, peer),
-            Err(e) => {
-                tracing::warn!("Wi-Fi listener: accept failed: {e}");
+            Err(e) if accept_error_is_exhaustion(&e) => {
+                if let Some(suppressed) = warnings.exhausted(now_ns()) {
+                    tracing::warn!("Wi-Fi listener: accept failed: {e} ({suppressed} more since the last notice)");
+                }
                 tokio::time::sleep(ACCEPT_ERROR_PAUSE).await;
             }
+            Err(e) => tracing::debug!("Wi-Fi listener: accept failed for one connection: {e}"),
         }
     }
 }
@@ -248,7 +288,7 @@ fn admit(shared: &Arc<Shared>, tcp: TcpStream, peer: SocketAddr) {
     // Aborting drops the evicted task's socket at once.
     evicted.iter().for_each(AbortHandle::abort);
     if summarize {
-        summarize_later(shared.clone());
+        summarize_later(shared);
     }
 }
 
@@ -277,7 +317,7 @@ async fn handshake(shared: Arc<Shared>, key: u64, tcp: TcpStream) {
         Err(error) => {
             let (report, summarize) = shared.intake().drops.rejected(now_ns());
             if summarize {
-                summarize_later(shared.clone());
+                summarize_later(&shared);
             }
             if report {
                 tracing::info!("Wi-Fi: dropped a connection before handover: {error}");
@@ -287,15 +327,27 @@ async fn handshake(shared: Arc<Shared>, key: u64, tcp: TcpStream) {
     }
 }
 
-/// One notice for what went unreported, a window after the first of it.
-fn summarize_later(shared: Arc<Shared>) {
+/// One notice for what went unreported, a window after the first of it. The task holds the listener's state
+/// weakly, so a cancelled or dropped listener releases it (its `on_accept`, and so the hand-off sender, its
+/// context and keys) at once; [`TlsPskListener::cancel`] logs what is pending instead.
+fn summarize_later(shared: &Arc<Shared>) {
+    let shared = Arc::downgrade(shared);
     tokio::spawn(async move {
         tokio::time::sleep(DropReports::WINDOW).await;
-        let (unreported, evicted) = shared.intake().drops.take_summary();
+        if let Some(shared) = Weak::upgrade(&shared) {
+            log_summary(&shared);
+        }
+    });
+}
+
+/// Logs the unreported counts, if any, and resets them.
+fn log_summary(shared: &Shared) {
+    let (unreported, evicted) = shared.intake().drops.take_summary();
+    if unreported + evicted > 0 {
         tracing::info!(
             "Wi-Fi handshake flood: {evicted} pending handshakes evicted, {unreported} failed handshakes not reported"
         );
-    });
+    }
 }
 
 #[cfg(test)]
@@ -321,5 +373,31 @@ mod tests {
         assert_eq!(options.handshake_timeout, Duration::from_secs(3));
         assert_eq!((options.max_pending, options.max_pending_per_host), (32, 8));
         assert_eq!(ListenerOptions::loopback().bind, "127.0.0.1:0".parse().unwrap());
+    }
+
+    /// Only running out of descriptors or memory pauses the accept loop; a connection's own error doesn't.
+    #[test]
+    fn only_resource_exhaustion_pauses_the_accept_loop() {
+        let os = io::Error::from_raw_os_error;
+        for errno in [libc::EMFILE, libc::ENFILE, libc::ENOBUFS, libc::ENOMEM] {
+            assert!(accept_error_is_exhaustion(&os(errno)), "{errno}");
+        }
+        for errno in [libc::ECONNABORTED, libc::ENETDOWN, libc::EPROTO, libc::EHOSTUNREACH, libc::ENETUNREACH] {
+            assert!(!accept_error_is_exhaustion(&os(errno)), "{errno}");
+        }
+        assert!(!accept_error_is_exhaustion(&io::Error::other("no errno")));
+    }
+
+    /// Out of descriptors, the loop warns once a window, with the count of the rest.
+    #[test]
+    fn accept_warnings_are_rate_limited() {
+        let window = DropReports::WINDOW.as_nanos() as u64;
+        let mut warnings = AcceptWarnings::default();
+        assert_eq!(warnings.exhausted(1_000), Some(0));
+        let quiet: Vec<_> = (1..=9).map(|i| warnings.exhausted(1_000 + i * window / 10)).collect();
+        assert!(quiet.iter().all(Option::is_none));
+        assert_eq!(warnings.exhausted(1_000 + window), Some(9));
+        assert_eq!(warnings.exhausted(1_000 + window + 1), None);
+        assert_eq!(warnings.exhausted(1_000 + 3 * window), Some(1));
     }
 }

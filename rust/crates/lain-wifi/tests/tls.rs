@@ -5,6 +5,7 @@
 mod common;
 
 use std::collections::BTreeSet;
+use std::pin::Pin;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
@@ -12,10 +13,11 @@ use common::*;
 use lain_link::{ByteStream, LinkTransport, MessageChannel};
 use lain_proto::*;
 use lain_wifi::*;
-use openssl::ssl::SslVersion;
+use openssl::ssl::{Ssl, SslSessionCacheMode, SslVersion};
 use socket2::SockRef;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
+use tokio_openssl::SslStream;
 
 fn lo() -> LinkTransport {
     LinkTransport::Network { interface: Some("lo".into()), peer_to_peer: false }
@@ -467,5 +469,50 @@ async fn the_default_listener_binds_the_dual_stack_wildcard() {
         let accepted = next(&mut server.accepted, T).await.unwrap();
         assert_eq!(client.transport(), lo());
         assert_eq!(accepted.transport(), lo(), "{addr}");
+    }
+}
+
+/// Swift: `WiFiTLS.options` (tickets and resumption off): every connection proves a PSK the listener holds
+/// now. A client that caches sessions gets no session ID, and offering its last session back is a full
+/// handshake.
+#[tokio::test]
+async fn no_session_id_no_ticket_no_resumption() {
+    let mut server = Server::new(&[secret_a()]);
+    let psk = WiFiPsk::new(&secret_a());
+    let tls12 = (SslVersion::TLS1_2, SslVersion::TLS1_2);
+    let mut builder = hand_client_builder(&psk, "ECDHE-PSK-CHACHA20-POLY1305", tls12);
+    builder.set_session_cache_mode(SslSessionCacheMode::CLIENT);
+    let context = builder.build();
+    let first = hand_connect(server.addr(), &context).await.unwrap();
+    let session = first.ssl().session().expect("a session").to_owned();
+    assert!(session.id().is_empty(), "the listener gave a session ID");
+    next(&mut server.accepted, T).await.expect("handed over");
+
+    let tcp = TcpStream::connect(server.addr()).await.unwrap();
+    let mut ssl = Ssl::new(&context).unwrap();
+    // SAFETY: `session` comes from a connection of this same context.
+    #[allow(unsafe_code)]
+    unsafe {
+        ssl.set_session(&session).unwrap();
+    }
+    let mut second = SslStream::new(ssl, tcp).unwrap();
+    Pin::new(&mut second).connect().await.unwrap();
+    assert!(!second.ssl().session_reused(), "a connection resumed a session");
+    next(&mut server.accepted, T).await.expect("handed over");
+}
+
+/// The ECDHE groups an Apple client (BoringSSL under Network.framework) may pick in TLS 1.2 each negotiate.
+#[tokio::test]
+async fn every_group_an_apple_client_may_pick_negotiates() {
+    let mut server = Server::new(&[secret_a()]);
+    let psk = WiFiPsk::new(&secret_a());
+    let tls12 = (SslVersion::TLS1_2, SslVersion::TLS1_2);
+    for group in ["X25519", "P-256", "P-384"] {
+        let mut builder = hand_client_builder(&psk, "ECDHE-PSK-CHACHA20-POLY1305", tls12);
+        builder.set_groups_list(group).unwrap();
+        let stream = hand_connect(server.addr(), &builder.build()).await.unwrap_or_else(|e| panic!("{group}: {e}"));
+        assert_eq!(stream.ssl().current_cipher().unwrap().protocol_id(), [0xCC, 0xAC], "{group}");
+        let accepted = next(&mut server.accepted, T).await.expect("handed over");
+        assert_eq!(accepted.tls, NegotiatedTls::REQUIRED, "{group}");
     }
 }

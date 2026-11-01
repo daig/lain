@@ -1,7 +1,7 @@
 //! The host's Wi-Fi link source. Swift: `HostWiFiListener` (`LainHostCore/Session/HostWiFiListener.swift`)
 //! and `HostWiFiStatus` (`LainHostCore/HostStatus.swift`).
 
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap};
 use std::fmt;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
@@ -10,7 +10,7 @@ use std::time::Duration;
 use lain_link::ByteStream;
 use lain_platform::SecretStore;
 use tokio::sync::{mpsc, watch};
-use tokio::task::{JoinHandle, JoinSet};
+use tokio::task::{self, JoinHandle, JoinSet};
 use tokio::time::Instant;
 
 use crate::{ListenerOptions, PskTable, TlsPskListener, WiFiConnection};
@@ -135,6 +135,7 @@ impl WiFiListener {
             table: PskTable::new(),
             listener: None,
             reads: JoinSet::new(),
+            read_tickets: HashMap::new(),
             issued: 0,
             applied: 0,
             backoff: None,
@@ -149,7 +150,9 @@ impl WiFiListener {
         let _ = self.commands.send(Command::Refresh);
     }
 
-    /// Off, listening (with the port and the number of pairings), or failed.
+    /// Off, listening (with the port and the number of pairings), or failed. Receivers are notified only
+    /// when the value changes: a refresh that finds the same keys, or still none, leaves them quiet (as
+    /// Swift's `refresh()` leaves `status` alone), so a daemon can re-advertise on every change.
     pub fn status(&self) -> watch::Receiver<WiFiStatus> {
         self.status.clone()
     }
@@ -196,6 +199,8 @@ struct Actor<S> {
     listener: Option<TlsPskListener>,
     /// Reads in flight, each with its ticket; aborted when the actor ends.
     reads: JoinSet<Read>,
+    /// Each read task's ticket, so a read that panics is applied as a failed read.
+    read_tickets: HashMap<task::Id, u64>,
     /// Reads numbered as they begin, and the newest one whose outcome was applied: an older read that
     /// finishes later is dropped.
     issued: u64,
@@ -213,11 +218,18 @@ impl<S: SecretStore + Clone> Actor<S> {
                     Some(Command::Refresh) => self.read(),
                     Some(Command::Cancel) | None => break,
                 },
-                Some(done) = self.reads.join_next(), if !self.reads.is_empty() => {
-                    if let Ok((ticket, result)) = done {
+                Some(done) = self.reads.join_next_with_id(), if !self.reads.is_empty() => match done {
+                    Ok((id, (ticket, result))) => {
+                        self.read_tickets.remove(&id);
                         self.apply(ticket, result);
                     }
-                }
+                    // A store that panics (a bug in it or its D-Bus stack) failed this read: retry it.
+                    Err(e) => {
+                        if let Some(ticket) = self.read_tickets.remove(&e.id()) {
+                            self.apply(ticket, Err(format!("the read failed: {e}")));
+                        }
+                    }
+                },
                 () = sleep_until(self.retry_at), if self.retry_at.is_some() => {
                     self.retry_at = None;
                     self.read();
@@ -225,7 +237,7 @@ impl<S: SecretStore + Clone> Actor<S> {
             }
         }
         self.listener = None;
-        self.status.send_replace(WiFiStatus::Off("stopped".into()));
+        self.set_status(WiFiStatus::Off("stopped".into()));
     }
 
     fn read(&mut self) {
@@ -233,13 +245,25 @@ impl<S: SecretStore + Clone> Actor<S> {
         let ticket = self.issued;
         let secrets = self.secrets.clone();
         let timeout = self.options.read_timeout;
-        self.reads.spawn(async move {
+        let read = self.reads.spawn(async move {
             let result = match tokio::time::timeout(timeout, secrets.all_secrets()).await {
                 Ok(Ok(map)) => Ok(map),
                 Ok(Err(e)) => Err(e.to_string()),
                 Err(_) => Err(format!("no answer within {timeout:?}")),
             };
             (ticket, result)
+        });
+        self.read_tickets.insert(read.id(), ticket);
+    }
+
+    /// Publishes `status` if it differs from the current one; an equal value wakes no receiver.
+    fn set_status(&self, status: WiFiStatus) {
+        self.status.send_if_modified(|current| {
+            let changed = *current != status;
+            if changed {
+                *current = status;
+            }
+            changed
         });
     }
 
@@ -253,7 +277,7 @@ impl<S: SecretStore + Clone> Actor<S> {
             Err(why) => {
                 tracing::error!("Wi-Fi: could not read the pairing secrets ({why}); retrying");
                 if self.listener.is_none() {
-                    self.status.send_replace(WiFiStatus::Off("can't read the pairing secrets".into()));
+                    self.set_status(WiFiStatus::Off("can't read the pairing secrets".into()));
                 }
                 self.retry_later();
                 return;
@@ -266,7 +290,7 @@ impl<S: SecretStore + Clone> Actor<S> {
             if self.listener.take().is_some() || before != after {
                 tracing::info!("Wi-Fi: no paired iPad; not listening");
             }
-            self.status.send_replace(WiFiStatus::Off("no paired iPad yet".into()));
+            self.set_status(WiFiStatus::Off("no paired iPad yet".into()));
             self.backoff = None;
             self.retry_at = None;
             return;
@@ -278,7 +302,7 @@ impl<S: SecretStore + Clone> Actor<S> {
                     after.iter().cloned().collect::<Vec<_>>().join(", ")
                 );
             }
-            self.status.send_replace(WiFiStatus::Listening { port: listener.port(), paired });
+            self.set_status(WiFiStatus::Listening { port: listener.port(), paired });
             self.backoff = None;
             self.retry_at = None;
             return;
@@ -288,14 +312,14 @@ impl<S: SecretStore + Clone> Actor<S> {
             Ok((listener, _rejections)) => {
                 tracing::info!("Wi-Fi: {paired} paired iPad(s); listening on {}", listener.local_addr());
                 self.starts.fetch_add(1, Ordering::SeqCst);
-                self.status.send_replace(WiFiStatus::Listening { port: listener.port(), paired });
+                self.set_status(WiFiStatus::Listening { port: listener.port(), paired });
                 self.listener = Some(listener);
                 self.backoff = None;
                 self.retry_at = None;
             }
             Err(e) => {
                 tracing::error!("Wi-Fi listener could not start on {}: {e}", self.options.listener.bind);
-                self.status.send_replace(WiFiStatus::Failed(e.to_string()));
+                self.set_status(WiFiStatus::Failed(e.to_string()));
                 self.retry_later();
             }
         }
