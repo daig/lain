@@ -10,18 +10,20 @@ the cursor's position on each stream. Then:
      (0..2752) interpretations differ; record the metadata position after each.
   3. Relative motion from the virtual monitor's centre.
   4. User activity: with the desktop idle for at least 1.5 s, inject one kind of event and read
-     IdleMonitor.GetIdletime: motion, scroll (NotifyPointerAxis over the virtual monitor) and Shift.
-  5. Put the pointer back where it was (absolute motion on the physical stream).
+     IdleMonitor.GetIdletime: motion and scroll (NotifyPointerAxis over the virtual monitor). No key: the
+     spike's one Shift press and release belongs to exp4, where GTK confirms the keycode.
+  5. Put the pointer back where it was (absolute motion on the physical stream), check it against the
+     physical stream's metadata, retry once, and emit `restore_failed` if it still isn't there.
 
 Input safety: motion and scrolling only while the pointer is over the virtual monitor (which shows only the
-wallpaper), checked from the virtual stream's cursor metadata right before each scroll and the Shift
-(require_pointer_on); one Shift press and release; no buttons.
+wallpaper), checked from the virtual stream's cursor metadata right before each scroll (require_pointer_on);
+no keys; no buttons.
 """
 
 import time
 
-from mutter import (AXIS_FINISH, AXIS_FINGER, AXIS_WHEEL, KEY_LEFTSHIFT, DisplayConfig, Idle, Probe, Session,
-                    emit, log, pointer_on, pump, pump_until, require_pointer_on)
+from mutter import (AXIS_FINISH, AXIS_FINGER, AXIS_WHEEL, DisplayConfig, Idle, Probe, Session, emit, pointer_on,
+                    pump, pump_until, require_pointer_on, restore_pointer)
 
 W, H, FPS = 2752, 2064, 120
 PHYS = "HDMI-1"
@@ -108,7 +110,7 @@ def main():
 
         # 4. user activity
         s.move_abs(vpath, 688, 516)
-        for kind in ["motion", "axis_finger", "axis_wheel", "shift"]:
+        for kind in ["motion", "axis_finger", "axis_wheel"]:
             before_ms = wait_idle(idle, 1500, 20)
             if before_ms is None:
                 emit("activity", event=kind, skipped="desktop never idle for 1.5 s")
@@ -123,9 +125,6 @@ def main():
                 s.axis(0.0, 0.0, AXIS_FINGER | AXIS_FINISH)
             elif kind == "axis_wheel":
                 s.axis(0.0, 10.0, AXIS_WHEEL)
-            elif kind == "shift":
-                s.key(KEY_LEFTSHIFT, True)
-                s.key(KEY_LEFTSHIFT, False)
             pump(0.1)
             emit("activity", event=kind, idle_before_ms=before_ms, idle_after_ms=idle.ms())
 
@@ -134,9 +133,7 @@ def main():
         emit("virtual_stats", stats=vprobe.of("stats")[-3:])
     finally:
         if home and home.get("valid"):
-            s.move_abs(ppath, float(home["x"]), float(home["y"]))
-            pump(0.2)
-            emit("restored", physical_meta=last_cursor(pprobe) if pprobe else None, target=[home["x"], home["y"]])
+            restore_pointer(s, ppath, pprobe, home)
         for p in (vprobe, pprobe):
             if p:
                 p.stop()

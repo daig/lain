@@ -375,6 +375,32 @@ def require_pointer_on(probe, width, height, what):
     return c
 
 
+def at_home(probe, home):
+    """The probe's latest cursor metadata, and whether it is valid and exactly at home (device pixels)."""
+    cur = probe.of("cursor") if probe else []
+    c = cur[-1] if cur else None
+    return c, bool(c and c.get("valid") and c["x"] == home["x"] and c["y"] == home["y"])
+
+
+def restore_pointer(session, stream_path, probe, home, settle=0.3):
+    """Puts the pointer back at home (a position from the physical stream's metadata, whose monitor is at the
+    origin at scale 1, so device pixels are stream-local logical pixels), checks it against the same probe,
+    and tries once more if it isn't there. Emits one `restored` line per attempt and a `restore_failed` line if
+    the pointer still isn't home after the retry. Returns whether it is home."""
+    target = [home["x"], home["y"]]
+    last = None
+    for attempt in (1, 2):
+        session.move_abs(stream_path, float(home["x"]), float(home["y"]))
+        pump(settle)
+        last, ok = at_home(probe, home)
+        emit("restored", attempt=attempt, ok=ok, physical_meta=last, target=target)
+        if ok:
+            return True
+    emit("restore_failed", target=target, physical_meta=last,
+         what="pointer not back at home after a retry; not moved again")
+    return False
+
+
 def pw_node_info(node):
     """The node's properties and its EnumFormat params as pw-dump reports them."""
     out = subprocess.run(["pw-dump", str(node)], capture_output=True, text=True, timeout=10).stdout
