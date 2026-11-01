@@ -12,7 +12,6 @@ futures.workspace = true
 # The short-lived consumer that fixes the virtual monitor's mode (L8). Its main loop runs on its own thread.
 pipewire.workspace = true
 serde.workspace = true
-thiserror.workspace = true
 tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "process"] }
 toml.workspace = true
 tracing.workspace = true
@@ -20,7 +19,7 @@ zbus.workspace = true
 
 [dev-dependencies]
 tempfile.workspace = true
-tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time", "macros", "process", "test-util"] }
+tokio = { workspace = true, features = ["rt", "sync", "time", "macros", "process"] }
 
 [lints]
 workspace = true
