@@ -75,8 +75,18 @@ def main():
                                stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, env=gtk_env(),
                                start_new_session=True)  # its own group: the guard's strace and python go together
         if mode == "load":
-            time.sleep(3)  # the probe window is up and animating
-            rc = subprocess.call(cmd)
+            # The probe window is up and animating after about 3 s. pwprobe prints a JSON line per frame, so its
+            # stdout is drained all along: an undrained pipe fills in about 4 s, blocks pwprobe, and stalls
+            # the stream (and Mutter's per-frame blit into it) while the measurement runs.
+            t_end = time.monotonic() + 3
+            while time.monotonic() < t_end:
+                probe.poll()
+                time.sleep(0.1)
+            child = subprocess.Popen(cmd)
+            while child.poll() is None:
+                probe.poll()
+                time.sleep(0.1)
+            rc = child.returncode
         else:
             rc = consumer.wait(40)
     finally:
