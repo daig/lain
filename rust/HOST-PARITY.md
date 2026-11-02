@@ -106,19 +106,75 @@ What is where today:
 Not yet checked on the iPad: whether Ctrl + arrows, fn + arrows, Globe combos and the function-row keys arrive (a
 key log in the client's HUD would settle it in minutes).
 
-## 6. The system-key overlay (client: done, v5)
+## 5. Client: choosing a host (client: done; hosts: nothing new needed)
 
-Right Option held alone for 350 ms shows an overlay on the iPad: the link, the iPad's video numbers, the host's
-(`HostStats`, asked for at 4 Hz only while it shows), and the settings in effect. Every key still goes to the host
-unchanged; another key or a click hides it. Code: `ClientInputPipeline` (`overlayHoldNs`, `LocalShortcut.overlay`),
-`ClientOverlay`, `StreamViewController`.
+The iPad's panel (§6) lists every saved host: one it holds a Wi-Fi key for (`mac:<hostId>` in its store, from
+a USB pairing) and has a name for (recorded from each `HelloAck`'s `hostName`). Rows: **Automatic** (today's rule:
+the cable first, then the last used) and each host; a pick is stored, the Wi-Fi loop dials only that host, and a
+Wi-Fi link to another closes at once. The cable always wins: with a USB link up the hosts are listed, not
+selectable. Mac and Linux hosts alike. Code: `ClientSession.hostList`/`selectHost`, `WiFiDialPlan(only:)`,
+`LastConnectedHost.names`/`selected`, `ControlPanel`.
 
-## 5. Client: choosing a host (planned, client only)
+**What a Linux host needs to be switchable** (all of it exists today, as far as the Swift side knows):
+1. Paired once over USB, so the iPad holds its key.
+2. `_lain._tcp` advertised with TXT `id` and `vs`, and the TLS-PSK listener (§7.7, D29).
+3. A non-empty `hostName` in `HelloAck` (the panel's label; recorded on the next session after the update).
+4. A protocol version the iPad offers: v4 or v5 (the iPad now offers [4, 5]).
 
-Today the client dials the last host it used (or whichever answers first), one link at a time; a cable always wins.
-Agreed direction, step by step: first an explicit host choice (no auto-picking the most recent) with a switcher and
-shortcuts in the Ctrl-Opt-Cmd family; later, optionally, links held open to every host with a "park/focus" message
-(a v5 feature) for instant switching. Section 1's keep-alive already makes a switch keep each host's windows.
+Later, optionally: links held open to every host with a park/focus message for instant switching, and shortcuts.
+
+## 6. The system-key panel (client: done, v5)
+
+Right Option held alone for 350 ms opens a **latched** panel on the iPad: it stays open until Esc or a Right Option
+tap, and takes the keyboard and trackpad meanwhile (nothing reaches the host, except the release of the Right
+Option that opened it). Sections: stream (the iPad's numbers and the host's `HostStats`, asked for at 4 Hz only
+while open), hosts (§5), the iPad's options (pointer speed, scroll speed, scroll direction, Wi-Fi path, radio
+priority), and a shortcut cheat sheet. Code: `ClientInputPipeline` (`overlayHoldNs`, latched panel mode),
+`ControlPanel`, `PanelView` in `StreamViewController`.
+
+**What this asks of a host:**
+- **The tap length (needed):** a Right Option release is a tap only within **300 ms** of its press (Mac:
+  `SystemKey.tapMaxNs`). Without it, closing the panel's hold opens the overview on release.
+- **The client's remap (needed):** the iPad remaps Right Opt + Tab, Space, H, Q, ` itself (Right Option only):
+  it sends *Right Option up, Left Command down, the key*. That release is not a tap: the Mac waits for the next
+  event and drops the tap if it's a Command press, or calls it a tap after 60 ms (`SystemKey.pendingTap`,
+  `tapDelayNs`). Linux's router fires the overview on that release today.
+- **Protocol v5 (needed for the tests, optional for behavior):** `StatsRequest` (0x10, iPad → host:
+  `HostStats` every N ms, 0 stops; the host clamps to 100–5000) and `HostStats` (0x11: encode p50/p95 and ack
+  RTT p50/p95 in µs with `UInt32.max` for none; captured, encoded, sent, dropped before encode, encode
+  failures, keyframes, refinements as u32; in flight and peak as u8; bits per second as u32), behind
+  `ProtocolFeature.hostStats`. The Swift window is now [4, 5] (v3's golden bytes are gone; v5's recorded), so
+  `lain-proto`'s golden tests fail until it has the two messages and the new window. A host that doesn't send
+  stats is fine: the panel says its lain is older (at v4) or waits for numbers (at v5).
+
+## 7. Video over a weak link (Mac host: done; Linux: worth porting)
+
+Measured on the device over Wi-Fi (`log show --predicate 'subsystem == "lain" AND category == "diag"'`):
+- **Adaptive bitrate** (`LainMedia/BitrateController.swift`, pure and trace-tested): from each `FrameAck` (size,
+  round trip, receipt time) the best round trip, the median queueing over the last eight, and the delivery rate
+  over the time the link was delivering (a gap over 3× the median ack gap is a stall). Down (at most 30% a
+  step, to 90% of delivery) only on a busy, warm link: frames held back **for the link** (not for the encoder),
+  at least 3 Mb/s delivered, past the first second; up 15% per clear half second, busy or not. Floor 6, ceiling
+  60 Mb/s; 60 over USB, 20 over Wi-Fi to start. Refinements go out at the ceiling. VideoToolbox takes the rate
+  live (average plus a 1.5× one-second cap below the ceiling). Each rule came from a device trace; see the tests.
+- **Held-back frames split by cause** (`FrameGate.droppedForLink`/`droppedForEncoder`).
+- **Diagnostics** once a second: input arrival (bursts, gaps, queueing from the header send times), video (sent,
+  held back by cause, frame sizes, ack round trip, target, delivered, encode time, and per-direction one-way
+  excess delay from the ack's receipt time).
+- **4:2:0 vs 4:4:4** (Mac menu: Color): big scroll frames only ~8% smaller in 4:2:0 (measured), so the bitrate,
+  not the chroma, is the lever.
+
+## 8. Wi-Fi findings (2026-11-01, Mac host over AWDL and the LAN)
+
+- Over AWDL: a ~270 ms blackout about once a second, both directions (the Mac's Wi-Fi was on 6 GHz, AWDL on 5).
+- Over the LAN: a ~100 ms pause 2-4 times a second, both directions. **It is the iPad's radio**: pinging the
+  router from the Mac at 10 Hz is clean (0/150 over 40 ms), pinging the iPad is not (18-45/150, a sawtooth every
+  2-5 pings). Not affected by: service class (`.interactiveVideo` both sides), lain's peer-to-peer advertising
+  (LainHost was the Mac's only AWDL client; removing it changed nothing), Universal Control, the Mac's AWDL off,
+  the iPad's Bluetooth, AirDrop, Handoff, AirPlay Receiver. Open: whether the iPad's own browse or something
+  system-wide keeps its radio away; a sysdiagnose of the iPad would say. A Linux host on Ethernet should show the
+  same pauses with the same iPad on the same Wi-Fi.
+- WiFiAware is unavailable on macOS 27 (every declaration `@available(macOS, unavailable)`).
 
 ## Open on the Linux side
 
