@@ -6,6 +6,8 @@ public struct FrameAckWindow: Sendable {
         /// Send → ack received, on the host clock.
         public var roundTripNs: UInt64
         public var bytes: Int
+        /// When the frame was sent (host clock).
+        public var sentNs: UInt64 = 0
     }
 
     public var maxInFlight: Int
@@ -30,7 +32,7 @@ public struct FrameAckWindow: Sendable {
         guard let i = inFlight.firstIndex(where: { $0.id == frameId }) else { return nil }
         let f = inFlight[i]
         inFlight.removeFirst(i + 1)
-        return Ack(frameId: frameId, roundTripNs: timeNs >= f.sentNs ? timeNs - f.sentNs : 0, bytes: f.bytes)
+        return Ack(frameId: frameId, roundTripNs: timeNs >= f.sentNs ? timeNs - f.sentNs : 0, bytes: f.bytes, sentNs: f.sentNs)
     }
 
     /// Forget everything in flight (reconnect, keyframe restart).

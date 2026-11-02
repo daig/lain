@@ -86,6 +86,10 @@ public struct VideoWindow: Sendable, Equatable {
     public var deliveryBps: Int?
     public var queueingMs: Double?
     public var encodeP50Ms: Double?
+    /// Per direction, each frame's one-way delay beyond the session's best (ms): Mac → iPad (the frame), and
+    /// iPad → Mac (its ack). The clocks are unrelated; only the excess counts.
+    public var downlinkMs: [Double] = []
+    public var uplinkMs: [Double] = []
     public init() {}
 
     /// With the cumulative stats' change over the same second (captured, held back before encode).
@@ -108,6 +112,9 @@ public struct VideoWindow: Sendable, Equatable {
             line += queueingMs.map { String(format: ", queueing %.0f ms", $0) } ?? ""
         }
         if let encodeP50Ms { line += String(format: " · encode p50 %.1f ms", encodeP50Ms) }
+        if let down = downlinkMs.max(), let up = uplinkMs.max() {
+            line += String(format: " · one-way excess max: down %.0f ms, up %.0f ms", down, up)
+        }
         return line
     }
 }
