@@ -121,6 +121,10 @@ public final class HostVideoPipeline: Sendable {
         var appliedRate = 0
         /// The gate's held-back count as last passed to the controller.
         var heldBackSeen = 0
+        /// The smallest (iPad receipt − Mac send) and (Mac ack receipt − iPad receipt) seen, wrapping: the
+        /// clocks are unrelated (diagnostics).
+        var bestDown: Int64?
+        var bestUp: Int64?
     }
 
     public let displayProvider: any StreamedDisplayProvider
@@ -509,6 +513,14 @@ public final class HostVideoPipeline: Sendable {
                     s.bitrate?.heldBack(at: now)
                 }
                 s.bitrate?.acked(bytes: Int(ack.bytes), rttNs: a.roundTripNs, at: now)
+                // One-way excess per direction, against the best seen (diagnostics).
+                let down = Int64(bitPattern: ack.receivedAtNs &- a.sentNs), up = Int64(bitPattern: now &- ack.receivedAtNs)
+                if s.bestDown.map({ down < $0 }) ?? true { s.bestDown = down }
+                if s.bestUp.map({ up < $0 }) ?? true { s.bestUp = up }
+                if let bd = s.bestDown, let bu = s.bestUp, s.window.downlinkMs.count < 512 {
+                    s.window.downlinkMs.append(Double(down &- bd) / 1e6)
+                    s.window.uplinkMs.append(Double(up &- bu) / 1e6)
+                }
                 if s.window.ackRttsMs.count < 512 { s.window.ackRttsMs.append(Double(a.roundTripNs) / 1e6) }
             }
             return s.gate
