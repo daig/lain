@@ -1,6 +1,6 @@
 # lain
 
-Mac ↔ iPad Pro low-latency remote control: the iPad (with Magic Keyboard) is the Mac's display, keyboard, trackpad and speakers. USB-C via usbmux first; peer-to-peer Wi-Fi later; internet out of scope.
+Mac ↔ iPad Pro low-latency remote control: the iPad (with Magic Keyboard) is the Mac's display, keyboard, trackpad and speakers. Both transports ship today (§7.7): USB-C via usbmux, and Wi-Fi over the LAN or peer-to-peer (AWDL; Bonjour discovery, TLS-PSK) — shipped in M6a. Wi-Fi requires one prior USB pairing (the USB session records the per-Mac secret `mac:<hostId>`), and an attached cable always wins over a Wi-Fi link. Internet remains out of scope.
 
 **Start every session by reading `docs/STATUS.md`** (current state, next steps, working agreements). **Read `docs/ARCHITECTURE.md` before any design or implementation work.** It is the authoritative spec: invariants (§3), workflow and testing (§12.1–12.2), decisions (§14), milestones (§10), open spikes (§11) and measurements (§13). `docs/PadLink-Design.md` is the superseded exploratory doc — background only.
 
