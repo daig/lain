@@ -10,12 +10,14 @@
 //! to an output callback as an [`Outbound`], tagged with the connection it goes on. Time comes from
 //! `lain_platform::Clock`. Nothing touches a channel, a socket or a runtime.
 
+pub mod bitrate;
 pub mod cursor;
 pub mod gate;
 pub mod hevc;
 pub mod pipeline;
 pub mod stats;
 
+pub use bitrate::{BitrateConfig, BitrateController};
 pub use cursor::{CursorMonitor, CursorShapeTracker};
 pub use gate::{FrameGate, GateStats, IdleRefiner};
 pub use hevc::{AccessUnit, HevcError};

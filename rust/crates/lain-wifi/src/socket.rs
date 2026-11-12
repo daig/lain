@@ -37,12 +37,14 @@ pub(crate) fn configure(stream: &TcpStream) -> io::Result<()> {
     Ok(())
 }
 
-/// Marks a dialed realtime connection's packets with [`REALTIME_DSCP`]. Swift: `dialParameters(psk:kind:)`'s
-/// `serviceClass`. The host never marks: which accepted connection is realtime is known only after its
-/// `ChannelHello`, past TLS, and Swift's listener marks nothing either.
-pub(crate) fn mark_realtime(stream: &TcpStream) -> io::Result<()> {
+/// DSCP AF41 (34), what Apple's `.interactiveVideo` service class maps to: the host's radio priority
+/// ([`ListenerOptions::dscp`](crate::ListenerOptions::dscp)). Wi-Fi (WMM) puts it in the video access category.
+pub const INTERACTIVE_VIDEO_DSCP: u32 = 34;
+
+/// Marks a connection's packets with `dscp` (the IP TOS byte's upper six bits), IPv4 and IPv6 alike.
+pub(crate) fn mark(stream: &TcpStream, dscp: u32) -> io::Result<()> {
     let socket = SockRef::from(stream);
-    let tos = REALTIME_DSCP << 2;
+    let tos = dscp << 2;
     match stream.local_addr()? {
         std::net::SocketAddr::V4(_) => socket.set_tos_v4(tos),
         std::net::SocketAddr::V6(a) => {
@@ -51,6 +53,13 @@ pub(crate) fn mark_realtime(stream: &TcpStream) -> io::Result<()> {
             if a.ip().to_ipv4_mapped().is_some() { socket.set_tos_v4(tos) } else { Ok(()) }
         }
     }
+}
+
+/// Marks a dialed realtime connection's packets with [`REALTIME_DSCP`]. Swift: `dialParameters(psk:kind:)`'s
+/// `serviceClass`. The host marks only with its radio priority on (every accepted connection alike: which is
+/// realtime is known only after its `ChannelHello`, past TLS), as Swift's listener does.
+pub(crate) fn mark_realtime(stream: &TcpStream) -> io::Result<()> {
+    mark(stream, REALTIME_DSCP)
 }
 
 #[cfg(test)]
@@ -79,5 +88,18 @@ mod tests {
         }
         assert_eq!(SockRef::from(&dialed).tos_v4().unwrap(), 0xB8);
         assert_eq!(SockRef::from(&accepted).tos_v4().unwrap(), 0);
+    }
+
+    /// The radio priority's mark, on an IPv4 socket and on an IPv4-mapped one of the dual-stack wildcard.
+    #[tokio::test]
+    async fn the_radio_priority_marks_af41() {
+        for bind in ["127.0.0.1:0", "[::]:0"] {
+            let Ok(listener) = tokio::net::TcpListener::bind(bind).await else { continue };
+            let port = listener.local_addr().unwrap().port();
+            let (dialed, accepted) = tokio::join!(TcpStream::connect(("127.0.0.1", port)), listener.accept());
+            let (_dialed, (accepted, _)) = (dialed.unwrap(), accepted.unwrap());
+            mark(&accepted, INTERACTIVE_VIDEO_DSCP).unwrap();
+            assert_eq!(SockRef::from(&accepted).tos_v4().unwrap(), 0x88, "{bind}");
+        }
     }
 }

@@ -131,6 +131,13 @@ impl HeldKeys {
     }
 }
 
+/// The longest Right Option press that is still a tap (the overview). The iPad opens its panel after 350 ms
+/// held alone, so a hold that opened it never taps. Swift: `SystemKey.tapMaxNs`.
+pub const SYSTEM_TAP_MAX_NS: u64 = 300_000_000;
+/// How long a Right Option tap waits for the client's own Command press (its remap of Right Opt-Tab and the
+/// like) before it counts. Swift: `SystemKey.tapDelayNs`.
+pub const SYSTEM_TAP_DELAY_NS: u64 = 60_000_000;
+
 /// Turns the client's decoded input messages into [`InputAction`]s (§5.5). Swift: `HostInputRouter`, with the
 /// held-state tracking of `InputInjector`.
 ///
@@ -176,6 +183,11 @@ pub struct InputRouter {
     right_option: bool,
     /// Right Option went down and nothing else happened since: its release is a tap.
     system_tap: bool,
+    /// When Right Option last went down (monotonic ns).
+    system_down_ns: u64,
+    /// Right Option was released as a tap, which fires at this time (monotonic ns) unless the client's own
+    /// Command press comes first (its remap); any other event fires it at once.
+    pending_tap: Option<u64>,
     /// The key whose press became a chord: its release sends nothing (no modifier sync either).
     chorded: Option<u16>,
     logged_rotate: bool,
@@ -207,6 +219,8 @@ impl InputRouter {
             left_option: false,
             right_option: false,
             system_tap: false,
+            system_down_ns: 0,
+            pending_tap: None,
             chorded: None,
             logged_rotate: false,
             logged_usages: [0; 4],
@@ -294,7 +308,7 @@ impl InputRouter {
         let start = out.len();
         match message {
             Message::KeyEvent(e) => {
-                self.key(e, out);
+                self.key(e, now_ns, out);
                 Self::outcome(out, start, None)
             }
             Message::PointerMove(m) => self.pointer_move(m, out),
@@ -324,12 +338,17 @@ impl InputRouter {
     /// The timer side of [`Momentum::Client`](crate::Momentum::Client): sends the held-back scroll stop if it
     /// is due at `now_ns`. Returns whether it appended anything. Cheap; does nothing in the default mode.
     pub fn poll(&mut self, now_ns: u64, out: &mut Vec<InputAction>) -> bool {
-        self.scroll.poll(now_ns, out)
+        let scrolled = self.scroll.poll(now_ns, out);
+        let tapped = self.pending_tap.is_some_and(|at| now_ns >= at);
+        if tapped {
+            self.fire_tap(out);
+        }
+        scrolled || tapped
     }
 
     /// When [`poll`](Self::poll) next has something to do, if ever (monotonic nanoseconds).
     pub fn next_deadline(&self) -> Option<u64> {
-        self.scroll.deadline()
+        [self.scroll.deadline(), self.pending_tap].into_iter().flatten().min()
     }
 
     /// Invariant 4, host side: ends an open scroll sequence at once (the client can't once the link is gone),
@@ -359,6 +378,7 @@ impl InputRouter {
         self.left_option = false;
         self.right_option = false;
         self.system_tap = false;
+        self.pending_tap = None;
         self.chorded = None;
     }
 
@@ -368,7 +388,16 @@ impl InputRouter {
 
     // MARK: Keys
 
-    fn key(&mut self, e: &KeyEvent, out: &mut Vec<InputAction>) {
+    fn key(&mut self, e: &KeyEvent, now_ns: u64, out: &mut Vec<InputAction>) {
+        if self.pending_tap.is_some() {
+            // The client's remap releases Right Option and presses Left Command before Tab, Space…: not a tap.
+            let remap = e.is_down && e.usage_page == KEYBOARD_PAGE && matches!(e.usage, 0xE3 | 0xE7);
+            if remap {
+                self.pending_tap = None;
+            } else {
+                self.fire_tap(out);
+            }
+        }
         if e.is_repeat {
             return;
         }
@@ -381,6 +410,7 @@ impl InputRouter {
                     self.right_option = e.is_down;
                     if e.is_down {
                         self.system_tap = self.config.system_key;
+                        self.system_down_ns = now_ns;
                     }
                 }
                 _ => {}
@@ -399,12 +429,19 @@ impl InputRouter {
             self.command_hold = Some(s.hold);
         }
         if is_modifier {
-            // Right Option released with nothing else in between: a tap, the overview.
-            let tapped = !e.is_down && e.usage_page == KEYBOARD_PAGE && e.usage == 0xE6 && self.system_tap;
+            // Right Option released soon with nothing else in between: a tap, the overview, once nothing
+            // says otherwise. A longer hold is not a tap: the iPad shows its panel after 350 ms held alone.
+            let tapped = !e.is_down
+                && e.usage_page == KEYBOARD_PAGE
+                && e.usage == 0xE6
+                && self.system_tap
+                && now_ns.saturating_sub(self.system_down_ns) <= SYSTEM_TAP_MAX_NS;
             self.sync_with(flags, out);
-            if tapped {
+            if e.usage_page == KEYBOARD_PAGE && e.usage == 0xE6 && !e.is_down {
                 self.system_tap = false;
-                self.chord(&[KEY_LEFTMETA], None, out);
+            }
+            if tapped {
+                self.pending_tap = Some(now_ns.saturating_add(SYSTEM_TAP_DELAY_NS));
             }
             return; // a modifier key's effect is the modifier state it carries
         }
@@ -470,6 +507,12 @@ impl InputRouter {
         self.modifiers = flags;
         let flags = self.effective(flags, true);
         self.sync_with(flags, out);
+    }
+
+    /// A pending Right Option tap: the overview (a Super tap).
+    fn fire_tap(&mut self, out: &mut Vec<InputAction>) {
+        self.pending_tap = None;
+        self.chord(&[KEY_LEFTMETA], None, out);
     }
 
     /// Right Option is held, and not Left Option: the system key.

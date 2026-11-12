@@ -22,7 +22,8 @@ pub fn video_lines(status: &HostStatus, stats: Option<HostVideoStats>, error: Op
     };
     let ms = |x: Option<f64>| x.map_or_else(|| "–".to_owned(), |x| format!("{x:.1}"));
     let chroma = if v.chroma == Some(ChromaFormat::Yuv444) { "4:4:4 10-bit" } else { "4:2:0" };
-    Some(vec![
+    let mbps = |bps: f64| format!("{:.1}", bps / 1e6);
+    let mut lines = vec![
         format!("Video {}×{} {chroma}", v.pixel_width, v.pixel_height),
         format!(
             "{:.1} Mb/s, {} sent, {} keyframes, {} refinements",
@@ -38,10 +39,15 @@ pub fn video_lines(status: &HostStatus, stats: Option<HostVideoStats>, error: Op
             ms(v.ack_rtt_ms_p50)
         ),
         format!(
-            "Dropped before encode {}, in flight {} (peak {})",
-            v.dropped_before_encode, v.in_flight, v.peak_in_flight
+            "Dropped before encode {} ({} for the link), in flight {} (peak {})",
+            v.dropped_before_encode, v.dropped_for_link, v.in_flight, v.peak_in_flight
         ),
-    ])
+    ];
+    if let Some(target) = v.target_bps {
+        let delivered = v.delivery_bps.map_or_else(|| "–".to_owned(), |d| mbps(d as f64));
+        lines.push(format!("Target {} Mb/s (adaptive), delivered {delivered} Mb/s", mbps(f64::from(target))));
+    }
+    Some(lines)
 }
 
 /// Logs every status change (its title), every Wi-Fi status change, the video error and the peer's version note
@@ -116,6 +122,9 @@ mod tests {
             encode_ms_p95: Some(8.6),
             ack_rtt_ms_p50: None,
             dropped_before_encode: 3,
+            dropped_for_link: 2,
+            target_bps: Some(20_000_000),
+            delivery_bps: Some(12_340_000),
             in_flight: 1,
             peak_in_flight: 2,
             ..HostVideoStats::default()
@@ -126,7 +135,8 @@ mod tests {
                 "Video 2752×2064 4:2:0",
                 "60.0 Mb/s, 120 sent, 2 keyframes, 1 refinements",
                 "Encode p50 7.9 / p95 8.6 ms, ack RTT p50 – ms",
-                "Dropped before encode 3, in flight 1 (peak 2)",
+                "Dropped before encode 3 (2 for the link), in flight 1 (peak 2)",
+                "Target 20.0 Mb/s (adaptive), delivered 12.3 Mb/s",
             ]
         );
     }

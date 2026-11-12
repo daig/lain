@@ -556,6 +556,120 @@ impl WireMessage for HostSetup {
     }
 }
 
+/// v5: the iPad asks for [`HostStats`] every `interval_ms` (0: stop), while it shows them. Only to peers with
+/// [`ProtocolFeature::HostStats`](crate::ProtocolFeature). Swift: `StatsRequest`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct StatsRequest {
+    /// Clamped by the host to [`HostStats::INTERVAL_RANGE`]; 0 stops them.
+    pub interval_ms: u32,
+}
+
+impl WireMessage for StatsRequest {
+    const TYPE: MessageType = MessageType::StatsRequest;
+    fn encode(&self, w: &mut ByteWriter) {
+        w.u32(self.interval_ms);
+    }
+    fn decode(r: &mut ByteReader<'_>) -> Result<Self> {
+        Ok(Self { interval_ms: r.u32()? })
+    }
+}
+
+/// v5: what only the host knows about the video path (encode times, frames held back before the encoder,
+/// frames in flight), sent every [`StatsRequest::interval_ms`] while the iPad asks. Counters run from the start
+/// of the session's video; a time not measured yet is [`HostStats::NONE`]. Swift: `HostStats`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct HostStats {
+    /// Submit → encoded, in microseconds.
+    pub encode_p50_us: u32,
+    pub encode_p95_us: u32,
+    /// Frame sent → `FrameAck` received, on the host's clock, in microseconds.
+    pub ack_rtt_p50_us: u32,
+    pub ack_rtt_p95_us: u32,
+    pub captured: u32,
+    pub encoded: u32,
+    pub sent: u32,
+    /// Replaced in the host's latest-wins slot before the encoder took them (backpressure).
+    pub dropped_before_encode: u32,
+    pub encode_failures: u32,
+    pub keyframes: u32,
+    pub refinements: u32,
+    /// Sent and not yet acknowledged, now and at most.
+    pub in_flight: u8,
+    pub peak_in_flight: u8,
+    /// Over the last second.
+    pub bits_per_second: u32,
+}
+
+impl HostStats {
+    /// A time not measured yet.
+    pub const NONE: u32 = u32::MAX;
+    /// The intervals the host honours, in milliseconds.
+    pub const INTERVAL_RANGE: std::ops::RangeInclusive<u32> = 100..=5000;
+}
+
+impl Default for HostStats {
+    fn default() -> Self {
+        Self {
+            encode_p50_us: Self::NONE,
+            encode_p95_us: Self::NONE,
+            ack_rtt_p50_us: Self::NONE,
+            ack_rtt_p95_us: Self::NONE,
+            captured: 0,
+            encoded: 0,
+            sent: 0,
+            dropped_before_encode: 0,
+            encode_failures: 0,
+            keyframes: 0,
+            refinements: 0,
+            in_flight: 0,
+            peak_in_flight: 0,
+            bits_per_second: 0,
+        }
+    }
+}
+
+impl WireMessage for HostStats {
+    const TYPE: MessageType = MessageType::HostStats;
+    fn encode(&self, w: &mut ByteWriter) {
+        for v in [
+            self.encode_p50_us,
+            self.encode_p95_us,
+            self.ack_rtt_p50_us,
+            self.ack_rtt_p95_us,
+            self.captured,
+            self.encoded,
+            self.sent,
+            self.dropped_before_encode,
+            self.encode_failures,
+            self.keyframes,
+            self.refinements,
+        ] {
+            w.u32(v);
+        }
+        w.u8(self.in_flight);
+        w.u8(self.peak_in_flight);
+        w.u32(self.bits_per_second);
+    }
+    fn decode(r: &mut ByteReader<'_>) -> Result<Self> {
+        Ok(Self {
+            encode_p50_us: r.u32()?,
+            encode_p95_us: r.u32()?,
+            ack_rtt_p50_us: r.u32()?,
+            ack_rtt_p95_us: r.u32()?,
+            captured: r.u32()?,
+            encoded: r.u32()?,
+            sent: r.u32()?,
+            dropped_before_encode: r.u32()?,
+            encode_failures: r.u32()?,
+            keyframes: r.u32()?,
+            refinements: r.u32()?,
+            in_flight: r.u8()?,
+            peak_in_flight: r.u8()?,
+            bits_per_second: r.u32()?,
+        })
+    }
+}
+
 // MARK: - Video
 
 /// Colour tags use ITU-T H.273 code points (P3-D65 primaries = 12, sRGB transfer = 13, BT.709 matrix = 1).

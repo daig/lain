@@ -7,7 +7,10 @@
 //!   `lain-hostd` with the desktop session; works whether or not the daemon runs.
 //! - `lain scale [VALUE|own]`: lain's display's scale (the closest the desktop offers is applied), at once.
 //! - `lain keep-alive [SECONDS]`: how long lain keeps its display after the iPad leaves, at once.
-//! - `lain bitrate [MBPS]`: the video bitrate, from the next start of the daemon.
+//! - `lain bitrate [MBPS]`: the video bitrate (the ceiling with adaptive bitrate), from the next start.
+//! - `lain adaptive-bitrate [on|off]`: the bitrate follows the link, from the next start.
+//! - `lain radio-priority [standard|interactive-video]`: how Wi-Fi connections ask for airtime, from the next
+//!   start.
 //!
 //! Each setting is also written to `config.toml`, so it holds after a restart. Without a value, it is shown.
 
@@ -38,8 +41,14 @@ enum Command {
     Scale { value: Option<String> },
     /// Show or set how long lain keeps its display after the iPad leaves (0 to 600 seconds).
     KeepAlive { seconds: Option<u32> },
-    /// Show or set the video bitrate in Mb/s (1 to 200); applies when the daemon next starts.
+    /// Show or set the video bitrate in Mb/s (1 to 200; with adaptive bitrate, the most it uses); applies when
+    /// the daemon next starts.
     Bitrate { mbps: Option<u32> },
+    /// Show or set whether the bitrate follows what the link delivers; applies when the daemon next starts.
+    AdaptiveBitrate { state: Option<OnOff> },
+    /// Show or set how Wi-Fi connections ask for airtime: standard, or interactive-video (DSCP AF41); applies
+    /// when the daemon next starts.
+    RadioPriority { priority: Option<Priority> },
     /// Bring video back after "Stop sharing" in GNOME's top bar (the iPad reconnects).
     Resume,
     /// Show or set whether video comes back by itself after "Stop sharing".
@@ -51,6 +60,19 @@ enum OnOff {
     On,
     Off,
 }
+
+#[derive(Clone, Copy, ValueEnum)]
+enum Priority {
+    Standard,
+    InteractiveVideo,
+}
+
+fn config_path() -> Result<PathBuf, String> {
+    let home = lain_linux_system::paths::config_home().map_err(|e| e.to_string())?;
+    Ok(lain_linux_system::paths::lain_dir(&home).join(lain_hostd::CONFIG_FILE))
+}
+
+const NEXT_START: &str = " from the next start (systemctl --user restart lain-hostd)";
 
 #[tokio::main(flavor = "current_thread")]
 async fn main() -> ExitCode {
@@ -216,6 +238,30 @@ async fn run(command: Command) -> Result<(), String> {
                 let config = lain_hostd::Config::load(&path).map_err(|e| e.to_string())?;
                 println!("bitrate: {} Mb/s", config.bitrate_mbps);
             }
+            Ok(())
+        }
+        Command::AdaptiveBitrate { state } => {
+            let path = config_path()?;
+            if let Some(state) = state {
+                lain_hostd::config::set_top_level_bool(&path, "adaptive_bitrate", matches!(state, OnOff::On))?;
+            }
+            let on = lain_hostd::Config::load(&path).map_err(|e| e.to_string())?.adaptive_bitrate;
+            let when = if state.is_some() { NEXT_START } else { "" };
+            println!("adaptive bitrate: {}{when}", if on { "on" } else { "off" });
+            Ok(())
+        }
+        Command::RadioPriority { priority } => {
+            let path = config_path()?;
+            if let Some(p) = priority {
+                let value = match p {
+                    Priority::Standard => lain_hostd::config::RadioPriority::Standard,
+                    Priority::InteractiveVideo => lain_hostd::config::RadioPriority::InteractiveVideo,
+                };
+                lain_hostd::config::set_top_level(&path, "radio_priority", Some(&format!("\"{}\"", value.name())))?;
+            }
+            let p = lain_hostd::Config::load(&path).map_err(|e| e.to_string())?.radio_priority;
+            let when = if priority.is_some() { NEXT_START } else { "" };
+            println!("radio priority: {}{when}", p.name());
             Ok(())
         }
         Command::Autostart { state } => {

@@ -57,6 +57,8 @@ messages! {
     Pair(Pair),
     DisplayLayout(DisplayLayout),
     HostSetup(HostSetup),
+    StatsRequest(StatsRequest),
+    HostStats(HostStats),
     VideoConfig(VideoConfig),
     VideoFrame(VideoFrame),
     FrameAck(FrameAck),

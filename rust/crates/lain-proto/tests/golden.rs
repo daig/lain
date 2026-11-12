@@ -144,8 +144,8 @@ fn digests_are_computed_from_this_codec_and_equal_the_pinned_ones() {
         assert_eq!(hex::encode(digest), hex::encode(&golden.digests[&v]), "v{v}'s digest changed");
     }
     // The values the spec records (LINUX-HOST.md), in case the file and the codec ever drift together.
-    assert_eq!(hex::encode(SchemaDigest::compute(3)), "1dfd9829fe53df7a");
     assert_eq!(hex::encode(SchemaDigest::compute(4)), "50b787cf3ef02169");
+    assert_eq!(hex::encode(SchemaDigest::compute(5)), "af02268a861c6df9");
     for e in VersionList::supported().entries() {
         assert_eq!(e.digest, SchemaDigest::compute(e.version));
     }

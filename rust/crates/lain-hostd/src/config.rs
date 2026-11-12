@@ -62,8 +62,16 @@ pub struct Config {
     /// Listen for and advertise Wi-Fi links. Swift's host does whenever its id loads (`HostWiFiConfig(advertise:
     /// true)`), so the default is on.
     pub wifi: bool,
-    /// The encoder's average bitrate and `HelloAck.bitrate` (Swift: `HostVideoPipeline`'s 60 Mb/s).
+    /// The encoder's average bitrate and `HelloAck.bitrate` (Swift: `HostVideoPipeline`'s 60 Mb/s); with
+    /// `adaptive_bitrate`, the ceiling.
     pub bitrate_mbps: u32,
+    /// Adaptive bitrate (`PipelineOptions::adaptive`, as the Mac host): the target follows what the link
+    /// delivers, from 6 Mb/s up to `bitrate_mbps`, starting at 20 Mb/s over the network. On by default.
+    pub adaptive_bitrate: bool,
+    /// How the Wi-Fi listener's connections ask for airtime (the Mac host's Radio Priority, an experiment
+    /// against the iPad's Wi-Fi pauses): `"standard"` (unmarked, the default) or `"interactive-video"` (DSCP
+    /// AF41, Wi-Fi's video access category).
+    pub radio_priority: RadioPriority,
     /// How long lain's display outlives the iPad leaving unexpectedly (its app left the screen, the cable came
     /// out), so that it comes back to the same display (`HostConfig::display_keep_alive`; no Swift counterpart).
     /// 0 removes it at once, as the Mac host does.
@@ -86,11 +94,40 @@ impl Default for Config {
         Self {
             wifi: true,
             bitrate_mbps: PipelineOptions::default().average_bit_rate / 1_000_000,
+            adaptive_bitrate: true,
+            radio_priority: RadioPriority::Standard,
             keep_alive_seconds: 30,
             scale: None,
             resume_after_stop: true,
             barrier: BarrierConfig { detour: barrier.detour, band: barrier.band },
             input: InputSection::from(&InputConfig::default()),
+        }
+    }
+}
+
+/// `radio_priority` (Swift: `NetworkStreamOptions.RadioPriority`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default, Deserialize)]
+#[serde(rename_all = "kebab-case")]
+pub enum RadioPriority {
+    #[default]
+    Standard,
+    InteractiveVideo,
+}
+
+impl RadioPriority {
+    /// The TOML value.
+    pub const fn name(self) -> &'static str {
+        match self {
+            Self::Standard => "standard",
+            Self::InteractiveVideo => "interactive-video",
+        }
+    }
+
+    /// The listener's DSCP mark.
+    pub const fn dscp(self) -> Option<u32> {
+        match self {
+            Self::Standard => None,
+            Self::InteractiveVideo => Some(lain_wifi::socket::INTERACTIVE_VIDEO_DSCP),
         }
     }
 }
@@ -425,7 +462,11 @@ impl Config {
 
     /// The video pipeline's options: the defaults with the bitrate.
     pub fn pipeline_options(&self) -> PipelineOptions {
-        PipelineOptions { average_bit_rate: self.bitrate_mbps * 1_000_000, ..PipelineOptions::default() }
+        PipelineOptions {
+            average_bit_rate: self.bitrate_mbps * 1_000_000,
+            adaptive: self.adaptive_bitrate,
+            ..PipelineOptions::default()
+        }
     }
 
     /// `lain-host`'s config for this file (Swift: what `HostController` hands `HostSession`): the versions
@@ -446,7 +487,9 @@ impl Config {
 
     /// The daemon's options for this file: `wifi`; the rest the defaults.
     pub fn daemon_options(&self) -> DaemonOptions {
-        DaemonOptions { wifi: self.wifi, ..DaemonOptions::default() }
+        let mut options = DaemonOptions { wifi: self.wifi, ..DaemonOptions::default() };
+        options.listener.listener.dscp = self.radio_priority.dscp();
+        options
     }
 }
 
@@ -597,6 +640,9 @@ mod tests {
         let c = Config::default();
         assert!(c.wifi);
         assert_eq!(c.bitrate_mbps, 60);
+        assert!(c.adaptive_bitrate && c.pipeline_options().adaptive);
+        assert_eq!(c.radio_priority, RadioPriority::Standard);
+        assert_eq!(c.daemon_options().listener.listener.dscp, None);
         assert_eq!(c.keep_alive_seconds, 30);
         assert_eq!(c.scale, None);
         assert_eq!(c.input_config(), InputConfig::default());
@@ -753,6 +799,10 @@ client_stop_delay_ms = 300
         assert_eq!(e, "/x/lain/config.toml: bitrate_mbps: must be between 1 and 200 Mb/s, not 0");
         assert!(refused("bitrate_mbps = 201\n").contains("not 201"));
         assert_eq!(parse("bitrate_mbps = 200\n").unwrap().bitrate_mbps, 200);
+        let c = parse("radio_priority = \"interactive-video\"\nadaptive_bitrate = false\n").unwrap();
+        assert_eq!(c.daemon_options().listener.listener.dscp, Some(34));
+        assert!(!c.pipeline_options().adaptive);
+        assert!(refused("radio_priority = \"loud\"\n").contains("radio_priority"));
         let e = refused("keep_alive_seconds = 601\n");
         assert_eq!(e, "/x/lain/config.toml: keep_alive_seconds: must be between 0 and 600, not 601");
         assert!(refused("keep_alive_seconds = -1\n").contains("keep_alive_seconds: "));

@@ -4,10 +4,22 @@
 
 # Listen for the iPad over Wi-Fi and advertise this computer on the local network (Bonjour, through Avahi).
 # Wi-Fi needs one USB pairing first. USB always works and wins over Wi-Fi.
+# Network only: Linux has no AWDL, so the iPad's peer-to-peer (Direct) path can't reach this host; set the
+# iPad's Wi-Fi path to Automatic or Network. Without a router, make this computer a hotspot and join it.
 # wifi = true
 
-# The video bitrate in Mb/s, from 1 to 200 (also what the iPad is told).
+# The video bitrate in Mb/s, from 1 to 200 (also what the iPad is told); with adaptive bitrate, the most it uses.
 # bitrate_mbps = 60
+
+# Adaptive bitrate, as the Mac host: the video's bitrate follows what the link delivers (down quickly when frames
+# back up, up slowly while it's clear), from 6 Mb/s to bitrate_mbps. Over Wi-Fi it starts at 20 Mb/s, over USB at
+# bitrate_mbps. Off: always bitrate_mbps.
+# adaptive_bitrate = true
+
+# How lain's Wi-Fi connections ask for airtime: "standard" (unmarked) or "interactive-video" (DSCP AF41, which
+# Wi-Fi puts in its video access category; the Mac host's Radio Priority, an experiment against the iPad's
+# periodic Wi-Fi pauses). Applies when the daemon next starts.
+# radio_priority = "standard"
 
 # How long lain keeps its display after the iPad leaves unexpectedly (you switch apps on the iPad, the cable comes
 # out, Wi-Fi drops), in seconds, from 0 to 600. Back within that time, the iPad gets the same display: windows stay

@@ -1187,11 +1187,17 @@ impl<P: Platform> Inner<P> {
                 }
             }
         };
+        // Adaptive bitrate starts at the ceiling over USB, lower over the network so the first seconds on a weak
+        // link don't stall.
+        let mut options = self.config.video;
+        if !matches!(connection.transport, LinkTransport::Usb) {
+            options.start_bit_rate = Some(self.config.wifi_start_bit_rate.min(options.average_bit_rate));
+        }
         let started = video
             .start(
                 &*self.platform,
                 hello,
-                self.config.video,
+                options,
                 connection.realtime.clone(),
                 connection.video_channel.clone(),
                 on_end,

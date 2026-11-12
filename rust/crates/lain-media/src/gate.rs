@@ -5,8 +5,13 @@
 pub struct GateStats {
     pub offered: u64,
     pub encoded: u64,
-    /// Replaced in the slot by a newer frame before they could be encoded.
+    /// Replaced in the slot by a newer frame before they could be encoded…
     pub dropped_before_encode: u64,
+    /// …while `max_in_flight` frames were unacknowledged (the link was the limit: what adaptive bitrate
+    /// listens to)…
+    pub dropped_for_link: u64,
+    /// …or while the encoder was busy with the previous one (the encoder was the limit).
+    pub dropped_for_encoder: u64,
     pub peak_in_flight: usize,
     /// Re-offers turned away because a newer frame had already been offered.
     pub stale_rejected: u64,
@@ -85,6 +90,11 @@ impl<F> FrameGate<F> {
         }
         if self.slot.is_some() {
             self.stats.dropped_before_encode += 1;
+            if self.window.can_send() {
+                self.stats.dropped_for_encoder += 1;
+            } else {
+                self.stats.dropped_for_link += 1;
+            }
         }
         self.slot = Some(frame);
         None
@@ -287,6 +297,8 @@ mod tests {
         h.offer(3); // replaces 2
         assert_eq!(h.subs, [1]);
         assert_eq!(h.gate.stats().dropped_before_encode, 1);
+        let s = h.gate.stats();
+        assert_eq!((s.dropped_for_encoder, s.dropped_for_link), (1, 0), "the encoder was the limit");
         h.sent(1); // encoder free → 3 goes in
         assert_eq!(h.subs, [1, 3]);
         assert!(!h.gate.slot_occupied());
@@ -326,7 +338,15 @@ mod tests {
         assert_eq!(h.subs, [1, 2, 4]);
         assert_eq!(
             h.gate.stats(),
-            GateStats { offered: 4, encoded: 3, dropped_before_encode: 1, peak_in_flight: 2, stale_rejected: 0 }
+            GateStats {
+                offered: 4,
+                encoded: 3,
+                dropped_before_encode: 1,
+                dropped_for_link: 1,
+                dropped_for_encoder: 0,
+                peak_in_flight: 2,
+                stale_rejected: 0
+            }
         );
     }
 

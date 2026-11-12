@@ -235,6 +235,41 @@ fn encode_2752x2064() {
     assert!(percentile(&mut times, 0.5) < 16.0, "an encode takes well under two frames");
 }
 
+/// Adaptive bitrate: a new target takes effect on the next pictures, without an IDR (does Mesa follow a
+/// per-picture change of the rate control's bitrate?). Near-incompressible content, so the CBR budget is spent.
+#[test]
+#[ignore = "GPU: run through rust/scripts/gpu-run.sh"]
+fn a_live_bitrate_change_takes_effect() {
+    let mut pipe = pipeline(W, H);
+    let pictures = fill_surfaces(&pipe, W, H, Content::Terminal);
+    let mut all = Vec::new();
+    let mut means = Vec::new();
+    for (phase, mbps) in [60u32, 15, 60, 6].into_iter().enumerate() {
+        pipe.encoder().set_bitrate(mbps * 1_000_000);
+        let n = pipe.surfaces();
+        let run: Vec<Coded> = (0..120)
+            .map(|i| encode_one(&mut pipe, i % n, PictureKind { idr: phase == 0 && i == 0, refinement: false }))
+            .collect();
+        assert!(phase == 0 || run.iter().all(|c| nal_types(&c.au) == [1]), "no IDR at a change");
+        // The first pictures after a change settle the rate control: measure the last 100.
+        let mut sizes: Vec<u64> = run[20..].iter().map(|c| c.au.len() as u64).collect();
+        let mean = sizes.iter().sum::<u64>() as f64 / sizes.len() as f64;
+        let mut qps: Vec<u64> = run[20..].iter().map(|c| u64::from(c.qp) * 1_000_000).collect();
+        println!("{mbps} Mb/s ({:.1} Mb/s at 120 fps):", mean * 8.0 * 120.0 / 1e6);
+        sizes_summary("P-frame size", &mut sizes);
+        summary("average QP (shown as ms)", &mut qps);
+        means.push(mean);
+        all.extend(run);
+    }
+    let aus: Vec<&[u8]> = all.iter().map(|c| c.au.as_slice()).collect();
+    let last = all.last().unwrap().surface;
+    let (stream, nv12) = dump("live-bitrate", &aus, &pictures[last]);
+    println!("decode check: decode-check.py {} {} {W} {H} {}", stream.display(), nv12.display(), aus.len() - 1);
+    assert!(means[1] < means[0] * 0.5, "15 Mb/s makes smaller pictures than 60: {means:?}");
+    assert!(means[2] > means[1] * 2.0, "and back up at 60: {means:?}");
+    assert!(means[3] < means[1], "6 below 15: {means:?}");
+}
+
 #[test]
 #[ignore = "GPU: run through rust/scripts/gpu-run.sh"]
 fn forced_idr_decodes() {
@@ -415,6 +450,9 @@ impl Gpu for WithRing {
     fn rebuild_encoder(&mut self) -> Result<(), String> {
         self.pipe.rebuild_encoder()
     }
+    fn set_bitrate(&mut self, bits_per_second: u32) {
+        self.pipe.set_bitrate(bits_per_second)
+    }
 }
 
 /// The whole session on the real GPU without PipeWire: 120 Hz synthetic DMA-BUF pictures into the inbox, the
@@ -515,7 +553,12 @@ async fn engine_end_to_end_synthetic() {
         }
         if !outstanding && newest_seen > requested {
             requested = newest_seen;
-            session.encode(EncodeRequest { frame_id: next_id, keyframe: next_id % 120 == 0, refinement: false });
+            session.encode(EncodeRequest {
+                frame_id: next_id,
+                keyframe: next_id % 120 == 0,
+                refinement: false,
+                bitrate: None,
+            });
             next_id += 1;
             outstanding = true;
         }

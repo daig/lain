@@ -853,7 +853,7 @@ mod tests {
         let video = FakeVideo::default();
         let (session, mut events) = video.start(&FakeSource { display_id: 100 }, CONFIG).await.unwrap();
 
-        session.encode(EncodeRequest { frame_id: 1, keyframe: true, refinement: false });
+        session.encode(EncodeRequest { frame_id: 1, keyframe: true, refinement: false, bitrate: None });
         assert_eq!(events.recv().await, Some(VideoEvent::EncodeFailed { frame_id: 1 }));
 
         let handle = video.last_session().unwrap();
@@ -862,7 +862,7 @@ mod tests {
         assert!(matches!(events.recv().await, Some(VideoEvent::Captured { capture: 1, .. })));
         assert!(matches!(events.recv().await, Some(VideoEvent::Captured { capture: 2, .. })));
 
-        session.encode(EncodeRequest { frame_id: 2, keyframe: true, refinement: false });
+        session.encode(EncodeRequest { frame_id: 2, keyframe: true, refinement: false, bitrate: None });
         let Some(VideoEvent::Encoded(frame)) = events.recv().await else { panic!("expected a frame") };
         assert_eq!((frame.frame_id, frame.capture, frame.keyframe), (2, 2, true));
         assert_eq!(frame.annexb, fake_access_unit(2, true));
@@ -880,7 +880,7 @@ mod tests {
         let handle = video.last_session().unwrap();
         handle.capture();
         let _ = events.recv().await;
-        session.encode(EncodeRequest { frame_id: 7, keyframe: false, refinement: true });
+        session.encode(EncodeRequest { frame_id: 7, keyframe: false, refinement: true, bitrate: None });
         handle.capture();
         let _ = events.recv().await;
         assert!(handle.complete(7));

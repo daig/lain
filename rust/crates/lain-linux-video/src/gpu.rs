@@ -179,6 +179,10 @@ impl Gpu for GpuPipeline {
     fn rebuild_encoder(&mut self) -> Result<(), String> {
         self.encoder().rebuild().map_err(|e| e.to_string())
     }
+
+    fn set_bitrate(&mut self, bits_per_second: u32) {
+        self.encoder().set_bitrate(bits_per_second);
+    }
 }
 
 impl Drop for GpuPipeline {

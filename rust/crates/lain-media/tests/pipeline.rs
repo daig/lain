@@ -290,6 +290,35 @@ fn idle_refinement_sends_at_most_two_after_150ms() {
     assert_eq!(rig.pipeline.next_deadline(), Some(t + 150 * MS));
 }
 
+/// Adaptive bitrate: the first request asks for the start rate (the session was made at the ceiling), a
+/// refinement for the ceiling, and the next ordinary frame for the target again; others carry no change.
+#[test]
+fn requests_carry_the_adaptive_rate_and_refinements_the_ceiling() {
+    let options = PipelineOptions { start_bit_rate: Some(20_000_000), ..PipelineOptions::default() };
+    let mut rig = Rig::immediate(options);
+    rig.feed(3);
+    rig.advance(400 * MS); // two refinements
+    rig.feed(1);
+    let rates: Vec<(bool, Option<u32>)> = rig.handle.requests().iter().map(|r| (r.refinement, r.bitrate)).collect();
+    assert_eq!(
+        rates,
+        [
+            (false, Some(20_000_000)),
+            (false, None),
+            (false, None),
+            (true, Some(60_000_000)),
+            (true, None),
+            (false, Some(20_000_000)),
+        ]
+    );
+    assert_eq!(rig.pipeline.stats().target_bps, Some(20_000_000), "a fast clear link climbs only after 500 ms");
+    // Off: no request carries a rate.
+    let mut fixed = Rig::immediate(PipelineOptions { adaptive: false, ..options });
+    fixed.feed(3);
+    assert!(fixed.handle.requests().iter().all(|r| r.bitrate.is_none()));
+    assert_eq!(fixed.pipeline.stats().target_bps, None);
+}
+
 #[test]
 fn keyframe_request_yields_a_keyframe_even_when_idle() {
     let mut rig = Rig::immediate(no_refinement());

@@ -72,11 +72,11 @@ fn header_check_order() {
         hdr(|b| b[20..24].copy_from_slice(&((32u32 << 20) + 1).to_le_bytes())),
         Err(ProtocolError::PayloadTooLarge((32 << 20) + 1))
     );
-    // version 3 and 255 headers accepted; 5,254 rejected
-    for v in [3u8, 4, 255] {
+    // the supported versions and 255 accepted; 3 (below the floor), 6, 254 rejected
+    for v in [4u8, 5, 255] {
         assert!(hdr(|b| b[2] = v).is_ok());
     }
-    for v in [5u8, 254, 0x7F] {
+    for v in [3u8, 6, 254, 0x7F] {
         assert_eq!(hdr(|b| b[2] = v), Err(ProtocolError::VersionMismatch { remote: v }));
     }
     // reading beyond header bytes doesn't matter (slice longer than 24)
@@ -102,10 +102,18 @@ fn existence_per_layer() {
     setup.encode_payload(&mut w);
     let p = w.into_bytes();
     assert_eq!(dec(MessageType::HostSetup, &p, 3), Err(ProtocolError::UnknownType(0x0F)));
+    let stats = ProtocolSamples::all().iter().find(|m| m.ty() == MessageType::HostStats).unwrap();
+    let mut w = ByteWriter::new(5);
+    stats.encode_payload(&mut w);
+    let s = w.into_bytes();
+    assert_eq!(dec(MessageType::HostStats, &s, 4), Err(ProtocolError::UnknownType(0x11)));
+    assert!(dec(MessageType::HostStats, &s, 5).is_ok());
+    assert_eq!(dec(MessageType::HostStats, &s[..s.len() - 1], 5), Err(ProtocolError::Truncated));
+    assert_eq!(dec(MessageType::StatsRequest, &[0xFA, 0, 0], 5), Err(ProtocolError::Truncated));
     assert_eq!(dec(MessageType::HostSetup, &p, 255), Err(ProtocolError::UnknownType(0x0F)));
     assert!(dec(MessageType::HostSetup, &p, 4).is_ok());
     for ty in [MessageType::ChannelHello, MessageType::ChannelAccept, MessageType::Pair] {
-        for v in [3, 4] {
+        for v in [4, 5] {
             assert_eq!(dec(ty, &[], v), Err(ProtocolError::UnknownType(ty.raw())));
         }
     }
@@ -114,11 +122,11 @@ fn existence_per_layer() {
     }
     // existence check precedes payload parsing (empty payload is truncated otherwise)
     // via FrameParser too
-    let mut f = MessageCodec::encode(setup, 0, 0, None, Some(4));
-    f[2] = 3;
+    let mut f = MessageCodec::encode(stats, 0, 0, None, Some(5));
+    f[2] = 4;
     let mut parser = FrameParser::new();
     parser.append(&f);
-    assert_eq!(parser.next(), Err(ProtocolError::UnknownType(0x0F)));
+    assert_eq!(parser.next(), Err(ProtocolError::UnknownType(0x11)));
 }
 
 #[test]

@@ -287,21 +287,21 @@ mod tests {
         let (session, mut events, inbox) =
             start_session(move || Ok(gpu), info, ended, fast_config(), None).await.unwrap();
         assert_eq!(session.info(), info);
-        session.encode(EncodeRequest { frame_id: 1, keyframe: true, refinement: false });
+        session.encode(EncodeRequest { frame_id: 1, keyframe: true, refinement: false, bitrate: None });
         assert_eq!(recv(&mut events).await, Some(VideoEvent::EncodeFailed { frame_id: 1 }));
         inbox.push_frame(CaptureFrame::new(picture(4), 99, None));
         assert_eq!(recv(&mut events).await, Some(VideoEvent::Captured { capture: 1, capture_ns: 99 }));
-        session.encode(EncodeRequest { frame_id: 2, keyframe: true, refinement: false });
+        session.encode(EncodeRequest { frame_id: 2, keyframe: true, refinement: false, bitrate: None });
         let Some(VideoEvent::Encoded(f)) = recv(&mut events).await else { panic!("expected a frame") };
         assert_eq!((f.frame_id, f.capture, f.keyframe), (2, 1, true));
         assert_eq!(session.stats().encoded, 1);
         // An encode hanging when stop comes: stop returns, and nothing follows.
         probe.state().outcomes.push_back(Outcome::Hang);
-        session.encode(EncodeRequest { frame_id: 3, keyframe: false, refinement: false });
+        session.encode(EncodeRequest { frame_id: 3, keyframe: false, refinement: false, bitrate: None });
         session.stop().await;
         assert_eq!(events.recv().await, None, "the channel closes with stop, and no event follows");
         session.stop().await; // idempotent
-        session.encode(EncodeRequest { frame_id: 4, keyframe: false, refinement: false });
+        session.encode(EncodeRequest { frame_id: 4, keyframe: false, refinement: false, bitrate: None });
     }
 
     #[tokio::test]

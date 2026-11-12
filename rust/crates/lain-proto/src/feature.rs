@@ -9,23 +9,26 @@ use crate::{NEWEST_VERSION, VersionList};
 pub enum ProtocolFeature {
     /// v4: the host sends `HostSetup` after `HelloAck` and whenever its setup changes.
     HostSetup,
+    /// v5: the iPad asks for `HostStats` (`StatsRequest`) and the host sends them.
+    HostStats,
 }
 
 impl ProtocolFeature {
     /// Every feature (Swift: `allCases`).
-    pub const ALL: &'static [Self] = &[Self::HostSetup];
+    pub const ALL: &'static [Self] = &[Self::HostSetup, Self::HostStats];
 
     /// The first version with the feature.
     pub const fn since(self) -> u8 {
         match self {
             Self::HostSetup => 4,
+            Self::HostStats => 5,
         }
     }
 
     /// The first version without it, when a newer behaviour replaced it; `None` while current.
     pub const fn until(self) -> Option<u8> {
         match self {
-            Self::HostSetup => None,
+            Self::HostSetup | Self::HostStats => None,
         }
     }
 
@@ -41,6 +44,7 @@ impl ProtocolFeature {
     pub const fn summary(self) -> &'static str {
         match self {
             Self::HostSetup => "setup status on the iPad",
+            Self::HostStats => "the host's video stats on the iPad",
         }
     }
 

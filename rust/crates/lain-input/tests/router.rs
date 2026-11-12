@@ -3,7 +3,8 @@
 
 use lain_input::evdev::*;
 use lain_input::{
-    CommandShortcut, InputConfig, InputRouter, LinuxModifier, ModifierMap, Momentum, Outcome, ScrollConfig, ZoomAction,
+    CommandShortcut, InputConfig, InputRouter, LinuxModifier, ModifierMap, Momentum, Outcome, SYSTEM_TAP_DELAY_NS,
+    SYSTEM_TAP_MAX_NS, ScrollConfig, ZoomAction,
 };
 use lain_platform::fake::FakeInput;
 use lain_platform::{InputAction, InputBackend, PointF, ScrollSource};
@@ -1265,6 +1266,10 @@ fn the_system_key_taps_and_holds_as_command() {
     let mut r = Rig::new();
     r.send(key(RIGHT_OPTION, true, M::OPTION));
     r.send(key(RIGHT_OPTION, false, M::EMPTY));
+    assert_eq!(r.take(), [], "a tap waits for the client's own Command press");
+    assert_eq!(r.router.next_deadline(), Some(r.now + SYSTEM_TAP_DELAY_NS));
+    assert!(!r.advance(SYSTEM_TAP_DELAY_NS - 1));
+    assert!(r.advance(1));
     assert_eq!(r.take(), [down(KEY_LEFTMETA), up(KEY_LEFTMETA)]);
 
     r.send(key(RIGHT_OPTION, true, M::OPTION));
@@ -1278,6 +1283,59 @@ fn the_system_key_taps_and_holds_as_command() {
     r.send(key(0x50, false, M::OPTION));
     r.send(key(0xE2, false, M::EMPTY));
     assert_eq!(r.take(), [down(KEY_LEFTALT), down(KEY_LEFT), up(KEY_LEFT), up(KEY_LEFTALT)]);
+}
+
+/// A Right Option hold longer than a tap (the iPad's panel opens at 350 ms) is not a tap.
+#[test]
+fn a_long_system_key_hold_is_not_a_tap() {
+    let mut r = Rig::new();
+    r.send(key(RIGHT_OPTION, true, M::OPTION));
+    r.now += SYSTEM_TAP_MAX_NS + 1;
+    r.send(key(RIGHT_OPTION, false, M::EMPTY));
+    r.advance(SYSTEM_TAP_DELAY_NS);
+    assert_eq!(r.take(), []);
+    assert_eq!(r.router.next_deadline(), None);
+    // Just inside the limit, it is.
+    r.send(key(RIGHT_OPTION, true, M::OPTION));
+    r.now += SYSTEM_TAP_MAX_NS;
+    r.send(key(RIGHT_OPTION, false, M::EMPTY));
+    r.advance(SYSTEM_TAP_DELAY_NS);
+    assert_eq!(r.take(), [down(KEY_LEFTMETA), up(KEY_LEFTMETA)]);
+}
+
+/// The client's remap of Right Opt-Tab: Right Option up, Left Command down, Tab. That release isn't a tap
+/// (no overview before the switcher); a tap followed by another key taps first, at once.
+#[test]
+fn the_clients_remap_release_is_not_a_tap() {
+    let mut r = Rig::new();
+    r.send(key(RIGHT_OPTION, true, M::OPTION));
+    r.send(key(RIGHT_OPTION, false, M::EMPTY));
+    r.send(key(0xE3, true, M::COMMAND));
+    r.send(key(0x2B, true, M::COMMAND)); // Tab
+    r.send(key(0x2B, false, M::COMMAND));
+    r.send(key(0xE3, false, M::EMPTY));
+    r.advance(SYSTEM_TAP_DELAY_NS);
+    let actions = r.take();
+    assert!(!actions.contains(&down(KEY_LEFTMETA)), "no overview: {actions:?}");
+    assert!(actions.contains(&down(KEY_TAB)), "{actions:?}");
+
+    r.send(key(RIGHT_OPTION, true, M::OPTION));
+    r.send(key(RIGHT_OPTION, false, M::EMPTY));
+    r.send(key(0x05, true, M::EMPTY)); // B, within the delay
+    assert_eq!(r.take(), [down(KEY_LEFTMETA), up(KEY_LEFTMETA), down(KEY_B)]);
+    r.advance(SYSTEM_TAP_DELAY_NS);
+    assert_eq!(r.take(), [], "tapped once");
+}
+
+/// A pending tap is forgotten when everything is released (the link ended).
+#[test]
+fn release_all_forgets_a_pending_tap() {
+    let mut r = Rig::new();
+    r.send(key(RIGHT_OPTION, true, M::OPTION));
+    r.send(key(RIGHT_OPTION, false, M::EMPTY));
+    r.send(release(ReleaseReason::FocusLost));
+    r.advance(SYSTEM_TAP_DELAY_NS);
+    assert!(!r.take().contains(&down(KEY_LEFTMETA)));
 }
 
 /// The client's remapped Spotlight and Hide (Opt-Space, Opt-H arrive as Cmd-Space, Cmd-H): the overview and

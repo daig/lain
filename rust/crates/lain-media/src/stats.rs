@@ -187,6 +187,9 @@ pub struct HostVideoStats {
     pub encoded: u64,
     /// Replaced in the slot before they could be encoded (invariant 2: drops happen only here).
     pub dropped_before_encode: u64,
+    /// Of those, held back while the link was full, or while the encoder was busy (the gate's).
+    pub dropped_for_link: u64,
+    pub dropped_for_encoder: u64,
     /// `EncodeFailed` results, and access units the pipeline couldn't send (malformed, or no parameter sets
     /// yet). Swift counts only the encoder's failures.
     pub encode_failures: u64,
@@ -205,6 +208,9 @@ pub struct HostVideoStats {
     /// Frame sent → `FrameAck` received, on the host clock.
     pub ack_rtt_ms_p50: Option<f64>,
     pub ack_rtt_ms_p95: Option<f64>,
+    /// Adaptive bitrate: the encoder's target, and what the link delivered lately (bits per second).
+    pub target_bps: Option<u32>,
+    pub delivery_bps: Option<u64>,
 }
 
 #[cfg(test)]

@@ -32,6 +32,10 @@ pub struct ListenerOptions {
     /// `maxPendingHandshakes`, `maxPendingHandshakesPerHost`.
     pub max_pending: usize,
     pub max_pending_per_host: usize,
+    /// The radio priority: every accepted connection's packets marked with this DSCP (`None`: unmarked, the
+    /// default). Swift: `NetworkStreamOptions.radioPriority`, whose `.interactiveVideo` gives the listener's
+    /// connections that service class; here [`socket::INTERACTIVE_VIDEO_DSCP`].
+    pub dscp: Option<u32>,
 }
 
 impl ListenerOptions {
@@ -52,6 +56,7 @@ impl Default for ListenerOptions {
             handshake_timeout: Self::HANDSHAKE_TIMEOUT,
             max_pending: Self::MAX_PENDING,
             max_pending_per_host: Self::MAX_PENDING_PER_HOST,
+            dscp: None,
         }
     }
 }
@@ -90,6 +95,7 @@ struct Shared {
     context: SslContext,
     table: PskTable,
     handshake_timeout: Duration,
+    dscp: Option<u32>,
     on_accept: OnAccept,
     rejections: mpsc::Sender<WiFiError>,
     intake: Mutex<Intake>,
@@ -123,6 +129,7 @@ impl TlsPskListener {
             context,
             table,
             handshake_timeout: options.handshake_timeout,
+            dscp: options.dscp,
             on_accept: Arc::new(on_accept),
             rejections,
             intake: Mutex::new(Intake {
@@ -290,6 +297,11 @@ pub(crate) fn remote_host(peer: SocketAddr) -> String {
 fn admit(shared: &Arc<Shared>, tcp: TcpStream, peer: SocketAddr) {
     if let Err(e) = socket::configure(&tcp) {
         tracing::debug!("Wi-Fi listener: socket options for {peer}: {e}");
+    }
+    if let Some(dscp) = shared.dscp
+        && let Err(e) = socket::mark(&tcp, dscp)
+    {
+        tracing::debug!("Wi-Fi listener: DSCP {dscp} for {peer}: {e}");
     }
     let host = remote_host(peer);
     let (evicted, summarize) = {

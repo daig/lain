@@ -25,16 +25,18 @@ fn handshake_messages_exist_only_in_handshake_frames() {
 }
 
 #[test]
-fn host_setup_is_a_version_four_message() {
-    let setup = sample(MessageType::HostSetup);
-    assert_eq!(
-        MessageCodec::lower(setup, 3, 0, 0, None),
-        Lowered::Unrepresentable("hostSetup doesn't exist in v3".into())
-    );
-    assert!(MessageCodec::lower(setup, 4, 0, 0, None).bytes().is_some());
-    let mut v3 = MessageCodec::encode(setup, 0, 0, None, Some(4));
-    v3[2] = 3; // a v3 peer never sends it, and a v3 frame can't carry it
-    assert_eq!(MessageCodec::decode(&v3), Err(ProtocolError::UnknownType(MessageType::HostSetup.raw())));
+fn stats_are_version_five_messages() {
+    for ty in [MessageType::StatsRequest, MessageType::HostStats] {
+        let m = sample(ty);
+        assert_eq!(
+            MessageCodec::lower(m, 4, 0, 0, None),
+            Lowered::Unrepresentable(format!("{ty} doesn't exist in v4"))
+        );
+        assert!(MessageCodec::lower(m, 5, 0, 0, None).bytes().is_some());
+        let mut v4 = MessageCodec::encode(m, 0, 0, None, Some(5));
+        v4[2] = 4; // a v4 peer never sends it, and a v4 frame can't carry it
+        assert_eq!(MessageCodec::decode(&v4), Err(ProtocolError::UnknownType(ty.raw())));
+    }
 }
 
 #[test]
@@ -43,7 +45,7 @@ fn session_messages_cant_be_handshake_framed_and_vice_versa() {
     ping[2] = HANDSHAKE_VERSION;
     assert_eq!(MessageCodec::decode(&ping), Err(ProtocolError::UnknownType(MessageType::Ping.raw())));
     let mut framed = MessageCodec::encode(sample(MessageType::ChannelHello), 0, 0, None, None);
-    framed[2] = 3;
+    framed[2] = 4;
     assert_eq!(MessageCodec::decode(&framed), Err(ProtocolError::UnknownType(MessageType::ChannelHello.raw())));
     assert_eq!(
         MessageCodec::lower(sample(MessageType::Pair), 4, 0, 0, None),
@@ -52,9 +54,9 @@ fn session_messages_cant_be_handshake_framed_and_vice_versa() {
 }
 
 #[test]
-#[should_panic(expected = "hostSetup doesn't exist in v3")]
+#[should_panic(expected = "hostStats doesn't exist in v4")]
 fn encoding_an_unrepresentable_message_panics() {
-    MessageCodec::encode(sample(MessageType::HostSetup), 0, 0, None, Some(3));
+    MessageCodec::encode(sample(MessageType::HostStats), 0, 0, None, Some(4));
 }
 
 // MARK: - Version lists
@@ -220,14 +222,15 @@ fn advisory_values_are_dropped_and_required_ones_refused() {
 
 #[test]
 fn features_follow_their_versions() {
-    assert!(!ProtocolFeature::HostSetup.is_supported(3));
     assert!(ProtocolFeature::HostSetup.is_supported(4));
-    assert_eq!(ProtocolFeature::missing(3, Some(4)), [ProtocolFeature::HostSetup]);
+    assert!(!ProtocolFeature::HostStats.is_supported(4));
+    assert!(ProtocolFeature::HostStats.is_supported(5));
+    assert_eq!(ProtocolFeature::missing(4, Some(5)), [ProtocolFeature::HostStats]);
     assert!(ProtocolFeature::missing(NEWEST_VERSION, Some(NEWEST_VERSION)).is_empty());
-    assert!(ProtocolFeature::missing(3, Some(3)).is_empty());
+    assert!(ProtocolFeature::missing(4, Some(4)).is_empty());
     // Without a newest, the offered list's newest (a LAIN_PROTOCOL_MAX cap lowers it).
     let offered = VersionList::offered().newest().unwrap();
-    assert_eq!(ProtocolFeature::missing(3, None), ProtocolFeature::missing(3, Some(offered)));
+    assert_eq!(ProtocolFeature::missing(4, None), ProtocolFeature::missing(4, Some(offered)));
 }
 
 /// A feature replaced before the oldest supported version is dead compatibility code: delete it.

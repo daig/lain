@@ -23,6 +23,10 @@ pub enum MessageType {
     ChannelAccept = 0x0E,
     /// v4: the host's setup state (permissions, why there's no video).
     HostSetup = 0x0F,
+    /// v5: the iPad asks for host stats.
+    StatsRequest = 0x10,
+    /// v5: the host's video stats, while the iPad asks.
+    HostStats = 0x11,
     VideoConfig = 0x20,
     VideoFrame = 0x21,
     FrameAck = 0x24,
@@ -51,6 +55,8 @@ impl MessageType {
         Self::DisplayLayout,
         Self::ChannelAccept,
         Self::HostSetup,
+        Self::StatsRequest,
+        Self::HostStats,
         Self::VideoConfig,
         Self::VideoFrame,
         Self::FrameAck,
@@ -87,6 +93,8 @@ impl MessageType {
             Self::DisplayLayout => "displayLayout",
             Self::ChannelAccept => "channelAccept",
             Self::HostSetup => "hostSetup",
+            Self::StatsRequest => "statsRequest",
+            Self::HostStats => "hostStats",
             Self::VideoConfig => "videoConfig",
             Self::VideoFrame => "videoFrame",
             Self::FrameAck => "frameAck",
@@ -117,6 +125,7 @@ impl MessageType {
     pub const fn since(self) -> u8 {
         match self {
             Self::HostSetup => 4,
+            Self::StatsRequest | Self::HostStats => 5,
             _ => 3,
         }
     }

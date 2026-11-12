@@ -10,6 +10,7 @@ use lain_proto::{
 };
 use tracing::{debug, info, warn};
 
+use crate::bitrate::{BitrateConfig, BitrateController};
 use crate::hevc::AccessUnit;
 use crate::stats::{FrameAckWindow, HostVideoStats, RateMeter, RollingPercentiles};
 use crate::{Connection, FrameGate, IdleRefiner, Outbound};
@@ -23,9 +24,16 @@ pub struct PipelineOptions {
     pub max_in_flight: usize,
     /// The frame rate asked of the encoder, capped by the client's (see [`encode_config`]).
     pub frame_rate: u32,
+    /// The encoder's rate; with `adaptive`, the ceiling.
     pub average_bit_rate: u32,
     pub idle_refinement_ms: u64,
     pub max_refinements: u32,
+    /// Adaptive bitrate ([`BitrateController`], Swift: `Options.adaptive`): the target follows what the link
+    /// delivers, between `bitrate_floor` and `average_bit_rate`, from `start_bit_rate` (`None`: the ceiling).
+    /// Off: a fixed `average_bit_rate`.
+    pub adaptive: bool,
+    pub bitrate_floor: u32,
+    pub start_bit_rate: Option<u32>,
 }
 
 impl Default for PipelineOptions {
@@ -36,6 +44,9 @@ impl Default for PipelineOptions {
             average_bit_rate: 60_000_000,
             idle_refinement_ms: 150,
             max_refinements: 2,
+            adaptive: true,
+            bitrate_floor: 6_000_000,
+            start_bit_rate: None,
         }
     }
 }
@@ -170,6 +181,12 @@ pub struct VideoPipeline<S: VideoSession, C: Clock> {
     encode_ms: RollingPercentiles,
     rtt_ms: RollingPercentiles,
     rate: RateMeter,
+    /// Adaptive bitrate (`None`: a fixed rate).
+    bitrate: Option<BitrateController>,
+    /// The rate the encoder runs at now: the target, or the ceiling for refinements (the link is idle then).
+    applied_rate: u32,
+    /// The gate's held-back-for-the-link count as last passed to the controller.
+    held_back_seen: u64,
 }
 
 impl<S: VideoSession, C: Clock> VideoPipeline<S, C> {
@@ -214,6 +231,17 @@ impl<S: VideoSession, C: Clock> VideoPipeline<S, C> {
             encode_ms: RollingPercentiles::new(240),
             rtt_ms: RollingPercentiles::new(240),
             rate: RateMeter::new(512),
+            bitrate: options.adaptive.then(|| {
+                let config = BitrateConfig {
+                    ceiling: options.average_bit_rate,
+                    floor: options.bitrate_floor.min(options.average_bit_rate),
+                    ..BitrateConfig::default()
+                };
+                BitrateController::new(config, options.start_bit_rate.unwrap_or(options.average_bit_rate))
+            }),
+            // The session was configured at `average_bit_rate`.
+            applied_rate: options.average_bit_rate,
+            held_back_seen: 0,
         }
     }
 
@@ -290,6 +318,18 @@ impl<S: VideoSession, C: Clock> VideoPipeline<S, C> {
         let now = self.clock.now_ns();
         if let Some(a) = self.acks.acked(ack.frame_id, now) {
             self.rtt_ms.record(a.round_trip_ns as f64 / 1e6);
+            if let Some(b) = &mut self.bitrate {
+                // Frames the gate held back for the link since the last ack (not those waiting for the
+                // encoder): only those say the link is the limit.
+                let held = self.gate.stats().dropped_for_link;
+                if held > self.held_back_seen {
+                    self.held_back_seen = held;
+                    b.held_back(now);
+                }
+                if let Some(target) = b.acked(u64::from(ack.bytes), a.round_trip_ns, now) {
+                    debug!(target, "adaptive bitrate");
+                }
+            }
         }
         let next = self.gate.acked(ack.frame_id);
         self.submit(next);
@@ -362,6 +402,10 @@ impl<S: VideoSession, C: Clock> VideoPipeline<S, C> {
             offered: gate.offered,
             encoded: gate.encoded,
             dropped_before_encode: gate.dropped_before_encode + self.skipped_shown,
+            dropped_for_link: gate.dropped_for_link,
+            dropped_for_encoder: gate.dropped_for_encoder,
+            target_bps: self.bitrate.as_ref().map(BitrateController::target),
+            delivery_bps: self.bitrate.as_ref().and_then(|b| b.delivery_bps(self.clock.now_ns())),
             peak_in_flight: gate.peak_in_flight,
             in_flight: self.gate.in_flight(),
             bytes_per_second: self.rate.bytes_per_second(self.clock.now_ns(), 1_000_000_000),
@@ -434,7 +478,15 @@ impl<S: VideoSession, C: Clock> VideoPipeline<S, C> {
         }
         let recovery = keyframe && self.reference_broken;
         self.outstanding = Some(Outstanding { frame_id, item, keyframe, recovery });
-        self.session.encode(EncodeRequest { frame_id, keyframe, refinement: item.refinement });
+        // Adaptive bitrate: the target, or the ceiling for a refinement (the screen is still, the link idle).
+        let bitrate = self.bitrate.as_ref().and_then(|b| {
+            let wanted = if item.refinement { b.config().ceiling } else { b.target() };
+            (wanted != self.applied_rate).then_some(wanted)
+        });
+        if let Some(rate) = bitrate {
+            self.applied_rate = rate;
+        }
+        self.session.encode(EncodeRequest { frame_id, keyframe, refinement: item.refinement, bitrate });
     }
 
     fn take_outstanding(&mut self, frame_id: u32) -> Option<Outstanding> {

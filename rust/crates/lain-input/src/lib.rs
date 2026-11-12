@@ -26,5 +26,5 @@ pub mod scroll;
 
 pub use modifiers::{CommandShortcut, LinuxModifier, ModifierMap, ModifierSet};
 pub use pinch::PinchZoomMapper;
-pub use router::{InputConfig, InputRouter, Outcome, WHEEL_DETENT, ZoomAction};
+pub use router::{InputConfig, InputRouter, Outcome, SYSTEM_TAP_DELAY_NS, SYSTEM_TAP_MAX_NS, WHEEL_DETENT, ZoomAction};
 pub use scroll::{Momentum, ScrollConfig};

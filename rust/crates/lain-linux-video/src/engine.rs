@@ -56,6 +56,8 @@ pub trait Gpu {
     fn poll_encode(&mut self, timeout_ns: u64) -> Option<Result<Vec<u8>, String>>;
     /// Drops the encode session (and whatever it has in flight) and makes a new one; its first picture is an IDR.
     fn rebuild_encoder(&mut self) -> Result<(), String>;
+    /// The rate control's target from the next picture on (adaptive bitrate); kept across rebuilds.
+    fn set_bitrate(&mut self, bits_per_second: u32);
 }
 
 /// One picture from capture, with its capture time. Dropping it gives the buffer back to PipeWire.
@@ -526,6 +528,9 @@ impl<G: Gpu> Engine<G> {
         while self.encoding.is_none()
             && let Some((request, at)) = self.requests.pop_front()
         {
+            if let Some(bitrate) = request.bitrate {
+                self.gpu.set_bitrate(bitrate);
+            }
             let Some(newest) = self.newest else {
                 self.emit(VideoEvent::EncodeFailed { frame_id: request.frame_id });
                 self.stats.failed += 1;
@@ -669,6 +674,8 @@ pub(crate) mod tests {
 
     #[derive(Debug, Default)]
     pub(crate) struct FakeState {
+        /// Every `set_bitrate`, in order.
+        pub(crate) bitrates: Vec<u32>,
         /// Each surface's content: the marker of the picture last converted into it.
         pub(crate) surfaces: HashMap<usize, u8>,
         pub(crate) conversions: Vec<(u8, usize)>,
@@ -777,6 +784,10 @@ pub(crate) mod tests {
             })
         }
 
+        fn set_bitrate(&mut self, bits_per_second: u32) {
+            self.state().bitrates.push(bits_per_second);
+        }
+
         fn rebuild_encoder(&mut self) -> Result<(), String> {
             let mut s = self.state();
             s.rebuilds += 1;
@@ -837,7 +848,16 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn request(&self, frame_id: u32, keyframe: bool, refinement: bool) {
-            self.inbox.push_request(EncodeRequest { frame_id, keyframe, refinement });
+            self.inbox.push_request(EncodeRequest { frame_id, keyframe, refinement, bitrate: None });
+        }
+
+        pub(crate) fn request_at(&self, frame_id: u32, bitrate: u32) {
+            self.inbox.push_request(EncodeRequest {
+                frame_id,
+                keyframe: false,
+                refinement: false,
+                bitrate: Some(bitrate),
+            });
         }
 
         /// The next event, within 2 s.
@@ -958,6 +978,19 @@ pub(crate) mod tests {
         let submits = h.gpu.state().submits.clone();
         assert_eq!(submits[2].1, PictureKind { idr: false, refinement: true });
         assert!(submits.iter().all(|s| s.0 == submits[0].0), "the same surface every time");
+    }
+
+    /// A request's new bitrate reaches the encoder before its picture; a request without one leaves it.
+    #[test]
+    fn a_request_carries_the_bitrate_to_the_encoder() {
+        let mut h = Harness::new(fast_config());
+        h.frame(3);
+        h.captured();
+        h.request_at(1, 20_000_000);
+        h.encoded();
+        h.request(2, false, false);
+        h.encoded();
+        assert_eq!(h.gpu.state().bitrates, [20_000_000]);
     }
 
     #[test]

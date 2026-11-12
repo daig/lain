@@ -106,7 +106,7 @@ async fn one_close_reason_whatever_the_cause() {
     let mut b = MessageChannel::new(b, "b");
     raw.write_all(&MessageCodec::encode(&ping(1, 0), 0, 0, None, None)).await.unwrap();
     assert_eq!(b.recv().await, Err(TransportError::Closed));
-    assert_eq!(b.closed().await, CloseReason::WrongVersion("a ping frame in v4 on a channel at the handshake".into()));
+    assert_eq!(b.closed().await, CloseReason::WrongVersion("a ping frame in v5 on a channel at the handshake".into()));
     let mut rest = Vec::new();
     assert_eq!(raw.read_to_end(&mut rest).await.unwrap(), 0, "the peer sees the close");
     let (raw, b) = memory_pair();
@@ -219,27 +219,27 @@ async fn unread_messages_are_bounded_and_reading_resumes_the_stream() {
 async fn a_channel_switches_from_the_handshake_to_its_version() {
     let (a, b) = memory_pair();
     let (ca, mut cb) = (MessageChannel::new(a, "a"), MessageChannel::new(b, "b"));
-    let accept = ChannelAccept { chosen: 3, versions: VersionList::supported().clone() };
+    let accept = ChannelAccept { chosen: 4, versions: VersionList::supported().clone() };
     ca.send(&Message::ChannelAccept(accept.clone())).unwrap();
-    ca.set_version(3);
+    ca.set_version(4);
     ca.send(&ping(1, 0)).unwrap();
     let first = cb.recv_timeout(T).await.unwrap();
     assert_eq!(first.header.version, HANDSHAKE_VERSION);
     assert_eq!(first.message, Message::ChannelAccept(accept));
-    cb.set_version(3); // before reading the session frame that follows
+    cb.set_version(4); // before reading the session frame that follows
     let second = cb.recv_timeout(T).await.unwrap();
-    assert_eq!((second.header.version, second.message), (3, ping(1, 0)));
+    assert_eq!((second.header.version, second.message), (4, ping(1, 0)));
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_frame_in_another_version_closes_the_channel() {
     let (a, b) = memory_pair();
-    let (ca, mut cb) = (at(a, Some(4)), at(b, Some(3)));
+    let (ca, mut cb) = (at(a, Some(5)), at(b, Some(4)));
     ca.send(&ping(1, 0)).unwrap();
     assert_eq!(cb.recv_timeout(T).await, Err(TransportError::Closed));
     let reason = cb.close_reason().unwrap();
-    assert_eq!(reason, CloseReason::WrongVersion("a ping frame in v4 on a channel at v3".into()));
-    assert_eq!(reason.error(), TransportError::UnexpectedMessage("a ping frame in v4 on a channel at v3".into()));
+    assert_eq!(reason, CloseReason::WrongVersion("a ping frame in v5 on a channel at v4".into()));
+    assert_eq!(reason.error(), TransportError::UnexpectedMessage("a ping frame in v5 on a channel at v4".into()));
     // Nothing more is delivered, even what was already buffered.
     ca.send(&ping(2, 0)).unwrap();
     assert_eq!(cb.recv_timeout(T).await, Err(TransportError::Closed));
@@ -248,7 +248,7 @@ async fn a_frame_in_another_version_closes_the_channel() {
 #[tokio::test(start_paused = true)]
 async fn a_session_frame_before_the_version_is_set_closes_the_channel() {
     let (a, b) = memory_pair();
-    let (ca, mut cb) = (at(a, Some(3)), at(b, None));
+    let (ca, mut cb) = (at(a, Some(4)), at(b, None));
     ca.send(&ping(1, 0)).unwrap();
     assert_eq!(cb.recv_timeout(T).await, Err(TransportError::Closed));
     let Some(CloseReason::WrongVersion(why)) = cb.close_reason() else { panic!("{:?}", cb.close_reason()) };
@@ -258,9 +258,9 @@ async fn a_session_frame_before_the_version_is_set_closes_the_channel() {
 #[tokio::test(start_paused = true)]
 async fn a_message_missing_at_the_channels_version_is_not_sent() {
     let (a, mut b) = memory_pair();
-    let a = at(a, Some(3));
-    let setup = Message::HostSetup(HostSetup { items: vec![], video_problem: String::new(), has_other_display: false });
-    assert!(matches!(a.send(&setup), Err(SendError::Unrepresentable(_))));
+    let a = at(a, Some(4));
+    let stats = Message::StatsRequest(StatsRequest { interval_ms: 250 });
+    assert!(matches!(a.send(&stats), Err(SendError::Unrepresentable(_))));
     // Nor a session message in the handshake layer.
     let (c, _d) = memory_pair();
     assert!(matches!(MessageChannel::new(c, "c").send(&ping(1, 0)), Err(SendError::Unrepresentable(_))));

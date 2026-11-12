@@ -6,13 +6,14 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
 use lain_input::{InputRouter, Outcome};
-use lain_link::{ChannelSender, Link, MessageChannel};
+use lain_link::{ChannelSender, Link, LinkTransport, MessageChannel};
+use lain_media::HostVideoStats;
 use lain_platform::{
     Clock, DisplayBackend, InputAction, InputBackend, Monitor, Platform, Requirement, RequirementState, SetupReport,
 };
 use lain_proto::{
-    CursorWarp, DisplayLayout, HostSetup, KeyboardType, LayoutDisplay, Message, Pong, ProtocolFeature, SetupItem,
-    SetupRequirement, SetupState, VersionList,
+    CursorWarp, DisplayLayout, HostSetup, HostStats, KeyboardType, LayoutDisplay, Message, Pong, ProtocolFeature,
+    SetupItem, SetupRequirement, SetupState, VersionList,
 };
 use tokio::sync::{Notify, watch};
 use tokio::task::AbortHandle;
@@ -60,6 +61,8 @@ pub(crate) struct HostConnection<P: Platform> {
     platform: Arc<P>,
     power: Arc<Power<P::Power>>,
     pub(crate) version: u8,
+    /// USB or the network.
+    pub(crate) transport: LinkTransport,
     local_versions: VersionList,
     pub(crate) realtime: ChannelSender,
     pub(crate) video_channel: ChannelSender,
@@ -79,13 +82,15 @@ pub(crate) struct HostConnection<P: Platform> {
     last_setup: Mutex<SetupSent>,
     /// Told when the layout may have changed: the streamed display came or went.
     layout_changed: Arc<Notify>,
+    /// How often the iPad asks for `HostStats` (ms, clamped; 0: not at all), from its `StatsRequest` (v5).
+    stats_interval: watch::Sender<u32>,
     /// Set once realtime has closed or the connection was finished.
     ended: watch::Sender<bool>,
 }
 
 impl<P: Platform> HostConnection<P> {
     pub(crate) fn new(link: Link, platform: Arc<P>, power: Arc<Power<P::Power>>, config: &HostConfig) -> Arc<Self> {
-        let Link { realtime, video, audio, version, local_versions, .. } = link;
+        let Link { realtime, video, audio, version, local_versions, transport, .. } = link;
         let layout_changed = Arc::new(Notify::new());
         let mut warp = config.tuning.warp;
         warp.reset();
@@ -93,6 +98,7 @@ impl<P: Platform> HostConnection<P> {
             platform,
             power,
             version,
+            transport,
             local_versions,
             realtime: realtime.sender(),
             video_channel: video.sender(),
@@ -114,6 +120,7 @@ impl<P: Platform> HostConnection<P> {
             last_layout: Mutex::new(None),
             last_setup: Mutex::new(SetupSent::default()),
             layout_changed,
+            stats_interval: watch::Sender::new(0),
             ended: watch::Sender::new(false),
         })
     }
@@ -205,6 +212,8 @@ impl<P: Platform> HostConnection<P> {
         handles.push(tokio::spawn(async move { this.sample_loop().await }).abort_handle());
         let this = self.clone();
         handles.push(tokio::spawn(async move { this.layout_loop().await }).abort_handle());
+        let this = self.clone();
+        handles.push(tokio::spawn(async move { this.stats_loop().await }).abort_handle());
         let start_late = {
             let mut tasks = lock(&self.tasks);
             tasks.extend(handles);
@@ -261,6 +270,16 @@ impl<P: Platform> HostConnection<P> {
                 }));
                 return;
             }
+            // v5: the iPad's panel is open (or closed: 0).
+            Message::StatsRequest(r) => {
+                let ms = if r.interval_ms == 0 {
+                    0
+                } else {
+                    r.interval_ms.clamp(*HostStats::INTERVAL_RANGE.start(), *HostStats::INTERVAL_RANGE.end())
+                };
+                self.stats_interval.send_replace(ms);
+                return;
+            }
             // D22: loss recovery (and the client coming back to the foreground) is a keyframe.
             Message::KeyframeRequest(_) => {
                 self.video.handle(message.clone());
@@ -294,6 +313,28 @@ impl<P: Platform> HostConnection<P> {
         };
         if declare {
             self.power.user_activity();
+        }
+    }
+
+    /// Sends `HostStats` every interval the iPad asked for, the first at once, while it asks (Swift:
+    /// `HostConnection.setStatsInterval`). Zeros and `NONE` while there's no video.
+    async fn stats_loop(&self) {
+        if !self.supports(ProtocolFeature::HostStats) {
+            return;
+        }
+        let mut interval = self.stats_interval.subscribe();
+        loop {
+            let ms = *interval.borrow_and_update();
+            if ms > 0 {
+                let stats = host_stats(self.video.stats().as_ref());
+                let _ = self.realtime.send(&Message::HostStats(stats));
+                tokio::select! {
+                    () = tokio::time::sleep(Duration::from_millis(u64::from(ms))) => continue,
+                    changed = interval.changed() => if changed.is_err() { return },
+                }
+            } else if interval.changed().await.is_err() {
+                return;
+            }
         }
     }
 
@@ -470,6 +511,33 @@ impl<P: Platform> Drop for HostConnection<P> {
     }
 }
 
+/// The wire form of the pipeline's numbers (v5, for the iPad's panel). Swift: `HostStats.init(_: HostVideoStats)`.
+pub(crate) fn host_stats(v: Option<&HostVideoStats>) -> HostStats {
+    let Some(v) = v else { return HostStats::default() };
+    let us = |ms: Option<f64>| match ms {
+        Some(ms) if ms.is_finite() && ms >= 0.0 => (ms * 1000.0).min(f64::from(HostStats::NONE - 1)).round() as u32,
+        _ => HostStats::NONE,
+    };
+    let n = |c: u64| u32::try_from(c).unwrap_or(u32::MAX);
+    let b = |c: usize| u8::try_from(c).unwrap_or(u8::MAX);
+    HostStats {
+        encode_p50_us: us(v.encode_ms_p50),
+        encode_p95_us: us(v.encode_ms_p95),
+        ack_rtt_p50_us: us(v.ack_rtt_ms_p50),
+        ack_rtt_p95_us: us(v.ack_rtt_ms_p95),
+        captured: n(v.captured),
+        encoded: n(v.encoded),
+        sent: n(v.sent),
+        dropped_before_encode: n(v.dropped_before_encode),
+        encode_failures: n(v.encode_failures),
+        keyframes: n(v.keyframes),
+        refinements: n(v.refinements),
+        in_flight: b(v.in_flight),
+        peak_in_flight: b(v.peak_in_flight),
+        bits_per_second: (v.bytes_per_second * 8.0).round().clamp(0.0, f64::from(u32::MAX)) as u32,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     //! Swift: `HostConnectionTests`, teardown ordering without a socket.
@@ -478,6 +546,29 @@ mod tests {
     use lain_proto::{KeyEvent, ModifierFlags, MouseButton, PointerButton};
 
     use super::*;
+
+    #[test]
+    fn host_stats_round_times_to_microseconds_and_clamp_counters() {
+        assert_eq!(host_stats(None), HostStats::default());
+        let v = HostVideoStats {
+            captured: 7_200,
+            encoded: u64::from(u32::MAX) + 5,
+            in_flight: 1,
+            peak_in_flight: 300,
+            bytes_per_second: 6_000_000.0,
+            encode_ms_p50: Some(3.1),
+            encode_ms_p95: Some(f64::NAN),
+            ack_rtt_ms_p50: Some(7.9),
+            ..HostVideoStats::default()
+        };
+        let s = host_stats(Some(&v));
+        assert_eq!(
+            (s.encode_p50_us, s.encode_p95_us, s.ack_rtt_p50_us, s.ack_rtt_p95_us),
+            (3_100, HostStats::NONE, 7_900, HostStats::NONE)
+        );
+        assert_eq!((s.captured, s.encoded, s.in_flight, s.peak_in_flight), (7_200, u32::MAX, 1, 255));
+        assert_eq!(s.bits_per_second, 48_000_000);
+    }
 
     fn connection() -> (Arc<HostConnection<FakePlatform>>, FakePlatform) {
         let platform = FakePlatform::new();

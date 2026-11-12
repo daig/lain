@@ -196,16 +196,16 @@ async fn video_failure_leaves_an_input_only_session() {
 
 // MARK: Version skew (Swift: `VersionSkewLoopbackTests`)
 
-fn v3() -> VersionList {
-    VersionList::supported().capped(Some(3))
+fn v4() -> VersionList {
+    VersionList::supported().capped(Some(4))
 }
 
 fn both() -> VersionList {
     VersionList::supported().clone()
 }
 
-fn v4_only() -> VersionList {
-    VersionList::new(VersionList::supported().entries().iter().copied().filter(|e| e.version == 4))
+fn v5_only() -> VersionList {
+    VersionList::new(VersionList::supported().entries().iter().copied().filter(|e| e.version == 5))
 }
 
 fn skew(client: VersionList, host: VersionList) -> RigOptions {
@@ -224,7 +224,7 @@ async fn both_newest_the_ipad_hears_the_setup_and_its_changes() {
     let mut rig = Rig::new(skew(both(), both())).await;
     rig.platform.fake.setup.set(mac_setup(RequirementState::Missing));
     let mut link = rig.usb.next_link(T).await.expect("a USB link");
-    assert_eq!(link.version, 4);
+    assert_eq!(link.version, 5);
     assert!(link.hello_ack().await.is_some());
     let Some(Message::HostSetup(setup)) = link.first(T, |m| matches!(m, Message::HostSetup(_))).await else {
         panic!("no HostSetup")
@@ -244,42 +244,63 @@ async fn both_newest_the_ipad_hears_the_setup_and_its_changes() {
     rig.session.stop().await;
 }
 
+/// v5: `HostStats` every interval the iPad asks for (clamped to 100 ms at least), until it asks for 0.
+#[tokio::test]
+async fn the_ipad_asks_for_host_stats_and_stops_them() {
+    let mut rig = Rig::new(skew(both(), both())).await;
+    let mut link = rig.usb.next_link(T).await.expect("a USB link");
+    assert!(link.hello_ack().await.is_some());
+    let is_stats = |m: &Message| matches!(m, Message::HostStats(_));
+    assert_eq!(link.first(Duration::from_millis(200), is_stats).await, None, "none before the iPad asks");
+    link.send(Message::StatsRequest(StatsRequest { interval_ms: 1 }));
+    let started = std::time::Instant::now();
+    for _ in 0..3 {
+        assert!(link.first(T, is_stats).await.is_some());
+    }
+    assert!(started.elapsed() >= Duration::from_millis(190), "1 ms is clamped to 100: {:?}", started.elapsed());
+    link.send(Message::StatsRequest(StatsRequest { interval_ms: 0 }));
+    tokio::time::sleep(Duration::from_millis(150)).await;
+    while link.first(Duration::from_millis(10), is_stats).await.is_some() {}
+    assert_eq!(link.first(Duration::from_millis(300), is_stats).await, None, "stopped");
+    rig.session.stop().await;
+}
+
 #[tokio::test]
 async fn an_older_ipad_works_with_a_newer_host_which_says_what_updating_adds() {
-    let mut rig = Rig::new(skew(v3(), both())).await;
+    let mut rig = Rig::new(skew(v4(), both())).await;
     rig.platform.fake.setup.set(mac_setup(RequirementState::Missing));
     let mut link = rig.usb.next_link(T).await.expect("a USB link");
-    assert_eq!(link.version, 3);
+    assert_eq!(link.version, 4);
     assert!(link.hello_ack().await.is_some());
     assert!(rig.statuses.reaches(&HostStatus::connected_usb("iPad16,6"), T).await);
-    // Input flows as in v3.
+    // Input flows as in v4, and HostSetup (a v4 message) reaches it.
     link.send(key(0x04, true));
     assert!(eventually(T, || !rig.actions().is_empty()).await);
-    // No HostSetup reaches a v3 iPad (it couldn't parse it); the host's status says what updating adds.
-    rig.session.setup_changed();
-    assert_eq!(link.first(Duration::from_millis(200), |m| matches!(m, Message::HostSetup(_))).await, None);
+    assert!(link.first(T, |m| matches!(m, Message::HostSetup(_))).await.is_some());
+    // The host's status says what updating adds.
     assert_eq!(
         rig.session.peer_version_note().as_deref(),
-        Some("lain on the iPad is older (protocol v3): update it for setup status on the iPad")
+        Some("lain on the iPad is older (protocol v4): update it for the host's video stats on the iPad")
     );
     rig.session.stop().await;
 }
 
 #[tokio::test]
 async fn a_newer_ipad_works_with_an_older_host() {
-    let mut rig = Rig::new(skew(both(), v3())).await;
+    let mut rig = Rig::new(skew(both(), v4())).await;
     let mut link = rig.usb.next_link(T).await.expect("a USB link");
-    assert_eq!(link.version, 3);
+    assert_eq!(link.version, 4);
     assert!(link.hello_ack().await.is_some());
-    assert_eq!(link.first(Duration::from_millis(200), |m| matches!(m, Message::HostSetup(_))).await, None);
+    assert!(link.first(T, |m| matches!(m, Message::HostSetup(_))).await.is_some());
+    assert_eq!(link.first(Duration::from_millis(200), |m| matches!(m, Message::HostStats(_))).await, None);
     assert_eq!(rig.session.peer_version_note(), None, "from the host's side nothing is missing");
     rig.session.stop().await;
 }
 
 #[tokio::test]
 async fn no_common_version_names_the_side_to_update() {
-    let mut rig = Rig::new(skew(v4_only(), v3())).await;
-    let gap = HostStatus::version_gap(&VersionGap::PeerNewer { peer: "protocol v4".into() }, &v3());
+    let mut rig = Rig::new(skew(v5_only(), v4())).await;
+    let gap = HostStatus::version_gap(&VersionGap::PeerNewer { peer: "protocol v5".into() }, &v4());
     assert!(rig.statuses.reaches(&gap, T).await);
     assert!(rig.status().title().contains("update lain on this computer"));
     assert!(rig.actions().is_empty());

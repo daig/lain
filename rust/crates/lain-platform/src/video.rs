@@ -67,6 +67,8 @@ pub struct EncodeRequest {
     pub keyframe: bool,
     /// Idle refinement: re-encode the newest capture at higher quality.
     pub refinement: bool,
+    /// Adaptive bitrate: the rate control's new target (bits per second) from this picture on; `None`: unchanged.
+    pub bitrate: Option<u32>,
 }
 
 /// One encoded access unit.

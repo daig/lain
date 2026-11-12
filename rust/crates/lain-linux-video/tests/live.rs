@@ -183,6 +183,7 @@ async fn drive_while(
                 frame_id: next_id,
                 keyframe: keyframe_at == Some(next_id),
                 refinement: false,
+                bitrate: None,
             });
             next_id += 1;
             outstanding = true;

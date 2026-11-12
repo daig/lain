@@ -503,11 +503,11 @@ async fn a_pairing_connection_must_send_pair_within_the_hello_timeout() {
 #[tokio::test(start_paused = true)]
 async fn the_highest_common_version_wins() {
     let cases = [
-        (versions(&[(3, 1), (4, 1)]), versions(&[(3, 1), (4, 1)]), 4),
-        (versions(&[(3, 1)]), versions(&[(3, 1), (4, 1)]), 3), // an older dialer
-        (versions(&[(3, 1), (4, 1)]), versions(&[(3, 1)]), 3), // an older acceptor
-        (versions(&[(3, 1), (4, 1)]), versions(&[(3, 1), (4, 2)]), 3), // two builds of v4: v3 is common
-        (versions(&[(4, 1), (5, 1)]), versions(&[(3, 1), (4, 1)]), 4),
+        (versions(&[(4, 1), (5, 1)]), versions(&[(4, 1), (5, 1)]), 5),
+        (versions(&[(4, 1)]), versions(&[(4, 1), (5, 1)]), 4), // an older dialer
+        (versions(&[(4, 1), (5, 1)]), versions(&[(4, 1)]), 4), // an older acceptor
+        (versions(&[(4, 1), (5, 1)]), versions(&[(4, 1), (5, 2)]), 4), // two builds of v5: v4 is common
+        (versions(&[(5, 1), (6, 1)]), versions(&[(4, 1), (5, 1)]), 5),
     ];
     for (dialer_versions, acceptor_versions, expected) in cases {
         let mut client = Acceptor::client(store(&[]), true, acceptor_versions.clone()).answering_hello();

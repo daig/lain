@@ -253,6 +253,12 @@ impl HevcEncoder {
         self.headers
     }
 
+    /// Changes the rate control's target from the next picture on (adaptive bitrate): the CBR rate and its
+    /// two-frame HRD. The parameter sets keep the session's (their level is the ceiling's).
+    pub fn set_bitrate(&mut self, bits_per_second: u32) {
+        self.settings.bitrate = bits_per_second.max(1);
+    }
+
     pub fn busy(&self) -> bool {
         self.in_flight.is_some()
     }
