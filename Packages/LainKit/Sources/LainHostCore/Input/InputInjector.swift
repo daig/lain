@@ -29,6 +29,7 @@ public final class InputInjector: InputSink, @unchecked Sendable {
     public init(keyboardType: KeyboardType = .unknown) {
         source = CGEventSource(stateID: .hidSystemState)
         if let kbd = Self.cgKeyboardType(keyboardType) { source?.keyboardType = kbd }
+        refreshLayoutKeys()
     }
 
     /// Set from the client's `Hello` at session start, before any key is posted.
@@ -53,6 +54,82 @@ public final class InputInjector: InputSink, @unchecked Sendable {
         }
         guard proceed else { return }
         postKey(code, down: e.isDown, repeat: e.isRepeat, modifiers: e.modifiers)
+    }
+
+    // MARK: Text
+
+    /// macOS virtual keycodes for the two characters typed as keys.
+    static let returnKey: UInt16 = 36, tabKey: UInt16 = 48
+
+    /// The key (and whether Shift) that types each character in the Mac's current layout, for text sent with
+    /// modifiers. Read on the main thread (Text Input Sources requires it) when the injector is made and
+    /// after each use, so a layout change is picked up by the following chord.
+    private let layoutKeys = Mutex<[Character: LayoutKey]>([:])
+    public struct LayoutKey: Sendable, Equatable { public var code: UInt16, shift: Bool }
+
+    private func refreshLayoutKeys() {
+        DispatchQueue.main.async { [weak self] in
+            let keys = Self.currentLayoutKeys()
+            self?.layoutKeys.withLock { $0 = keys }
+        }
+    }
+
+    /// Every character the current keyboard layout types with no modifier or with Shift (main thread).
+    public static func currentLayoutKeys() -> [Character: LayoutKey] {
+        guard let source = TISCopyCurrentKeyboardLayoutInputSource()?.takeRetainedValue(),
+              let property = TISGetInputSourceProperty(source, kTISPropertyUnicodeKeyLayoutData) else { return [:] }
+        let data = Unmanaged<CFData>.fromOpaque(property).takeUnretainedValue() as Data
+        var out: [Character: LayoutKey] = [:]
+        data.withUnsafeBytes { raw in
+            guard let layout = raw.bindMemory(to: UCKeyboardLayout.self).baseAddress else { return }
+            for shift in [true, false] {   // unshifted last: it wins where both type the character
+                for code in UInt16(0)..<128 {
+                    var dead: UInt32 = 0, length = 0
+                    var chars = [UniChar](repeating: 0, count: 4)
+                    let status = UCKeyTranslate(layout, code, UInt16(kUCKeyActionDown), shift ? UInt32(shiftKey >> 8) & 0xFF : 0,
+                                                UInt32(LMGetKbdType()), OptionBits(kUCKeyTranslateNoDeadKeysMask), &dead,
+                                                chars.count, &length, &chars)
+                    guard status == noErr, length > 0 else { continue }
+                    let string = String(utf16CodeUnits: chars, count: length)
+                    guard string.count == 1, let c = string.first, !c.isNewline, c != "\t" else { continue }
+                    out[c] = LayoutKey(code: code, shift: shift)
+                }
+            }
+        }
+        return out
+    }
+
+    /// v6 `TextInput`. Plain text is typed one character at a time, as key events that carry the character
+    /// itself (so the keyboard layout doesn't matter) with no modifiers (so a held Command can't make
+    /// shortcuts of it). With `modifiers`, each character is the key that types it in the current layout,
+    /// pressed with them held; a character the layout doesn't have is skipped. A line feed is the Return key
+    /// and a tab the Tab key either way, which apps act on as keys.
+    public func text(_ text: String, modifiers: ModifierFlags) {
+        let keys = modifiers.isEmpty ? [:] : layoutKeys.withLock { $0 }
+        for character in text {
+            switch character {
+            case "\n", "\r\n", "\r": tap(Self.returnKey, modifiers: modifiers)
+            case "\t": tap(Self.tabKey, modifiers: modifiers)
+            default:
+                if modifiers.isEmpty {
+                    let units = Array(String(character).utf16)
+                    for down in [true, false] {
+                        guard let ev = CGEvent(keyboardEventSource: source, virtualKey: 0, keyDown: down) else { continue }
+                        ev.flags = []
+                        ev.keyboardSetUnicodeString(stringLength: units.count, unicodeString: units)
+                        ev.post(tap: .cghidEventTap)
+                    }
+                } else if let key = keys[character] ?? keys[Character(character.lowercased())] {
+                    tap(key.code, modifiers: key.shift ? modifiers.union(.shift) : modifiers)
+                }
+            }
+        }
+        if !modifiers.isEmpty { refreshLayoutKeys() }
+    }
+
+    private func tap(_ code: UInt16, modifiers: ModifierFlags) {
+        postKey(code, down: true, repeat: false, modifiers: modifiers)
+        postKey(code, down: false, repeat: false, modifiers: modifiers)
     }
 
     // MARK: Pointer

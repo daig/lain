@@ -50,6 +50,18 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     private var hasVideo = false
     private var observers: [NSObjectProtocol] = []
     private var pointerLocked = false
+    /// The system keyboard's typing, for the host (no Magic Keyboard).
+    private let keyCapture = KeyCaptureView()
+    /// The small button that opens the touch menu; shown while there is no hardware keyboard.
+    private let menuButton = UIButton(type: .system)
+    /// How much of the view's bottom the docked system keyboard covers: the stream is fitted above it.
+    private var keyboardInset: CGFloat = 0
+    /// Dictation on the iPad, typed on the host; `dictationPill` shows it and stops it.
+    private let dictation = Dictation()
+    private let dictationPill = UIButton(type: .system)
+    /// When Globe last went down, for the double-tap that toggles dictation; and whether that press was taken.
+    private var lastGlobeDownNs: UInt64 = 0
+    private var globeTaken = false
     private var lastScrollTranslation = CGPoint.zero
     private var lastWheelTranslation = CGPoint.zero
 
@@ -79,6 +91,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         setUpRendering()
         setUpLabels()
         setUpGestures()
+        setUpTouchKeyboard()
 
         input.setPointerEnabled(false)   // D19: nothing from the trackpad until the pointer is locked
         observe()
@@ -105,13 +118,16 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         guard let layer = renderLoop?.layer else { return }
         // Drawable = the view in pixels: 2752×2064 on the 13" iPad Pro full screen, 1:1 with the stream.
         let scale = traitCollection.displayScale
+        // The stream fills the view, or what the docked system keyboard leaves of it.
+        var stream = view.bounds
+        stream.size.height = max(stream.height - keyboardInset, 1)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
-        layer.frame = view.bounds
+        layer.frame = stream
         layer.contentsScale = scale
-        layer.drawableSize = CGSize(width: (view.bounds.width * scale).rounded(), height: (view.bounds.height * scale).rounded())
+        layer.drawableSize = CGSize(width: (stream.width * scale).rounded(), height: (stream.height * scale).rounded())
         CATransaction.commit()
-        input.setTouchSurface(width: view.bounds.width, height: view.bounds.height)
+        input.setTouchSurface(width: stream.width, height: stream.height)
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -205,7 +221,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         detailLabel.text = status.detail
         titleLabel.isHidden = hasVideo
         detailLabel.isHidden = hasVideo
-        overlay.isHidden = pointerLocked
+        overlay.isHidden = pointerLocked || GCMouse.mice().isEmpty   // nothing to capture without a trackpad
     }
 
     // MARK: Rendering (M3)
@@ -375,7 +391,16 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         on(UIWindow.didResignKeyNotification) { $0.diag("window resigned key") }
         on(.GCMouseDidConnect) { vc in GCMouse.mice().forEach(vc.attach(mouse:)) }
         on(.GCMouseDidBecomeCurrent) { vc in GCMouse.mice().forEach(vc.attach(mouse:)) }
-        on(.GCKeyboardDidConnect) { vc in GCKeyboard.coalesced.map(vc.attach(keyboard:)) }
+        on(.GCKeyboardDidConnect) { vc in
+            GCKeyboard.coalesced.map(vc.attach(keyboard:))
+            vc.hardwareKeyboardChanged()
+        }
+        on(.GCKeyboardDidDisconnect) { $0.hardwareKeyboardChanged() }
+        on(.GCMouseDidConnect) { $0.render() }
+        on(.GCMouseDidDisconnect) { $0.render() }
+        on(UIResponder.keyboardWillChangeFrameNotification) { vc in vc.keyboardFrameChanged() }
+        on(UIResponder.keyboardDidChangeFrameNotification) { vc in vc.keyboardFrameChanged() }
+        on(UIResponder.keyboardDidHideNotification) { vc in vc.keyboardFrameChanged(hidden: true) }
         // Nothing guarantees final ups from a detached Magic Keyboard; lift what it held (invariant 4).
         // The scene stays active and Universal Control mice keep the pointer lock, so nothing else would.
         on(.GCKeyboardDidDisconnect) { $0.input.keyboardDisconnected() }
@@ -447,6 +472,18 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             guard let key = press.key else { continue }
             let usage = key.keyCode.rawValue
             if usage == Int(PhysicalKey.globe.usage) {
+                // A second Globe press soon after the first toggles dictation (as fn twice does on a Mac) and
+                // isn't sent on, so the host sees one tap and doesn't start its own.
+                if isDown {
+                    let now = DispatchTime.now().uptimeNanoseconds
+                    globeTaken = now - lastGlobeDownNs < 450_000_000
+                    lastGlobeDownNs = globeTaken ? 0 : now
+                    if globeTaken { toggleDictation() }
+                }
+                if globeTaken {
+                    if !isDown { globeTaken = false }
+                    continue
+                }
                 input.keyChanged(.globe, isDown: isDown)   // GCKeyboard never reports Globe
             } else if isDown, let u = UInt16(exactly: usage) {
                 input.learnCharacter(PhysicalKey(usage: u), key.charactersIgnoringModifiers)
@@ -477,6 +514,157 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         }
     }
 
+    // MARK: Keyboard without a keyboard
+
+    /// A small button at the right edge, shown while no hardware keyboard is attached: its menu opens the
+    /// system keyboard (typing goes to the host as text, v6) and the panel.
+    private func setUpTouchKeyboard() {
+        keyCapture.frame = .zero
+        view.addSubview(keyCapture)
+        keyCapture.onText = { [weak self] text in
+            guard let self else { return }
+            self.input.typeText(text, modifiers: self.keyCapture.keyRow.takeModifiers())
+        }
+        keyCapture.onBackspace = { [weak self] in self?.tapKey(.key(0x2A)) }   // HID Delete (Backspace)
+        keyCapture.keyRow.onKey = { [weak self] key in self?.tapKey(key) }
+        keyCapture.keyRow.onHide = { [weak self] in self?.setTouchKeyboard(false) }
+        keyCapture.keyRow.onDictate = { [weak self] in self?.toggleDictation() }
+        setUpDictation()
+
+        menuButton.setImage(UIImage(systemName: "keyboard"), for: .normal)
+        menuButton.tintColor = .white
+        menuButton.backgroundColor = UIColor(white: 0.1, alpha: 0.55)
+        menuButton.layer.cornerRadius = 22
+        menuButton.layer.borderWidth = 1
+        menuButton.layer.borderColor = UIColor(white: 1, alpha: 0.2).cgColor
+        menuButton.accessibilityLabel = "lain menu"
+        menuButton.showsMenuAsPrimaryAction = true
+        menuButton.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] done in
+            done(self?.touchMenu() ?? [])
+        }])
+        menuButton.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(menuButton)
+        NSLayoutConstraint.activate([
+            menuButton.widthAnchor.constraint(equalToConstant: 44),
+            menuButton.heightAnchor.constraint(equalToConstant: 44),
+            menuButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -10),
+            menuButton.centerYAnchor.constraint(equalTo: view.centerYAnchor),
+        ])
+        hardwareKeyboardChanged()
+    }
+
+    private func touchMenu() -> [UIMenuElement] {
+        var hostTypes = false
+        if case .session(let info) = status { hostTypes = ProtocolFeature.textInput.isSupported(at: info.protocolVersion) }
+        let showing = keyCapture.isFirstResponder
+        let keyboard = UIAction(title: showing ? "Hide Keyboard" : "Keyboard",
+                                subtitle: hostTypes ? nil : (status.isConnected ? "Update lain on the host first" : "Not connected"),
+                                image: UIImage(systemName: showing ? "keyboard.chevron.compact.down" : "keyboard"),
+                                attributes: hostTypes ? [] : .disabled) { [weak self] _ in self?.setTouchKeyboard(!showing) }
+        let dictate = UIAction(title: dictation.isActive ? "Stop Dictating" : "Dictate",
+                               subtitle: hostTypes ? nil : (status.isConnected ? "Update lain on the host first" : "Not connected"),
+                               image: UIImage(systemName: dictation.isActive ? "mic.slash" : "mic"),
+                               attributes: hostTypes || dictation.isActive ? [] : .disabled) { [weak self] _ in self?.toggleDictation() }
+        let settings = UIAction(title: "Settings", image: UIImage(systemName: "slider.horizontal.3")) { [weak self] _ in
+            self?.setTouchKeyboard(false)
+            self?.input.openPanel()
+        }
+        return [keyboard, dictate, settings]
+    }
+
+    private func setTouchKeyboard(_ shown: Bool) {
+        if shown { keyCapture.becomeFirstResponder() } else if keyCapture.isFirstResponder { becomeFirstResponder() }
+    }
+
+    // MARK: Dictation
+
+    /// A pill at the bottom shows what is being heard; final text is typed on the host. Started from the touch
+    /// menu, the key row's microphone, or a double-tap of Globe on a hardware keyboard; a tap on the pill stops it.
+    private func setUpDictation() {
+        var config = UIButton.Configuration.filled()
+        config.baseBackgroundColor = UIColor(white: 0.08, alpha: 0.9)
+        config.baseForegroundColor = .white
+        config.image = UIImage(systemName: "mic.fill")
+        config.imagePadding = 8
+        config.cornerStyle = .capsule
+        config.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16)
+        config.titleLineBreakMode = .byTruncatingHead
+        dictationPill.configuration = config
+        dictationPill.isHidden = true
+        dictationPill.addAction(UIAction { [weak self] _ in self?.dictation.stop() }, for: .touchUpInside)
+        dictationPill.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(dictationPill)
+        NSLayoutConstraint.activate([
+            dictationPill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            dictationPill.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -14),
+            dictationPill.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, multiplier: 0.8),
+        ])
+        dictation.onState = { [weak self] state in self?.renderDictation(state, partial: "") }
+        dictation.onPartial = { [weak self] text in
+            guard let self else { return }
+            self.renderDictation(self.dictation.state, partial: text)
+        }
+        dictation.onFinal = { [weak self] text in self?.input.typeText(text) }
+    }
+
+    private func toggleDictation() {
+        var hostTypes = false
+        if case .session(let info) = status { hostTypes = ProtocolFeature.textInput.isSupported(at: info.protocolVersion) }
+        guard hostTypes || dictation.isActive else { return }
+        dictation.toggle()
+    }
+
+    private func renderDictation(_ state: Dictation.State, partial: String) {
+        let title: String?
+        switch state {
+        case .idle: title = nil
+        case .preparing(let what): title = what
+        case .listening: title = partial.isEmpty ? "Listening… tap to stop" : partial
+        case .failed(let why): title = why
+        }
+        dictationPill.isHidden = title == nil
+        dictationPill.configuration?.title = title
+        dictationPill.configuration?.baseBackgroundColor = state == .listening ? UIColor.systemRed.withAlphaComponent(0.85) : UIColor(white: 0.08, alpha: 0.9)
+        keyCapture.keyRow.setDictating(dictation.isActive)
+        if case .failed = state {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+                guard let self, self.dictation.state == state else { return }
+                self.dictationPill.isHidden = true
+            }
+        }
+    }
+
+    /// With a hardware keyboard the button goes away, and so does the system keyboard: the view that takes
+    /// its typing would take the hardware keys' too, which GameController already sends.
+    private func hardwareKeyboardChanged() {
+        let hasKeyboard = GCKeyboard.coalesced != nil
+        menuButton.isHidden = hasKeyboard
+        if hasKeyboard { setTouchKeyboard(false) }
+    }
+
+    /// One press of a key that isn't a character, with the key row's lit modifiers held around it.
+    private func tapKey(_ key: PhysicalKey) {
+        let lit = keyCapture.keyRow.takeModifiers()
+        let held: [PhysicalKey] = [(ModifierFlags.control, PhysicalKey.leftControl), (.option, .leftOption), (.command, .leftCommand)]
+            .filter { lit.contains($0.0) }.map(\.1)
+        for modifier in held { input.keyChanged(modifier, isDown: true) }
+        input.keyChanged(key, isDown: true)
+        input.keyChanged(key, isDown: false)
+        for modifier in held.reversed() { input.keyChanged(modifier, isDown: false) }
+    }
+
+    /// The docked keyboard covers the bottom of the view; a floating one (or none) covers nothing to make room for.
+    private func keyboardFrameChanged(hidden: Bool = false) {
+        var inset: CGFloat = 0
+        if !hidden, keyCapture.isFirstResponder, let guide = Optional(view.keyboardLayoutGuide) {
+            let frame = guide.layoutFrame
+            if frame.width >= view.bounds.width - 1, frame.maxY >= view.bounds.maxY - 1 { inset = max(view.bounds.maxY - frame.minY, 0) }
+        }
+        guard inset != keyboardInset else { return }
+        keyboardInset = inset
+        view.setNeedsLayout()
+    }
+
     // MARK: Touch screen
 
     // Fingers on the screen drive the host's pointer (the panel's "Touch screen" option; the gestures are
@@ -503,8 +691,13 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
 
     override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
         for touch in touches where touch.type == .direct {
-            if !panelView.isHidden, let row = panelView.row(at: touch.location(in: panelView)) {
-                apply(panel.click(row: row, hosts: hostList, preferences: preferences))
+            if !panelView.isHidden {
+                let p = touch.location(in: panelView)
+                if let row = panelView.row(at: p) {
+                    apply(panel.click(row: row, hosts: hostList, preferences: preferences))
+                } else if !panelView.bounds.contains(p) {
+                    input.closePanel()   // a tap beside the panel closes it (no keyboard needed)
+                }
             }
             input.touchEnded(id: Self.id(touch))   // unknown to the pipeline if it began with the panel open
         }

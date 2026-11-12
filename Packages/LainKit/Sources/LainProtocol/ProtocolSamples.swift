@@ -55,5 +55,6 @@ public enum ProtocolSamples {
         .scroll(Scroll(dx: 0.5, dy: -12.25, phase: .ended, momentumPhase: .changed)),
         .gesture(Gesture(kind: .rotate, phase: .changed, value: 0.125)),
         .releaseAll(ReleaseAll(reason: .pointerLockLost)),
+        .textInput(TextInput(text: "naïve café ✓\n\t{x}", modifiers: [.control, .option])),
     ]
 }

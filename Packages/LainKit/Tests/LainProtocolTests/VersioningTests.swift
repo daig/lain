@@ -115,6 +115,15 @@ private let frameVersions: [UInt8] = [LainProtocol.handshakeVersion] + LainProto
         }
     }
 
+    @Test func textInputIsAVersionSixMessage() throws {
+        let sample = Samples.all.first { $0.type == .textInput }!
+        #expect(MessageCodec.lower(sample, to: 5, sequence: 0, timestampNs: 0) == .unrepresentable("textInput doesn't exist in v5"))
+        #expect(MessageCodec.lower(sample, to: 6, sequence: 0, timestampNs: 0).bytes != nil)
+        #expect(!ProtocolFeature.textInput.isSupported(at: 5) && ProtocolFeature.textInput.isSupported(at: 6))
+        #expect(TextInput.split(String(repeating: "é", count: 2_500)).map(\.text.count) == [1_000, 1_000, 500])
+        #expect(TextInput.split("").isEmpty)
+    }
+
     @Test func sessionMessagesCantBeHandshakeFramedAndViceVersa() {
         var ping = MessageCodec.encode(.ping(Ping(id: 1, sentAtNs: 2)), sequence: 0, timestampNs: 0)
         ping[2] = LainProtocol.handshakeVersion
@@ -225,7 +234,8 @@ struct Widget: WireMessage, Equatable {
         #expect(ProtocolFeature.hostSetup.isSupported(at: 4))
         #expect(!ProtocolFeature.hostStats.isSupported(at: 4))
         #expect(ProtocolFeature.hostStats.isSupported(at: 5))
-        #expect(ProtocolFeature.missing(at: 4) == [.hostStats])
+        #expect(ProtocolFeature.missing(at: 4) == [.hostStats, .textInput])
+        #expect(ProtocolFeature.missing(at: 5) == [.textInput])
         #expect(ProtocolFeature.missing(at: LainProtocol.newestVersion).isEmpty)
     }
 

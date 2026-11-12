@@ -14,8 +14,12 @@ public protocol InputSink: AnyObject, Sendable {
     func releaseAll()
     /// The client's physical keyboard (ANSI/ISO/JIS) from `Hello`. The default implementation ignores it.
     func setKeyboardType(_ type: KeyboardType)
+    /// v6 `TextInput`: type the text, whatever the keyboard layout; with modifiers, as the keys that type it
+    /// with those held. The default implementation ignores it.
+    func text(_ text: String, modifiers: ModifierFlags)
 }
 
 extension InputSink {
     public func setKeyboardType(_ type: KeyboardType) {}
+    public func text(_ text: String, modifiers: ModifierFlags) {}
 }

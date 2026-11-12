@@ -181,6 +181,17 @@ public final class ClientInput: @unchecked Sendable {
         }
     }
 
+    /// Text for the host to type, with `modifiers` held if any (only to a host with `ProtocolFeature.textInput`).
+    public func typeText(_ text: String, modifiers: ModifierFlags = []) {
+        perform { self.pipeline.typeText(text, modifiers: modifiers) }
+    }
+
+    /// Opens the panel without the keyboard.
+    public func openPanel() {
+        let t = MonotonicClock.now()
+        perform { self.pipeline.openPanel(at: t) }
+    }
+
     // Touch screen: a finger, named by `id` until it lifts, at a point of the stream's view (points, y down).
 
     public func setTouchMode(_ mode: TouchMode) {

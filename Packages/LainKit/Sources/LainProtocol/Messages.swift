@@ -607,6 +607,35 @@ public struct KeyEvent: WireMessage {
     }
 }
 
+/// v6: text for the host to type as if on its keyboard, whatever its layout: what was dictated, or typed on
+/// the iPad's on-screen keyboard. A line feed is Return and a tab is Tab. With `modifiers`, each character is
+/// instead the key that types it in the host's layout, pressed with those modifiers held (Control-C,
+/// Command-V). Only to peers with `ProtocolFeature.textInput`; long text goes in several messages
+/// (`maxLength` each).
+public struct TextInput: WireMessage {
+    public static let type = MessageType.textInput
+    /// The most characters one message carries (the sender splits; a `String` field holds 65 535 bytes).
+    public static let maxLength = 1_000
+    public var text: String
+    /// Held while the text is typed; empty for plain text.
+    public var modifiers: ModifierFlags
+    public init(text: String, modifiers: ModifierFlags = []) { self.text = text; self.modifiers = modifiers }
+    public func encode(into w: inout ByteWriter) { w.string(text); w.u32(modifiers.rawValue) }
+    public init(from r: inout ByteReader) throws(ProtocolError) {
+        text = try r.string(); modifiers = ModifierFlags(rawValue: try r.u32())
+    }
+
+    /// `text` as messages of at most `maxLength` characters each.
+    public static func split(_ text: String, modifiers: ModifierFlags = []) -> [TextInput] {
+        var out: [TextInput] = [], rest = Substring(text)
+        while !rest.isEmpty {
+            out.append(TextInput(text: String(rest.prefix(maxLength)), modifiers: modifiers))
+            rest = rest.dropFirst(maxLength)
+        }
+        return out
+    }
+}
+
 /// Absolute position (points, client-authoritative) plus the raw delta (§6.3).
 public struct PointerMove: WireMessage {
     public static let type = MessageType.pointerMove

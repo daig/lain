@@ -65,6 +65,9 @@ public struct HostInputRouter: Sendable {
             return .injected(pointer: nil)
         case .gesture(let g):
             return gesture(g)
+        case .textInput(let t):
+            sink.text(t.text, modifiers: t.modifiers)
+            return .injected(pointer: nil)
         case .releaseAll:
             releaseAll()
             return .released

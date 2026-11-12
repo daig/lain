@@ -116,4 +116,31 @@ import Testing
         r.pipeline.touchEnded(id: 1, at: 40 * ms)
         #expect(r.sent.isEmpty)
     }
+
+    // MARK: Text (the on-screen keyboard, dictation)
+
+    @Test func typedTextGoesOutAsTextWithItsModifiers() {
+        let r = Recorder()
+        r.pipeline.typeText("héllo {x}\n")
+        r.pipeline.typeText("c", modifiers: [.control])
+        r.pipeline.typeText("")
+        let texts = r.sent.compactMap { if case .textInput(let t) = $0 { t } else { nil } }
+        #expect(texts == [TextInput(text: "héllo {x}\n"), TextInput(text: "c", modifiers: [.control])])
+        r.take()
+        r.pipeline.typeText(String(repeating: "a", count: 2_300))
+        #expect(r.sent.count == 3, "long text is split")
+    }
+
+    @Test func thePanelOpensWithoutAKeyboardAndTakesTheInput() {
+        let r = Recorder()
+        var shortcuts: [ClientInputPipeline.LocalShortcut] = []
+        r.pipeline.onLocalShortcut = { shortcuts.append($0) }
+        r.pipeline.openPanel(at: 0)
+        #expect(shortcuts == [.overlay(true)] && r.pipeline.overlayShown)
+        r.pipeline.typeText("x")
+        r.pipeline.touchBegan(id: 1, x: 10, y: 10, at: 10 * ms)
+        #expect(r.sent.isEmpty, "nothing reaches the host while the panel is open")
+        r.pipeline.closePanel()
+        #expect(shortcuts == [.overlay(true), .overlay(false)])
+    }
 }

@@ -64,7 +64,7 @@ import Testing
         rig.host.start()
         #expect(await eventually { rig.info?.setup != nil })
         let info = try #require(rig.info)
-        #expect(info.protocolVersion == 5 && info.olderMacMisses.isEmpty && ClientStatus.olderMacNote(info) == nil)
+        #expect(info.protocolVersion == 6 && info.olderMacMisses.isEmpty && ClientStatus.olderMacNote(info) == nil)
         #expect(info.setup?.missing == [.screenRecording])
         #expect(ClientStatus(.connected(info)).detail.contains("Finish setup on the Mac: allow Screen Recording"))
         #expect(rig.host.peerVersionNote == nil)
@@ -90,7 +90,7 @@ import Testing
         rig.client.setHostStatsInterval(ms: 100)
         try await Task.sleep(for: .milliseconds(300))
         #expect(rig.client.hostStats == nil && rig.info?.olderMacMisses == [])
-        #expect(rig.host.peerVersionNote == "lain on the iPad is older (protocol v4): update it for the Mac's video stats on the iPad")
+        #expect(rig.host.peerVersionNote == "lain on the iPad is older (protocol v4): update it for the Mac's video stats on the iPad, dictation and the on-screen keyboard")
     }
 
     @Test func aNewerIPadWorksWithAnOlderMacAndSaysWhatUpdatingAdds() async throws {
@@ -100,8 +100,8 @@ import Testing
         #expect(await eventually { rig.info?.isConfigured == true })
         let info = try #require(rig.info)
         #expect(info.protocolVersion == 4)
-        #expect(info.olderMacMisses == [.hostStats])
-        #expect(ClientStatus.olderMacNote(info) == "The Mac's lain is older (protocol v4): update it for the Mac's video stats on the iPad")
+        #expect(info.olderMacMisses == [.hostStats, .textInput])
+        #expect(ClientStatus.olderMacNote(info) == "The Mac's lain is older (protocol v4): update it for the Mac's video stats on the iPad, dictation and the on-screen keyboard")
         // The iPad never asks a v4 Mac for stats.
         rig.client.setHostStatsInterval(ms: 100)
         try await Task.sleep(for: .milliseconds(300))

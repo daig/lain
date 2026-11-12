@@ -88,6 +88,9 @@ targets:
         # first browse (the loop browses whenever no USB session is up, so possibly right at launch);
         # iPadOS lets the app browse only the listed service.
         NSLocalNetworkUsageDescription: lain finds your Mac and connects to it over Wi-Fi when the USB-C cable isn't connected.
+        # Dictation (Apps/Client/Dictation.swift): recognized on the iPad, typed on the host as text.
+        NSMicrophoneUsageDescription: lain listens while you dictate, and types what you say on your computer.
+        NSSpeechRecognitionUsageDescription: lain turns what you dictate into text on this iPad, and types it on your computer.
         NSBonjourServices:
           - _lain._tcp
     settings:

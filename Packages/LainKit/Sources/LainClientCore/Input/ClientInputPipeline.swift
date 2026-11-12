@@ -176,6 +176,18 @@ public final class ClientInputPipeline {
         return consumedKeys.remove(key) != nil
     }
 
+    /// Opens the panel without the keyboard (the touch menu). Nothing is held, so nothing is owed to the host.
+    public func openPanel(at timeNs: UInt64) {
+        guard !overlayShown else { return }
+        systemKeyDownAtNs = nil
+        overlayShown = true
+        openingPressHeld = false
+        closeTapArmed = false
+        keyRepeat.cancel()
+        apply(touch.cancelled(), at: timeNs)
+        onLocalShortcut(.overlay(true))
+    }
+
     /// Closes the panel (Esc in it, a Right Option tap, a lost focus): input goes to the host again.
     public func closePanel() {
         systemKeyDownAtNs = nil
@@ -228,6 +240,15 @@ public final class ClientInputPipeline {
     /// Teaches the layout map what a key types (UIKit `charactersIgnoringModifiers`, D18).
     public func learnCharacter(_ key: PhysicalKey, _ characters: String) {
         keyboard.layout.learn(key, character: characters)
+    }
+
+    // MARK: Text
+
+    /// Text for the host to type (v6 `TextInput`: the on-screen keyboard, dictation), with `modifiers` held
+    /// if any. The caller sends it only to a host with `ProtocolFeature.textInput`.
+    public func typeText(_ text: String, modifiers: ModifierFlags = []) {
+        guard !overlayShown else { return }
+        for message in TextInput.split(text, modifiers: modifiers) { send(.textInput(message)) }
     }
 
     // MARK: Pointer

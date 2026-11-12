@@ -13,6 +13,7 @@ public enum Message: Sendable, Equatable {
     case cursorShape(CursorShape), cursorSelect(CursorSelect), cursorWarp(CursorWarp)
     case keyEvent(KeyEvent), pointerMove(PointerMove), pointerButton(PointerButton), scroll(Scroll), gesture(Gesture)
     case releaseAll(ReleaseAll)
+    case textInput(TextInput)
 
     public var payload: any WireMessage {
         switch self {
@@ -41,6 +42,7 @@ public enum Message: Sendable, Equatable {
         case .scroll(let m): m
         case .gesture(let m): m
         case .releaseAll(let m): m
+        case .textInput(let m): m
         }
     }
 
@@ -86,6 +88,7 @@ public enum Message: Sendable, Equatable {
         case .scroll: m = .scroll(try Scroll(from: &r))
         case .gesture: m = .gesture(try Gesture(from: &r))
         case .releaseAll: m = .releaseAll(try ReleaseAll(from: &r))
+        case .textInput: m = .textInput(try TextInput(from: &r))
         }
         try r.finish()
         return m

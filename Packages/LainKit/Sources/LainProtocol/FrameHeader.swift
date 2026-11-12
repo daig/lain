@@ -20,6 +20,8 @@ public enum MessageType: UInt8, Sendable, CaseIterable {
     case videoConfig = 0x20, videoFrame = 0x21, frameAck = 0x24
     case cursorShape = 0x40, cursorSelect = 0x41, cursorWarp = 0x42
     case keyEvent = 0x50, pointerMove = 0x51, pointerButton = 0x52, scroll = 0x53, gesture = 0x54, releaseAll = 0x55
+    /// v6: text for the host to type (dictation, the on-screen keyboard).
+    case textInput = 0x56
 
     /// Sent in handshake frames (header version 0xFF). `Error` is both: a refusal before a version is
     /// agreed, and a session message after.
@@ -43,6 +45,7 @@ public enum MessageType: UInt8, Sendable, CaseIterable {
         switch self {
         case .hostSetup: 4
         case .statsRequest, .hostStats: 5
+        case .textInput: 6
         default: 3
         }
     }

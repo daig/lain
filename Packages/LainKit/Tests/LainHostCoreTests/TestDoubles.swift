@@ -9,6 +9,7 @@ final class RecordingSink: InputSink {
     enum Call: Equatable, Sendable {
         case key(KeyEvent), move(PointerMove), button(PointerButton), scroll(Scroll), releaseAll
         case keyboardType(KeyboardType)
+        case text(String, ModifierFlags)
     }
 
     private let log = Mutex<[Call]>([])
@@ -30,6 +31,7 @@ final class RecordingSink: InputSink {
     func scroll(_ scroll: Scroll) { log.withLock { $0.append(.scroll(scroll)) } }
     func releaseAll() { log.withLock { $0.append(.releaseAll) } }
     func setKeyboardType(_ type: KeyboardType) { log.withLock { $0.append(.keyboardType(type)) } }
+    func text(_ text: String, modifiers: ModifierFlags) { log.withLock { $0.append(.text(text, modifiers)) } }
 }
 
 /// Counts as `IOPMPowerAssertions` does (`PowerAssertionCount`): held while begins outnumber ends.
