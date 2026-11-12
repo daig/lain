@@ -115,7 +115,7 @@ echo "==> building the disk image"
 mkdir -p "$STAGE"
 swift Scripts/release/dmg-background.swift "$STAGE/background.png" 1
 swift Scripts/release/dmg-background.swift "$STAGE/background@2x.png" 2
-tiffutil -cathidpicheck "$STAGE/background.png" "$STAGE/background@2x.png" -out "$STAGE/background.tiff" >/dev/null
+tiffutil -cathidpicheck "$STAGE/background.png" "$STAGE/background@2x.png" -out "$STAGE/background.tiff" >/dev/null 2>&1
 volume_icon=()
 [[ -f "$APP/Contents/Resources/AppIcon.icns" ]] && volume_icon=(-D "icon=$APP/Contents/Resources/AppIcon.icns")
 "$DMGBUILD" -s Scripts/release/dmg-settings.py -D "app=$APP" -D "background=$STAGE/background.tiff" $volume_icon \
@@ -145,6 +145,10 @@ if (( notarize )); then
       { spctl --assess --type open --context context:primary-signature -vv "$DMG"; echo "Gatekeeper doesn't accept $DMG"; exit 1; }
   fi
 fi
+
+# Leave no second LainHost.app on this Mac: with a Developer ID copy beside the installed one, launchd can fail to
+# resolve the login agent's bundle ("spawn failed", EX_CONFIG) the next time the host is installed.
+rm -rf "$EXPORT" "$ARCHIVE"
 
 (cd "$OUT" && shasum -a 256 "${DMG:t}" >"${DMG:t}.sha256")
 echo "Built $DMG ($(du -h "$DMG" | cut -f1)); $(cat "$DMG.sha256")"
