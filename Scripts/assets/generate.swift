@@ -263,6 +263,18 @@ func drawSplash(_ c: CGContext, client: CGImage) {
                              CGPoint(x: 740, y: eye.y + 60), CGPoint(x: 790, y: eye.y + 10), CGPoint(x: 880, y: eye.y + 10)])
     let live = [cable.copy(strokingWithWidth: weight, lineCap: .butt, lineJoin: .round, miterLimit: 10)] + Emblem.icon.parts(centre: eye, unit: u)
     glow(c, live, wide: 70, tight: 18)
+    // Name and its expansion.
+    c.saveGState()
+    c.setShadow(offset: .zero, blur: 26, color: rgb(0x35B8FF, 0.9))
+    text(c, "lain", font: CTFontCreateWithName("Menlo-Bold" as CFString, 104, nil), color: rgb(0x7FEBFF), at: CGPoint(x: 160, y: 520), tracking: 6)
+    c.restoreGState()
+    text(c, "local area interface network", font: CTFontCreateWithName("Menlo-Regular" as CFString, 22, nil), color: rgb(0x7FA8FF),
+         at: CGPoint(x: 164, y: 566), tracking: 2)
+    // Faint scanlines over the backdrop. The client's screen is drawn after them, in front: its glass has
+    // scanlines of its own, and its plastic none.
+    c.setFillColor(rgb(0x02041C, 0.16))
+    var y = 0.0
+    while y < H { c.fill(CGRect(x: 0, y: y, width: W, height: 2)); y += 5 }
     // The client's screen, standing in front of the cable's end.
     let box = CGRect(x: 830, y: 100, width: 360, height: 360)
     c.saveGState()
@@ -273,17 +285,6 @@ func drawSplash(_ c: CGContext, client: CGImage) {
     c.draw(client, in: CGRect(origin: .zero, size: box.size))
     c.endTransparencyLayer()
     c.restoreGState()
-    // Name and its expansion.
-    c.saveGState()
-    c.setShadow(offset: .zero, blur: 26, color: rgb(0x35B8FF, 0.9))
-    text(c, "lain", font: CTFontCreateWithName("Menlo-Bold" as CFString, 104, nil), color: rgb(0x7FEBFF), at: CGPoint(x: 160, y: 520), tracking: 6)
-    c.restoreGState()
-    text(c, "local area interface network", font: CTFontCreateWithName("Menlo-Regular" as CFString, 22, nil), color: rgb(0x7FA8FF),
-         at: CGPoint(x: 164, y: 566), tracking: 2)
-    // Faint scanlines over everything.
-    c.setFillColor(rgb(0x02041C, 0.16))
-    var y = 0.0
-    while y < H { c.fill(CGRect(x: 0, y: y, width: W, height: 2)); y += 5 }
 }
 
 // MARK: Output
