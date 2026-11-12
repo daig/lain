@@ -1,0 +1,64 @@
+# Releasing
+
+Both hosts are published as GitHub release assets. The iPad app is distributed as source for now (TestFlight is
+the likely next step). Nothing here goes through App Review: the `.deb` is unsigned, and the Mac host is
+Developer ID-signed and notarized (an automated scan, not a review).
+
+Releases are built from a pushed commit on `main` with a clean tree, and each host gets its own tag:
+`linux-host-v<version>-r<commits>` and `mac-host-v<version>`. Mark releases before 1.0 as pre-releases.
+
+## Linux host (`.deb`)
+
+On the Ubuntu 26.04 build machine (`cargo install cargo-deb`; headers: `libclang-dev libva-dev libgbm-dev
+libpipewire-0.3-dev libssl-dev pkg-config`):
+
+```sh
+rust/dist/build-deb.sh   # rust/target/debian/lain_<version>+<commits>.g<hash>_amd64.deb
+cd rust/target/debian && sha256sum lain_*.deb > SHA256SUMS
+gh release create linux-host-v0.1.0-r<commits> --prerelease --target <commit> \
+  --title "Linux host 0.1.0 (r<commits>)" --notes-file <notes.md> lain_*.deb SHA256SUMS
+```
+
+- The version is the workspace's (`rust/Cargo.toml`) plus the commit count and hash, so apt always takes a newer
+  build as an upgrade. Bump the workspace version for a notable release.
+- `build-deb.sh` remaps the build machine's paths out of the binaries and refuses to finish if any home path is
+  left. It builds in `rust/target/package`, apart from the everyday build.
+- The package's contents and dependencies are in `rust/crates/lain-hostd/Cargo.toml`
+  (`[package.metadata.deb]`). The shipped unit `rust/dist/lain-hostd.service` must stay identical to what
+  `UnitFile::host("/usr/bin/lain-hostd")` renders (a test checks), so that `lain autostart on` recognises it.
+
+## Mac host (notarized `.zip`)
+
+One-time setup on the Mac:
+
+1. A **Developer ID Application** certificate: Xcode › Settings › Accounts › (team 8DWR7MSCR6) › Manage
+   Certificates › + › Developer ID Application.
+2. An app-specific password (account.apple.com › Sign-In and Security › App-Specific Passwords), stored for
+   notarytool:
+   ```sh
+   xcrun notarytool store-credentials lain-notary --apple-id <Apple ID> --team-id 8DWR7MSCR6
+   ```
+
+Each release:
+
+```sh
+git pull && Scripts/release-mac-host.sh --version 0.1 --no-notarize   # optional: check the signing first
+gh release create mac-host-v0.1 --prerelease --title "Mac host 0.1" --notes-file <notes.md>
+Scripts/release-mac-host.sh --version 0.1 --upload mac-host-v0.1
+```
+
+The script archives the `LainHost` scheme in Release and exports it with Developer ID
+(`Scripts/release/ExportOptions-DeveloperID.plist`). Automatic signing creates the Developer ID provisioning
+profile that the Keychain entitlement needs. The script then checks the signature and hardened runtime,
+notarizes and staples, and checks that Gatekeeper accepts it. It writes `build/release/lain-mac-host-<version>.zip`
+and its `.sha256`, and with `--upload` attaches both to the release. Logs: `build/release/logs/`.
+
+Not yet run: the first release will show whether the Developer ID profile covers the Keychain entitlement
+(`keychain-access-groups`), and whether Start at Login (the bundled LaunchAgent, `SMAppService`) behaves the same
+in a notarized build.
+
+## iPad app
+
+Source only for now; see the README. For TestFlight later: archive the `LainClient` scheme, upload with an App
+Store Connect export (method `app-store-connect`), and add testers. Internal testers (your team) need no review;
+a public link needs a Beta App Review.

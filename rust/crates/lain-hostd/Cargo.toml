@@ -5,6 +5,7 @@ version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 lain-proto.workspace = true
@@ -49,7 +50,8 @@ workspace = true
 [package.metadata.deb]
 name = "lain"
 maintainer = "dai <daig@users.noreply.github.com>"
-copyright = "dai"
+copyright = "2026 dai"
+license-file = ["../../../LICENSE", "0"]
 section = "net"
 priority = "optional"
 extended-description = """\
