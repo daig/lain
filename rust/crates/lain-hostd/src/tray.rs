@@ -3,6 +3,10 @@
 //!
 //! Its menu shows the status, the Wi-Fi line and, while connected, the video lines, and switches Wi-Fi (as
 //! `lain wifi on|off`, written to `config.toml`) and Start at Login (as `lain autostart on|off`).
+//!
+//! The tray host may come up after the daemon: the unit starts with the graphical session, before gnome-shell's
+//! AppIndicator extension owns `org.kde.StatusNotifierWatcher`. So the icon is spawned assuming a host will
+//! appear (`assume_sni_available`), and ksni registers it whenever the watcher comes (back) online.
 
 use std::path::PathBuf;
 use std::sync::Arc;
@@ -74,6 +78,16 @@ impl ksni::Tray for LainTray {
     fn icon_name(&self) -> String {
         // Connected: a display; waiting: a tablet.
         if self.connected { "video-display" } else { "input-tablet" }.into()
+    }
+
+    fn watcher_online(&self) {
+        info!("tray icon: the tray host is up, icon shown");
+    }
+
+    /// Keeps waiting for a tray host (ksni re-registers when one appears).
+    fn watcher_offline(&self, reason: ksni::OfflineReason) -> bool {
+        info!("tray icon: no tray host yet, waiting for one ({reason:?})");
+        true
     }
 
     fn tool_tip(&self) -> ksni::ToolTip {
@@ -189,7 +203,8 @@ impl ksni::Tray for LainTray {
     }
 }
 
-/// Shows the tray icon and keeps it current; logs and returns if there is no tray host.
+/// Shows the tray icon and keeps it current, waiting for a tray host if there is none yet; logs and returns if
+/// the icon can't be served at all (no session bus).
 pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathBuf, config: PathBuf) {
     let (actions, mut requests) = mpsc::unbounded_channel();
     let tray = LainTray {
@@ -206,7 +221,7 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
         resume_after_stop: false,
         actions,
     };
-    let handle = match tray.spawn().await {
+    let handle = match tray.assume_sni_available(true).spawn().await {
         Ok(handle) => handle,
         Err(e) => {
             warn!("no tray icon: {e}");
