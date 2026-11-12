@@ -181,6 +181,44 @@ public final class ClientInput: @unchecked Sendable {
         }
     }
 
+    // Touch screen: a finger, named by `id` until it lifts, at a point of the stream's view (points, y down).
+
+    public func setTouchMode(_ mode: TouchMode) {
+        let t = MonotonicClock.now()
+        perform { self.pipeline.setTouchMode(mode, at: t) }
+    }
+
+    /// The size of the view the stream fills, in points.
+    public func setTouchSurface(width: Double, height: Double) {
+        perform { self.pipeline.touchSurface = (width, height) }
+    }
+
+    public func touchBegan(id: Int, x: Double, y: Double) {
+        let t = MonotonicClock.now()
+        perform {
+            self.pipeline.touchBegan(id: id, x: x, y: y, at: t)
+            self.publishCursor()
+        }
+    }
+
+    public func touchMoved(id: Int, x: Double, y: Double) {
+        let t = MonotonicClock.now()
+        perform {
+            self.pipeline.touchMoved(id: id, x: x, y: y, at: t)
+            self.publishCursor()
+        }
+    }
+
+    public func touchEnded(id: Int) {
+        let t = MonotonicClock.now()
+        perform { self.pipeline.touchEnded(id: id, at: t) }
+    }
+
+    public func touchesCancelled() {
+        let t = MonotonicClock.now()
+        perform { self.pipeline.touchesCancelled(at: t) }
+    }
+
     public func mouseButton(_ button: MouseButton, isDown: Bool) {
         let t = MonotonicClock.now()
         perform { self.pipeline.mouseButton(button, isDown: isDown, at: t) }

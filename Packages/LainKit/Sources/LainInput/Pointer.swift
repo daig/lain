@@ -147,6 +147,16 @@ public struct PointerTracker: Sendable {
         snap()
     }
 
+    /// Puts the cursor at a point (global points; snapped onto the nearest display), as a touch on the screen
+    /// does. Returns nil if it was there already.
+    public mutating func moveTo(x newX: Double, y newY: Double, buttons: UInt8) -> PointerMove? {
+        let (oldX, oldY) = (x, y)
+        warp(x: newX, y: newY)
+        lastEventNs = nil
+        guard x != oldX || y != oldY else { return nil }
+        return PointerMove(x: x, y: y, dx: Float(x - oldX), dy: Float(y - oldY), buttons: buttons)
+    }
+
     /// Applies one GCMouse delta (y up-positive). Deltas were integers on iPadOS 26.7 and are
     /// fractional on 27 (§13). Returns nil for zero deltas, which iPadOS sends while fingers rest.
     public mutating func move(dx: Double, dy: Double, at timeNs: UInt64, buttons: UInt8) -> PointerMove? {

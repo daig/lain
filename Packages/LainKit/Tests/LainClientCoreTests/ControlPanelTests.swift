@@ -18,7 +18,7 @@ import Testing
     }
 
     @Test func rowsAreTheHostsThenTheOptions() {
-        let options: [ControlPanel.Row] = [.pointerSpeed, .scrollSpeed, .scrollDirection, .wifiPath, .radioPriority]
+        let options: [ControlPanel.Row] = [.pointerSpeed, .scrollSpeed, .scrollDirection, .touchMode, .wifiPath, .radioPriority]
         #expect(ControlPanel.rows(hosts: hosts()) == [.host(nil), .host("A"), .host("B")] + options)
         #expect(ControlPanel.rows(hosts: hosts(onCable: true)) == options, "no switching on the cable")
         #expect(ControlPanel.rows(hosts: ClientSession.HostList()) == options)
@@ -60,7 +60,14 @@ import Testing
     @Test func pathAndPriorityCycle() {
         var panel = ControlPanel()
         let h = hosts(onCable: true), p = ClientPreferences()
-        for _ in 0..<3 { _ = panel.key(Self.down, hosts: h, preferences: p) }   // the Wi-Fi path row
+        for _ in 0..<3 { _ = panel.key(Self.down, hosts: h, preferences: p) }   // the touch-screen row
+        var trackpad = p
+        trackpad.touchMode = .trackpad
+        #expect(panel.key(Self.right, hosts: h, preferences: p) == .setPreferences(trackpad))
+        var off = p
+        off.touchMode = .off
+        #expect(panel.key(Self.left, hosts: h, preferences: p) == .setPreferences(off), "wraps around")
+        _ = panel.key(Self.down, hosts: h, preferences: p)   // the Wi-Fi path row
         var direct = p
         direct.wifiPath = .direct
         #expect(panel.key(Self.right, hosts: h, preferences: p) == .setPreferences(direct))
@@ -87,7 +94,7 @@ import Testing
         let headings = lines.filter { $0.style == .heading }.map(\.text)
         #expect(headings == ["STREAM", "HOSTS", "OPTIONS", "SHORTCUTS"])
         let rows = lines.filter { $0.row != nil }
-        #expect(rows.count == 8)
+        #expect(rows.count == 9)
         #expect(rows[0].isSelected && rows[0].text.hasPrefix("○ Automatic"))
         #expect(rows[1].text.hasPrefix("◉ Mac mini") && rows[1].text.hasSuffix("connected"))
         #expect(rows[2].text.hasSuffix("in reach"))
@@ -98,8 +105,9 @@ import Testing
         let cabled = panel.lines(info: nil, video: VideoStats(), host: nil, hosts: hosts(onCable: true),
                                  preferences: ClientPreferences())
         #expect(cabled.contains { $0.text.hasPrefix("the cable is in") })
-        #expect(cabled.filter { $0.row != nil }.count == 5, "the hosts are listed, not selectable")
-        #expect(rows[6].text.contains("Automatic") && rows[7].text.contains("Standard"))
+        #expect(cabled.filter { $0.row != nil }.count == 6, "the hosts are listed, not selectable")
+        #expect(rows[6].text.hasPrefix("Touch screen") && rows[6].text.contains("Pointer follows your finger"))
+        #expect(rows[7].text.contains("Automatic") && rows[8].text.contains("Standard"))
     }
 
     @Test func theHostLineSaysWhyItHasNoNumbers() {
@@ -121,6 +129,7 @@ import Testing
         p.scrollSpeed = 0
         #expect(p.scrollSpeed == 1 && p.scrollScale == 0.5)
         p.reverseScroll = true
+        p.touchMode = .trackpad
         p.save(to: defaults)
         #expect(ClientPreferences.load(from: defaults) == p)
         #expect(p.curve.sensitivity == 1.2)

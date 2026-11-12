@@ -24,6 +24,10 @@ public final class ClientInputPipeline {
     /// capture layer ties to the pointer lock. Keyboard input flows regardless. Button-ups for buttons
     /// already down still pass so nothing sticks.
     public var pointerEnabled = true
+    /// Pointer input may flow: the pointer is locked, or the input is a touch on the screen (which needs no
+    /// lock: D19 keeps the trackpad from driving two pointers, and a finger drives none of iPadOS's).
+    private var pointerAllowed: Bool { pointerEnabled || applyingTouch }
+    private var applyingTouch = false
 
     public private(set) var keyboard: KeyboardProcessor
     public private(set) var pointer: PointerTracker
@@ -243,7 +247,7 @@ public final class ClientInputPipeline {
                 if pointerEnabled { onLocalShortcut(.panelClick) }
                 return
             }
-            guard pointerEnabled, heldButtons.set(button, down: true) else { return }
+            guard pointerAllowed, heldButtons.set(button, down: true) else { return }
             if let stop = momentum.cancel() { send(.scroll(stop)) }   // a click stops a fling, as on the Mac
             let count = clicks.down(button, x: pointer.x, y: pointer.y, at: timeNs)
             send(.pointerButton(PointerButton(button: button, isDown: true, clickCount: count, x: pointer.x,
@@ -268,11 +272,68 @@ public final class ClientInputPipeline {
         pointer.warp(x: x, y: y)
     }
 
+    // MARK: Touch screen
+
+    public private(set) var touch = TouchGestures()
+    /// The size of the view the stream fills (points). The stream is aspect-fit in it, as the renderer draws it.
+    public var touchSurface: (width: Double, height: Double) = (0, 0)
+
+    public var touchMode: TouchMode { touch.mode }
+    public func setTouchMode(_ mode: TouchMode, at timeNs: UInt64) { apply(touch.setMode(mode), at: timeNs) }
+
+    /// A finger on the screen (`id` names it until it lifts; x and y in the view's points, y down). Not while
+    /// the panel is open: the view gives its taps to the panel.
+    public func touchBegan(id: Int, x: Double, y: Double, at timeNs: UInt64) {
+        guard !overlayShown else { return }
+        apply(touch.began(id: id, x: x, y: y, at: timeNs), at: timeNs)
+    }
+
+    public func touchMoved(id: Int, x: Double, y: Double, at timeNs: UInt64) {
+        apply(touch.moved(id: id, x: x, y: y, at: timeNs), at: timeNs)
+    }
+
+    public func touchEnded(id: Int, at timeNs: UInt64) { apply(touch.ended(id: id, at: timeNs), at: timeNs) }
+
+    /// The system took the touches (an edge gesture, an alert).
+    public func touchesCancelled(at timeNs: UInt64) { apply(touch.cancelled(), at: timeNs) }
+
+    /// The host point under a point of the view: the streamed display, aspect-fit and centred in the surface.
+    func hostPoint(surfaceX: Double, surfaceY: Double) -> (x: Double, y: Double)? {
+        guard let s = streamedDisplay, s.width > 0, s.height > 0, touchSurface.width > 0, touchSurface.height > 0 else { return nil }
+        let scale = min(touchSurface.width / s.width, touchSurface.height / s.height)
+        let (w, h) = (s.width * scale, s.height * scale)
+        let u = (surfaceX - (touchSurface.width - w) / 2) / w, v = (surfaceY - (touchSurface.height - h) / 2) / h
+        return s.clamped(x: s.x + u * s.width, y: s.y + v * s.height)
+    }
+
+    private func apply(_ actions: [TouchGestures.Action], at timeNs: UInt64) {
+        guard !actions.isEmpty else { return }
+        applyingTouch = true
+        defer { applyingTouch = false }
+        for action in actions {
+            switch action {
+            case .moveTo(let x, let y):
+                guard let p = hostPoint(surfaceX: x, surfaceY: y),
+                      let move = pointer.moveTo(x: p.x, y: p.y, buttons: heldButtons.mask) else { continue }
+                send(.pointerMove(move))
+            case .moveBy(let dx, let dy):
+                // The tracker takes GCMouse deltas (y up) and applies the pointer-speed curve.
+                guard let move = pointer.move(dx: dx, dy: -dy, at: timeNs, buttons: heldButtons.mask) else { continue }
+                send(.pointerMove(move))
+            case .button(let button, let isDown): mouseButton(button, isDown: isDown, at: timeNs)
+            case .scrollBegan: scrollBegan(at: timeNs)
+            case .scroll(let dx, let dy): scrollChanged(dx: dx, dy: dy, at: timeNs)
+            case .scrollEnded: scrollEnded(at: timeNs)
+            case .scrollCancelled: scrollCancelled(at: timeNs)
+            }
+        }
+    }
+
     // MARK: Scroll
 
     /// Fingers touched down for a scroll (pan `.began`). Stops any running momentum.
     public func scrollBegan(at timeNs: UInt64) {
-        guard pointerEnabled, !overlayShown else { return }   // the panel takes the trackpad
+        guard pointerAllowed, !overlayShown else { return }   // the panel takes the trackpad
         if let stop = momentum.touchBegan(at: timeNs) { send(.scroll(stop)) }
         isScrolling = true
         scrollStarted = false
@@ -280,7 +341,7 @@ public final class ClientInputPipeline {
 
     /// A scroll delta in points since the previous one (pan translation delta, passed through as is).
     public func scrollChanged(dx: Double, dy: Double, at timeNs: UInt64) {
-        guard pointerEnabled, !overlayShown else { return }
+        guard pointerAllowed, !overlayShown else { return }
         if !isScrolling { scrollBegan(at: timeNs) }
         guard dx != 0 || dy != 0 else { return }
         let k = invertScroll ? -scrollScale : scrollScale
@@ -307,7 +368,7 @@ public final class ClientInputPipeline {
     /// A mouse-wheel notch (discrete scroll): passed through with no phase and no momentum, as a
     /// wheel scrolls on the Mac. Stops a running fling.
     public func scrollWheel(dx: Double, dy: Double, at timeNs: UInt64) {
-        guard pointerEnabled, !overlayShown, dx != 0 || dy != 0 else { return }
+        guard pointerAllowed, !overlayShown, dx != 0 || dy != 0 else { return }
         if let stop = momentum.cancel() { send(.scroll(stop)) }
         let k = invertScroll ? -scrollScale : scrollScale
         let (sx, sy) = (dx * k, dy * k)
@@ -338,12 +399,14 @@ public final class ClientInputPipeline {
     public func tick(at timeNs: UInt64) {
         if let scroll = momentum.tick(at: timeNs) { send(.scroll(scroll)) }
         if let repeated = keyRepeat.tick(at: timeNs) { send(.keyEvent(repeated)) }
+        apply(touch.tick(at: timeNs), at: timeNs)
         if let down = systemKeyDownAtNs, !overlayShown, timeNs &- down >= Self.overlayHoldNs, timeNs >= down {
             systemKeyDownAtNs = nil
             overlayShown = true
             openingPressHeld = true
             closeTapArmed = false
             keyRepeat.cancel()
+            apply(touch.cancelled(), at: timeNs)   // the panel takes the screen too
             onLocalShortcut(.overlay(true))
         }
     }
@@ -366,6 +429,7 @@ public final class ClientInputPipeline {
         openingPressHeld = false
         closePanel()
         _ = heldButtons.releaseAll(x: pointer.x, y: pointer.y)
+        touch.reset()
         keyRepeat.cancel()
         clicks.reset()
         momentum = MomentumSynthesizer(config: momentum.config)

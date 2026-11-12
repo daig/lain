@@ -74,6 +74,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     override func viewDidLoad() {
         super.viewDidLoad()
         view.backgroundColor = .black
+        view.isMultipleTouchEnabled = true   // two-finger scroll and right-click on the screen
         overrideUserInterfaceStyle = .dark   // secondaryLabel etc. must read on the black stream background
         setUpRendering()
         setUpLabels()
@@ -110,6 +111,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         layer.contentsScale = scale
         layer.drawableSize = CGSize(width: (view.bounds.width * scale).rounded(), height: (view.bounds.height * scale).rounded())
         CATransaction.commit()
+        input.setTouchSurface(width: view.bounds.width, height: view.bounds.height)
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -256,6 +258,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         input.setCurve(preferences.curve)
         input.setScrollScale(preferences.scrollScale)
         input.setInvertScroll(preferences.reverseScroll)
+        input.setTouchMode(preferences.touchMode)
 
         // 4 Hz: whether video is up (hides the connect status) and the HUD's numbers.
         uiTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
@@ -323,6 +326,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             input.setCurve(p.curve)
             input.setScrollScale(p.scrollScale)
             input.setInvertScroll(p.reverseScroll)
+            input.setTouchMode(p.touchMode)
             session?.setNetwork(path: p.wifiPath, radioPriority: p.radioPriority)
         }
         renderPanel()
@@ -459,9 +463,9 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         wheel.allowedScrollTypesMask = .discrete      // mouse wheel: plain deltas, no momentum
         let pinch = UIPinchGestureRecognizer(target: self, action: #selector(pinch(_:)))
         let rotate = UIRotationGestureRecognizer(target: self, action: #selector(rotate(_:)))
-        // Trackpad and wheel only: no touchscreen drags, pinches or rotations (§6.4: touch is off by
-        // default). Scroll pans take no touches at all (verified, §13); pinch and rotate keep only
-        // indirect-pointer input, which carries trackpad transform gestures.
+        // Trackpad and wheel only. Fingers on the screen don't go through recognizers: the view's raw touches
+        // feed the input pipeline's `TouchGestures` (below). Scroll pans take no touches at all (verified,
+        // §13); pinch and rotate keep only indirect-pointer input, which carries trackpad transform gestures.
         scroll.allowedTouchTypes = []
         wheel.allowedTouchTypes = []
         let trackpadOnly = [NSNumber(value: UITouch.TouchType.indirectPointer.rawValue)]
@@ -471,6 +475,43 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             recognizer.delegate = self
             view.addGestureRecognizer(recognizer)
         }
+    }
+
+    // MARK: Touch screen
+
+    // Fingers on the screen drive the host's pointer (the panel's "Touch screen" option; the gestures are
+    // `TouchGestures`). Only direct touches: the trackpad's pointer arrives as indirect touches when it isn't
+    // locked, and the Pencil is left for later. While the panel is open, a tap acts on the row under it.
+
+    private static func id(_ touch: UITouch) -> Int { ObjectIdentifier(touch).hashValue }
+
+    override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
+        guard panelView.isHidden else { return }
+        for touch in touches where touch.type == .direct {
+            let p = touch.location(in: view)
+            video.cursor.pointerMoved()   // shows the cursor again after typing (§5.4)
+            input.touchBegan(id: Self.id(touch), x: p.x, y: p.y)
+        }
+    }
+
+    override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for touch in touches where touch.type == .direct {
+            let p = touch.location(in: view)
+            input.touchMoved(id: Self.id(touch), x: p.x, y: p.y)
+        }
+    }
+
+    override func touchesEnded(_ touches: Set<UITouch>, with event: UIEvent?) {
+        for touch in touches where touch.type == .direct {
+            if !panelView.isHidden, let row = panelView.row(at: touch.location(in: panelView)) {
+                apply(panel.click(row: row, hosts: hostList, preferences: preferences))
+            }
+            input.touchEnded(id: Self.id(touch))   // unknown to the pipeline if it began with the panel open
+        }
+    }
+
+    override func touchesCancelled(_ touches: Set<UITouch>, with event: UIEvent?) {
+        if touches.contains(where: { $0.type == .direct }) { input.touchesCancelled() }
     }
 
     func gestureRecognizer(_ g: UIGestureRecognizer, shouldRecognizeSimultaneouslyWith other: UIGestureRecognizer) -> Bool {
@@ -639,10 +680,13 @@ final class PanelView: UIView {
     }
 
     /// The row the panel's pointer is on, if its line acts on one.
-    func rowUnderCursor() -> Int? {
+    func rowUnderCursor() -> Int? { row(at: cursorPoint) }
+
+    /// The row at a point of the panel (its pointer, or a finger), if the line there acts on one.
+    func row(at point: CGPoint) -> Int? {
         for (label, line) in zip(labels, lines) where line.row != nil {
             let frame = label.convert(label.bounds, to: self).insetBy(dx: -4, dy: -2)
-            if frame.contains(cursorPoint) { return line.row }
+            if frame.contains(point) { return line.row }
         }
         return nil
     }

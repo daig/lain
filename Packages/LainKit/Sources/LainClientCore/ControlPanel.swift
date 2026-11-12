@@ -15,6 +15,8 @@ public struct ClientPreferences: Sendable, Equatable {
     }
     /// Reverses the trackpad's scroll direction (off: as the host's natural scrolling).
     public var reverseScroll = false
+    /// What fingers on the screen do.
+    public var touchMode = TouchMode.direct
     /// How the iPad reaches a host over Wi-Fi.
     public var wifiPath = WiFiPath.automatic
     /// How video and audio ask the radio for airtime (D34).
@@ -36,13 +38,14 @@ public struct ClientPreferences: Sendable, Equatable {
     }
 
     static let speedKey = "lain.pointerSpeed", scrollKey = "lain.reverseScroll", scrollSpeedKey = "lain.scrollSpeed"
-    static let pathKey = "lain.wifiPath", priorityKey = "lain.radioPriority"
+    static let pathKey = "lain.wifiPath", priorityKey = "lain.radioPriority", touchKey = "lain.touchMode"
 
     public static func load(from defaults: UserDefaults = .standard) -> ClientPreferences {
         var p = ClientPreferences()
         if defaults.object(forKey: speedKey) != nil { p.pointerSpeed = defaults.integer(forKey: speedKey) }
         if defaults.object(forKey: scrollSpeedKey) != nil { p.scrollSpeed = defaults.integer(forKey: scrollSpeedKey) }
         p.reverseScroll = defaults.bool(forKey: scrollKey)
+        if let raw = defaults.string(forKey: touchKey), let mode = TouchMode(rawValue: raw) { p.touchMode = mode }
         if let raw = defaults.string(forKey: pathKey), let path = WiFiPath(rawValue: raw) { p.wifiPath = path }
         if let raw = defaults.string(forKey: priorityKey), let priority = NetworkStreamOptions.RadioPriority(rawValue: raw) {
             p.radioPriority = priority
@@ -54,6 +57,7 @@ public struct ClientPreferences: Sendable, Equatable {
         defaults.set(pointerSpeed, forKey: Self.speedKey)
         defaults.set(scrollSpeed, forKey: Self.scrollSpeedKey)
         defaults.set(reverseScroll, forKey: Self.scrollKey)
+        defaults.set(touchMode.rawValue, forKey: Self.touchKey)
         defaults.set(wifiPath.rawValue, forKey: Self.pathKey)
         defaults.set(radioPriority.rawValue, forKey: Self.priorityKey)
     }
@@ -76,6 +80,7 @@ public struct ControlPanel: Sendable, Equatable {
         case pointerSpeed
         case scrollSpeed
         case scrollDirection
+        case touchMode
         case wifiPath
         case radioPriority
     }
@@ -108,7 +113,7 @@ public struct ControlPanel: Sendable, Equatable {
             rows.append(.host(nil))
             rows += hosts.hosts.map { .host($0.id) }
         }
-        return rows + [.pointerSpeed, .scrollSpeed, .scrollDirection, .wifiPath, .radioPriority]
+        return rows + [.pointerSpeed, .scrollSpeed, .scrollDirection, .touchMode, .wifiPath, .radioPriority]
     }
 
     // MARK: Input
@@ -156,7 +161,7 @@ public struct ControlPanel: Sendable, Equatable {
         case .scrollSpeed:
             change(row, by: preferences.scrollSpeed == ClientPreferences.scrollScales.count
                        ? 1 - preferences.scrollSpeed : 1, preferences: preferences)
-        case .scrollDirection, .wifiPath, .radioPriority: change(row, by: 1, preferences: preferences)
+        case .scrollDirection, .touchMode, .wifiPath, .radioPriority: change(row, by: 1, preferences: preferences)
         }
     }
 
@@ -167,6 +172,7 @@ public struct ControlPanel: Sendable, Equatable {
         case .pointerSpeed: p.pointerSpeed += step
         case .scrollSpeed: p.scrollSpeed += step
         case .scrollDirection: p.reverseScroll.toggle()
+        case .touchMode: p.touchMode = Self.cycle(p.touchMode, by: step)
         case .wifiPath: p.wifiPath = Self.cycle(p.wifiPath, by: step)
         case .radioPriority: p.radioPriority = Self.cycle(p.radioPriority, by: step)
         }
@@ -220,6 +226,8 @@ public struct ControlPanel: Sendable, Equatable {
                 add(Self.pad("Scroll speed") + Self.dots(preferences.scrollSpeed, of: ClientPreferences.scrollScales.count), row: i)
             case .scrollDirection:
                 add(Self.pad("Scroll direction") + "‹ " + (preferences.reverseScroll ? "Reversed" : "Natural") + " ›", row: i)
+            case .touchMode:
+                add(Self.pad("Touch screen") + "‹ " + Self.title(preferences.touchMode) + " ›", row: i)
             case .wifiPath:
                 add(Self.pad("Wi-Fi path") + "‹ " + Self.title(preferences.wifiPath) + " ›", row: i)
             case .radioPriority:
@@ -244,12 +252,22 @@ public struct ControlPanel: Sendable, Equatable {
         ("right ⌥ hold", "this panel"),
         ("left ⌥", "Option"),
         ("⌃⌥⌘ L", "stats HUD"),
+        ("touch", "press where you touch · Trackpad: move; tap: click; hold still, then move: drag"),
+        ("touch, two fingers", "drag: scroll · tap: right-click"),
     ]
 
     static func cycle<T: CaseIterable & Equatable>(_ value: T, by step: Int) -> T {
         let all = Array(T.allCases)
         let i = all.firstIndex(of: value) ?? 0
         return all[((i + step) % all.count + all.count) % all.count]
+    }
+
+    static func title(_ mode: TouchMode) -> String {
+        switch mode {
+        case .direct: "Pointer follows your finger"
+        case .trackpad: "Trackpad"
+        case .off: "Off"
+        }
     }
 
     static func title(_ path: WiFiPath) -> String {

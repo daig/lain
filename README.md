@@ -27,6 +27,21 @@ On the iPad, **hold the right Option key** to open lain's panel: settings (point
 computer and network to use) and the keyboard shortcuts. The right Option key also stands in for Command, so
 that shortcuts like ⌘ Tab reach the computer instead of the iPad.
 
+### Touch screen
+
+You can also drive the computer with your fingers on the iPad's screen. Choose how under **Touch screen** in
+lain's panel:
+
+- **Pointer follows your finger** (the default). Touching presses the mouse button at that spot and holds it
+  until you lift: tap to click, tap twice to double-click, move to drag.
+- **Trackpad.** The whole screen works like a trackpad, for finer control:
+  - move a finger to move the pointer;
+  - tap to click where the pointer is;
+  - to drag, hold a finger still for a moment, then move. Lift to let go.
+- **Off.** Touches do nothing, so only the keyboard and trackpad control the computer.
+
+In both modes, drag with two fingers to scroll, and tap with two fingers to right-click.
+
 ## Install a host
 
 Download the host from [Releases](https://github.com/daig/lain/releases).
