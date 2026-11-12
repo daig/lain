@@ -116,6 +116,23 @@ import Testing
         #expect(c.target == 20_000_000)
     }
 
+    /// Seen from the Linux host (2026-11-01, both ends on Wi-Fi): a fast link whose radio pauses ~100 ms 2–4
+    /// times a second. The pauses hold frames back, so delivery reads under the target, but the acks stop
+    /// meanwhile: that is no slow link, and the target must not sit at the floor.
+    @Test(arguments: [250.0, 300.0, 500.0])
+    func radioPausesOnAFastLinkDontPinTheTargetToTheFloor(everyMs: Double) {
+        var c = BitrateController(start: 6_000_000)
+        run(&c, seconds: 10, capacityBps: 200_000_000, baseMs: 10, fps: 120, stallEveryMs: everyMs, stallMs: 100)
+        #expect(c.target >= 30_000_000, "\(c.target)")
+    }
+
+    /// The same pauses on a link that really is slow: the target still comes down to about its capacity.
+    @Test func radioPausesOnASlowLinkStillBringTheTargetDown() {
+        var c = BitrateController(start: 60_000_000)
+        run(&c, seconds: 8, capacityBps: 12_000_000, baseMs: 10, fps: 120, stallEveryMs: 300, stallMs: 100)
+        #expect(c.target <= 14_000_000, "\(c.target)")
+    }
+
     @Test func itNeverLeavesTheFloorAndCeiling() {
         var c = BitrateController(start: 1)
         #expect(c.target == c.config.floor)

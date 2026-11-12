@@ -8,13 +8,14 @@
 /// - **Down**, quickly: queueing above `congestedMs` lowers the target to 90% of the measured delivery rate
 ///   (or by `decrease` if too few acks to measure), at most every `decreaseIntervalNs`, never below `floor`.
 ///   Both need the link busy (`isBusy`: several frames held back lately, and a real delivery rate), so a
-///   quiet link's stalls and tiny frames never lower it. With some queueing (above `clearMs`), a link delivering under
-///   90% of the target is saturated too: the host's gate (two frames in flight) holds frames back before the
+///   quiet link's stalls and tiny frames never lower it. A busy link delivering under 90% of the target is
+///   saturated too (whatever the queueing: with big frames, each one's transfer time is in the best round trip): the host's gate (two frames in flight) holds frames back before the
 ///   queue grows, costing frame rate, so the target drops to 90% of the delivery rate. Fluidity first:
 ///   smaller frames rather than fewer. Without held-back frames a low delivery rate only means there was
 ///   little to send.
-/// - **Up**, slowly: queueing below `clearMs` for `increaseIntervalNs` raises it by `increase`, up to
-///   `ceiling`, busy or not (see `decide`).
+/// - **Up**, slowly: queueing below `clearMs` on a link that isn't busy, for `increaseIntervalNs`, raises it by
+///   `increase`, up to `ceiling` (see `decide`). Frames held back while the acks have stopped (a radio pause)
+///   don't make it busy (`heldBack`).
 /// - Nothing comes down during `warmupNs` after the first ack, or while the link isn't busy, and one step
 ///   down is at most to `maxStep` of the target.
 public struct BitrateController: Sendable {
@@ -93,10 +94,23 @@ public struct BitrateController: Sendable {
         return Int(Double(bytes) * 8 / (Double(span) / 1e9))
     }
 
-    /// The host's gate held a frame back (two already in flight): there's more to send than the link takes.
+    /// The host's gate held a frame back (two already in flight): there's more to send than the link takes,
+    /// unless the acks have stopped. A frame held back in a silence longer than twice the median gap between
+    /// acks is a link stall's (a radio pause), which says nothing about capacity, and isn't counted; a slow
+    /// link keeps acking while it holds frames back. (Seen from the Linux host, 2026-11-01: the iPad's radio
+    /// pauses, ~100 ms several times a second, held a fast link's target at the floor.)
     public mutating func heldBack(at now: UInt64) {
+        if let last = delivered.last?.at, let gap = medianAckGap(at: now), now &- last > 2 * gap { return }
         heldBackAt.append(now)
         heldBackAt.removeAll { now &- $0 > config.heldBackWindowNs }
+    }
+
+    /// The median gap between the acks of the delivery window, if it holds at least three.
+    func medianAckGap(at now: UInt64) -> UInt64? {
+        let times = delivered.filter { now &- $0.at <= config.deliveryWindowNs }.map(\.at)
+        guard times.count >= 3 else { return nil }
+        let gaps = (1..<times.count).map { times[$0] &- times[$0 - 1] }.sorted()
+        return gaps[gaps.count / 2]
     }
 
     /// More to send than the link takes, and the link really carrying it.
@@ -144,11 +158,11 @@ public struct BitrateController: Sendable {
             let lowered = max(byDelivery, Int(Double(target) * config.maxStep))
             return set(max(config.floor, min(lowered, Int(Double(target) * config.decrease))), at: now)
         }
-        // Up while nothing queues and nothing was held back lately, busy or not (probing, as congestion
-        // control does): a quiet link at a low target makes small frames that never fill it, so waiting for
-        // it to be busy would trap the target low. A target too high comes down once frames back up.
-        let heldLately = heldBackAt.last.map { now &- $0 <= config.heldBackWindowNs } ?? false
-        guard queueing < config.clearMs, !heldLately else {
+        // Up while nothing queues and the link isn't busy (probing, as congestion control does): a quiet link
+        // at a low target makes small frames that never fill it, so waiting for it to be busy would trap the
+        // target low. A target too high comes down once frames back up. Not "nothing held back lately": a
+        // radio pause's first frame or two are held while their acks are still due.
+        guard queueing < config.clearMs, !busy else {
             clearSinceNs = nil
             return nil
         }
