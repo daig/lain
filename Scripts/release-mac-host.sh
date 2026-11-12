@@ -1,6 +1,7 @@
 #!/bin/zsh
 # Build the Mac host for a GitHub release: a Release archive of LainHost, exported with Developer ID, notarized
-# and stapled, in a disk image (the app and an Applications link, to drag it onto) that is itself signed,
+# and stapled, in a disk image (the app and an Applications link, to drag it onto, laid out by dmgbuild over a
+# background with an arrow: Scripts/release/dmg-*) that is itself signed,
 # notarized and stapled. The result opens on any Mac (macOS 27) without Gatekeeper warnings, offline too; no
 # App Review is involved (notarization is an automated scan). Release steps: RELEASING.md.
 #   Scripts/release-mac-host.sh --version 0.2              # build build/release/lain-mac-host-0.2.dmg (+ .sha256)
@@ -51,6 +52,13 @@ rm -rf "$ARCHIVE" "$EXPORT" "$STAGE" "$DMG" "$DMG.sha256"
 mkdir -p "$LOG"
 
 Scripts/bootstrap.sh --if-stale
+# dmgbuild lays out the disk image's window (Scripts/release/dmg-settings.py); a pinned copy in a local venv.
+VENV=build/tools/venv DMGBUILD=build/tools/venv/bin/dmgbuild
+if [[ ! -x $DMGBUILD ]] || [[ "$("$VENV/bin/pip" show dmgbuild 2>/dev/null | sed -n 's/^Version: //p')" != 1.6.5 ]]; then
+  echo "==> installing dmgbuild 1.6.5 in $VENV"
+  python3 -m venv "$VENV" && "$VENV/bin/pip" install -q 'dmgbuild==1.6.5' >"$LOG/dmgbuild-install.log" 2>&1 ||
+    { tail -5 "$LOG/dmgbuild-install.log"; echo "couldn't install dmgbuild"; exit 1; }
+fi
 echo "==> archiving LainHost $version ($build_number) at $(git rev-parse --short HEAD)"
 xcodebuild -project lain.xcodeproj -scheme LainHost -configuration Release -destination "generic/platform=macOS" \
   -archivePath "$ARCHIVE" -derivedDataPath build/DerivedData -allowProvisioningUpdates \
@@ -103,11 +111,15 @@ if (( notarize )); then
 fi
 
 echo "==> building the disk image"
+# The window's background, drawn at 1x and 2x and combined, so Finder shows the sharp one on a Retina display.
 mkdir -p "$STAGE"
-ditto "$APP" "$STAGE/LainHost.app"
-ln -s /Applications "$STAGE/Applications"
-hdiutil create -volname "LainHost $version" -srcfolder "$STAGE" -fs HFS+ -format UDZO -imagekey zlib-level=9 \
-  -ov "$DMG" >"$LOG/hdiutil.log" 2>&1 || { tail -20 "$LOG/hdiutil.log"; echo "hdiutil failed"; exit 1; }
+swift Scripts/release/dmg-background.swift "$STAGE/background.png" 1
+swift Scripts/release/dmg-background.swift "$STAGE/background@2x.png" 2
+tiffutil -cathidpicheck "$STAGE/background.png" "$STAGE/background@2x.png" -out "$STAGE/background.tiff" >/dev/null
+volume_icon=()
+[[ -f "$APP/Contents/Resources/AppIcon.icns" ]] && volume_icon=(-D "icon=$APP/Contents/Resources/AppIcon.icns")
+"$DMGBUILD" -s Scripts/release/dmg-settings.py -D "app=$APP" -D "background=$STAGE/background.tiff" $volume_icon \
+  "LainHost $version" "$DMG" >"$LOG/dmgbuild.log" 2>&1 || { tail -20 "$LOG/dmgbuild.log"; echo "dmgbuild failed"; exit 1; }
 rm -rf "$STAGE"
 # The image is signed too when the Developer ID certificate is in the Keychain. Xcode's export can sign with a
 # cloud-managed one that codesign can't use; an unsigned image is still notarized and stapled, and the app in it

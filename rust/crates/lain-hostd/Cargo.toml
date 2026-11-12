@@ -66,4 +66,6 @@ assets = [
     ["target/release/lain", "usr/bin/", "755"],
     ["../../dist/lain-hostd.service", "usr/lib/systemd/user/", "644"],
     ["config.example.toml", "usr/share/doc/lain/", "644"],
+    ["../../dist/icons/lain-connected-symbolic.svg", "usr/share/icons/hicolor/scalable/status/", "644"],
+    ["../../dist/icons/lain-idle-symbolic.svg", "usr/share/icons/hicolor/scalable/status/", "644"],
 ]

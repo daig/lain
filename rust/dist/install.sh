@@ -5,7 +5,7 @@
 #
 # Usage: rust/dist/install.sh            (from anywhere in the repository)
 #        PREFIX=/opt/lain rust/dist/install.sh
-# Uninstall: lain autostart off; systemctl --user stop lain-hostd; rm ~/.local/bin/{lain,lain-hostd}
+# Uninstall: lain autostart off; systemctl --user stop lain-hostd; rm ~/.local/bin/{lain,lain-hostd} ~/.local/share/icons/hicolor/scalable/status/lain-*
 #
 # This is the from-source install, for development. The packaged install is rust/dist/build-deb.sh. If both are
 # installed, this one's unit (in ~/.config/systemd/user) shadows the package's; `/usr/bin/lain autostart on` goes
@@ -26,6 +26,12 @@ for b in lain-hostd lain; do
     mv -f "$bin/$b.new" "$bin/$b" # atomic: a running lain-hostd keeps its old file
 done
 echo "installed lain-hostd and lain in $bin"
+
+# The tray icons, where the icon theme looks for this user's (the package puts them in /usr/share/icons).
+icons=${XDG_DATA_HOME:-$HOME/.local/share}/icons/hicolor/scalable/status
+mkdir -p "$icons"
+install -m 0644 "$here"/icons/lain-*-symbolic.svg "$icons/"
+gtk-update-icon-cache -q -t -f "${icons%/scalable/status}" 2>/dev/null || true
 
 "$bin/lain" autostart on
 

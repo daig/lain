@@ -57,6 +57,7 @@ targets:
         PRODUCT_NAME: LainHost
         ENABLE_HARDENED_RUNTIME: YES
         ENABLE_APP_SANDBOX: NO         # unsandboxed by design (D5)
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon   # Apps/Host/AppIcon.icon (Scripts/assets/generate.swift)
         CODE_SIGN_IDENTITY: "Apple Development"   # never ad hoc: TCC grants would reset (§2)
   LainClient:
     type: application
@@ -94,6 +95,7 @@ targets:
         PRODUCT_BUNDLE_IDENTIFIER: sub.dev.lain.client
         PRODUCT_NAME: LainClient
         TARGETED_DEVICE_FAMILY: "2"    # iPad only
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon   # Apps/Client/AppIcon.icon (Scripts/assets/generate.swift)
   # Hosted unit tests: run inside the signed app, so Keychain and other identity-bound APIs work.
   LainClientTests:
     type: bundle.unit-test

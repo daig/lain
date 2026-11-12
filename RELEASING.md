@@ -53,13 +53,21 @@ The script archives the `LainHost` scheme in Release and exports it with Develop
 (`Scripts/release/ExportOptions-DeveloperID.plist`). Automatic signing creates the Developer ID provisioning
 profile that the Keychain entitlement needs. The script then checks the signature and hardened runtime,
 notarizes and staples the app, and checks that Gatekeeper accepts it. It then puts the app and an
-`Applications` link in a disk image, signs it when the certificate is local, notarizes and staples it, and
+`Applications` link in a disk image (laid out by dmgbuild), signs it when the certificate is local, notarizes and staples it, and
 writes `build/release/lain-mac-host-<version>.dmg` and its `.sha256`; with `--upload` it attaches both to the
 release. Logs: `build/release/logs/`.
 
-Verified (dry run, 2026-11-12): the Developer ID export succeeds with the Keychain entitlement
-(`keychain-access-groups`) and the hardened runtime. Not yet seen: notarization, and whether Start at Login (the bundled LaunchAgent, `SMAppService`) behaves the same
-in a notarized build.
+The disk image's window is laid out by dmgbuild (a pinned copy the script installs in `build/tools/venv`) over a
+background drawn by `Scripts/release/dmg-background.swift`; its volume icon is the app's.
+
+Verified (2026-11-12, `mac-host-v0.1.0`): the Developer ID export succeeds with the Keychain entitlement
+(`keychain-access-groups`) and the hardened runtime, and Apple notarizes the app and the disk image.
+
+## Artwork
+
+`Scripts/assets/generate.swift` draws the app icons' layers (`Apps/Host/AppIcon.icon`, `Apps/Client/AppIcon.icon`),
+the menu-bar and tray glyphs and the README splash, all from one definition of the emblem. Run it from the
+repository root after changing the design, and commit what it rewrites.
 
 ## iPad app
 

@@ -76,8 +76,9 @@ impl ksni::Tray for LainTray {
     }
 
     fn icon_name(&self) -> String {
-        // Connected: a display; waiting: a tablet.
-        if self.connected { "video-display" } else { "input-tablet" }.into()
+        // The eye (rust/dist/icons, installed in the hicolor theme); its pupil is filled only while an iPad is
+        // connected. Swift: the `MenuBarConnected` and `MenuBarIdle` images of `LainHostApp`.
+        if self.connected { "lain-connected-symbolic" } else { "lain-idle-symbolic" }.into()
     }
 
     fn watcher_online(&self) {

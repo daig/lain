@@ -55,7 +55,7 @@ struct LainHostApp: App {
     @State private var host = HostController()
 
     var body: some Scene {
-        MenuBarExtra("lain", systemImage: "ipad.landscape") {
+        MenuBarExtra {
             Text(host.status.title)
             Text(host.wifiLine)
             if let note = host.peerVersionNote { Text(note) }
@@ -124,6 +124,10 @@ struct LainHostApp: App {
             Text(HostStatus.protocolDescription)
             Button("Quit lain") { NSApplication.shared.terminate(nil) }
                 .keyboardShortcut("q")
+        } label: {
+            // The eye, as a template image; its pupil is filled only while an iPad is connected.
+            Image(host.status.isConnected ? "MenuBarConnected" : "MenuBarIdle")
+                .accessibilityLabel("lain")
         }
     }
 }

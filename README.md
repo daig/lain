@@ -1,50 +1,80 @@
+<img src="assets/splash.png" srcset="assets/splash.png 1x, assets/splash@2x.png 2x" width="100%"
+     alt="lain: an eye made of two wires, glowing on a circuit board, cabled to an old CRT screen that shows the same eye">
+
 # lain
 
-An iPad Pro (with its Magic Keyboard) as a computer's display, keyboard and trackpad, with low latency,
-over USB-C or Wi-Fi on the local network.
+Use an iPad Pro and its Magic Keyboard as your computer's display, keyboard and trackpad. The computer (the
+*host*) streams its screen to the iPad with low latency and takes input back, over a USB-C cable or Wi-Fi on
+your local network. Hosts run on a Mac or on Linux.
 
-| Part | Where | Get it |
-|---|---|---|
-| **iPad app** (the client) | `Apps/Client`, `Packages/LainKit` | Build from source (below) |
-| **Mac host** (macOS 27) | `Apps/Host`, `Packages/LainKit` | Build from source for now; notarized `lain-mac-host-*.dmg` [releases](https://github.com/daig/lain/releases) are coming |
-| **Linux host** (Ubuntu 26.04, GNOME/Wayland, AMD GPU) | `rust/` | [Releases](https://github.com/daig/lain/releases) (`lain_*_amd64.deb`) |
+## What you need
 
-The first connection must be over USB-C: it pairs the iPad with the host. After that, Wi-Fi works too, and an
-attached cable always wins. The internet is out of scope (local network only).
+- An **iPad Pro** on iPadOS 27, ideally with a Magic Keyboard.
+- A host, one of:
+  - a **Mac** on macOS 27;
+  - a **Linux PC** on Ubuntu 26.04 with GNOME (Wayland) and an AMD GPU.
+- A **USB-C cable** for the first connection.
+
+## Get started
+
+1. **Install the host** on your computer: see [Mac](#mac) or [Linux](#linux) below.
+2. **Install the iPad app.** It isn't on the App Store yet, so you build it with Xcode on a Mac: see
+   [Build the iPad app](#build-the-ipad-app).
+3. **Connect them with the cable** and open lain on the iPad. That first connection pairs the iPad with the
+   host. After that, Wi-Fi works too; when the cable is plugged in, lain uses it.
+
+On the iPad, **hold the right Option key** to open lain's panel: settings (pointer and scroll speed, which
+computer and network to use) and the keyboard shortcuts. The right Option key also stands in for Command, so
+that shortcuts like ⌘ Tab reach the computer instead of the iPad.
 
 ## Install a host
 
-**Linux** (Ubuntu 26.04):
+Download the host from [Releases](https://github.com/daig/lain/releases).
+
+### Mac
+
+1. Open `lain-mac-host-<version>.dmg`, drag **LainHost** onto **Applications**, and open it. It runs in the
+   menu bar (an eye icon).
+2. Allow **Screen Recording** and **Local Network** when macOS asks.
+3. Give it **Accessibility**, which keyboard and trackpad input need. macOS doesn't ask for this one: choose
+   **Grant Accessibility…** in lain's menu, or turn on LainHost in System Settings › Privacy & Security ›
+   Accessibility. Without it, the pointer jumps back and typing does nothing.
+4. Choose **Start at Login** in lain's menu.
+
+Also turn off **Universal Control**, which otherwise moves your Mac's own mouse and keyboard onto the iPad: on
+the Mac in System Settings › Displays › Advanced, and on the iPad in Settings › General › AirPlay & Continuity
+› Cursor and Keyboard.
+
+### Linux
 
 ```sh
 sudo apt install ./lain_<version>_amd64.deb
-lain autostart on                  # as yourself: start with your desktop session
-systemctl --user start lain-hostd  # or log out and back in
+lain autostart on                  # run as yourself, not root: start lain with your desktop session
+systemctl --user start lain-hostd  # start it now (or log out and back in)
 ```
 
-`lain status` shows the host, and `journalctl --user -u lain-hostd -f` its log. Linux has no AWDL (Apple's
-peer-to-peer Wi-Fi), so set the iPad's Wi-Fi path to Automatic or Network: Direct never finds a Linux host.
-More: [`rust/HOST-PARITY.md`](rust/HOST-PARITY.md), `/usr/share/doc/lain/config.example.toml`.
+`lain status` shows whether it's running, and `journalctl --user -u lain-hostd -f` shows its log. Settings
+are in `~/.config/lain/config.toml` (an example is in `/usr/share/doc/lain/config.example.toml`).
 
-**Mac** (macOS 27): open `lain-mac-host-<version>.dmg`, drag `LainHost.app` onto `Applications` and open it.
-It lives in the menu bar. Allow it Screen Recording and Local Network when macOS asks. Accessibility (which
-input needs) isn't asked for on its own: pick **Grant Accessibility…** in its menu, or turn LainHost on in
-System Settings › Privacy & Security › Accessibility. Then pick Start at Login in its menu. Turn off Universal
-Control (Mac: Displays › Advanced; iPad: AirPlay & Continuity › Cursor and Keyboard), or the Mac's own mouse
-and keyboard can wander onto the iPad and come back through lain.
+For Wi-Fi, the iPad and the PC must be on the same network: in lain's panel on the iPad, set **Wi-Fi path** to
+**Automatic** or **Network**. (**Direct**, Apple's peer-to-peer Wi-Fi, only works with a Mac.)
 
 ## Build the iPad app
 
-Needs a Mac with Xcode 27, an iPad Pro on iPadOS 27, and an Apple ID (a free one works, but the app then
-expires after 7 days).
+You need a Mac with Xcode 27 and an Apple ID. A free Apple ID works, but the app then stops opening after
+7 days and has to be installed again.
 
-1. In `project.yml`, set `DEVELOPMENT_TEAM` to your team ID, and the `LainClient` target's
-   `PRODUCT_BUNDLE_IDENTIFIER` (and `LainClientTests`') to a bundle ID of your own.
-2. `Scripts/bootstrap.sh` generates `lain.xcodeproj` (it installs XcodeGen through Homebrew if needed).
-3. Open `lain.xcodeproj`, pick the `LainClient` scheme and your iPad, and run.
+1. In `project.yml`, set `DEVELOPMENT_TEAM` to your team ID, and set the bundle IDs that start with
+   `sub.dev.lain.client` to ones of your own.
+2. Run `Scripts/bootstrap.sh`. It generates `lain.xcodeproj` (installing XcodeGen through Homebrew if needed).
+3. Open `lain.xcodeproj`, choose the **LainClient** scheme and your iPad, and run.
 
-The Mac host builds the same way (scheme `LainHost`; `Scripts/install-host.sh` installs it as a login service).
-The Linux host: `rust/dist/build-deb.sh` builds the package, `rust/dist/install.sh` installs from source.
+## Build a host from source
+
+- **Mac:** the **LainHost** scheme in the same project. `Scripts/install-host.sh` builds it, installs it in
+  `/Applications` and starts it.
+- **Linux:** the Rust workspace in `rust/`. `rust/dist/install.sh` installs from source, and
+  `rust/dist/build-deb.sh` builds the `.deb`.
 
 ## License
 
