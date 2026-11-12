@@ -1,0 +1,8 @@
+#!/bin/sh
+# The unit is a user unit, started with each user's desktop session: each user turns it on for themselves.
+set -e
+if [ "$1" = configure ]; then
+    echo "lain: to start the host with your desktop session, run (as yourself, not root): lain autostart on"
+    echo "lain: after an upgrade, a running host keeps the old binary until: systemctl --user restart lain-hostd"
+fi
+exit 0

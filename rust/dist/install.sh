@@ -6,6 +6,10 @@
 # Usage: rust/dist/install.sh            (from anywhere in the repository)
 #        PREFIX=/opt/lain rust/dist/install.sh
 # Uninstall: lain autostart off; systemctl --user stop lain-hostd; rm ~/.local/bin/{lain,lain-hostd}
+#
+# This is the from-source install, for development. The packaged install is rust/dist/build-deb.sh. If both are
+# installed, this one's unit (in ~/.config/systemd/user) shadows the package's; `/usr/bin/lain autostart on` goes
+# back to the package's, removing this one's unit.
 set -euo pipefail
 here=$(cd "$(dirname "$0")" && pwd)
 rust=$(cd "$here/.." && pwd)

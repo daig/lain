@@ -1,0 +1,15 @@
+# Installed by lain; `lain autostart off` disables it.
+[Unit]
+Description=lain host: an iPad as this computer's display
+PartOf=graphical-session.target
+After=graphical-session.target
+Requisite=graphical-session.target
+
+[Service]
+ExecStart=/usr/bin/lain-hostd
+Restart=on-failure
+RestartSec=2
+RestartPreventExitStatus=2
+
+[Install]
+WantedBy=graphical-session.target

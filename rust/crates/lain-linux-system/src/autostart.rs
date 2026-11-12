@@ -11,6 +11,10 @@
 //! - No `requiresApproval` state: systemd asks no one.
 //! - No single-instance logic (`LoginAgent.decide`, `settleInstance`): that is `lain-hostd`'s, which can own
 //!   its D-Bus name to stay single.
+//! - A packaged install ships the same unit in `/usr/lib/systemd/user` (`rust/dist/lain-hostd.service`, the
+//!   rendering of [`UnitFile::host`] for `/usr/bin/lain-hostd`, kept identical by a test). Enabling the program
+//!   that unit runs enables that copy and removes our own, which would otherwise shadow it; any other program
+//!   (a build from source in `~/.local/bin`) gets our own copy, which then takes precedence.
 //! - Enabling doesn't start the unit (Swift's `register` lets launchd start the agent at once): an enabled
 //!   unit starts with the next session, so a host already running isn't joined by a second one.
 
@@ -27,6 +31,9 @@ use crate::paths;
 
 /// The daemon's unit name.
 pub const UNIT_NAME: &str = "lain-hostd.service";
+
+/// Where a package installs the unit (the systemd user manager's vendor directory).
+pub const VENDOR_UNIT_DIR: &str = "/usr/lib/systemd/user";
 
 /// The target the unit is bound to.
 pub const SESSION_TARGET: &str = "graphical-session.target";
@@ -158,6 +165,8 @@ pub struct Autostart {
     bus: zbus::Connection,
     unit_dir: PathBuf,
     unit_name: String,
+    /// Packaged copies of the unit, used instead of writing our own when one runs the same program.
+    vendor_dirs: Vec<PathBuf>,
     /// The last state learned, for [`start_at_login`](Self::start_at_login).
     cached: Arc<Mutex<RequirementState>>,
 }
@@ -170,7 +179,7 @@ impl Autostart {
     pub async fn session() -> Result<Autostart> {
         let bus =
             zbus::Connection::session().await.map_err(|e| PlatformError::Unavailable(format!("session bus: {e}")))?;
-        Ok(Autostart::new(bus, &user_unit_dir(&paths::config_home()?), UNIT_NAME))
+        Ok(Autostart::new(bus, &user_unit_dir(&paths::config_home()?), UNIT_NAME).with_vendor_dir(VENDOR_UNIT_DIR))
     }
 
     /// `unit_name` in `unit_dir`, through the systemd manager on `bus` (tests use their own name and bus).
@@ -179,8 +188,25 @@ impl Autostart {
             bus,
             unit_dir: unit_dir.to_owned(),
             unit_name: unit_name.to_owned(),
+            vendor_dirs: Vec::new(),
             cached: Arc::new(Mutex::new(RequirementState::Unknown)),
         }
+    }
+
+    /// Also looks for a packaged copy of the unit in `dir` (see [`enable`](Self::enable)).
+    pub fn with_vendor_dir(mut self, dir: impl Into<PathBuf>) -> Autostart {
+        self.vendor_dirs.push(dir.into());
+        self
+    }
+
+    /// The packaged copy of the unit, if one exists whose text is exactly `unit`'s.
+    async fn vendor_copy(&self, unit: &UnitFile) -> Result<Option<PathBuf>> {
+        let (candidates, text) =
+            (self.vendor_dirs.iter().map(|d| d.join(&self.unit_name)).collect::<Vec<_>>(), unit.render());
+        blocking(move || {
+            Ok(candidates.into_iter().find(|path| fs::read_to_string(path).is_ok_and(|current| current == text)))
+        })
+        .await
     }
 
     pub fn unit_path(&self) -> PathBuf {
@@ -228,11 +254,19 @@ impl Autostart {
 
     /// Installs (or updates) the unit and enables it, so it starts with the next session. Doesn't start it.
     ///
-    /// Our copy, in `$XDG_CONFIG_HOME/systemd/user`, takes precedence over one of the same name elsewhere
-    /// on the search path (a package's); systemd refuses (`force` is false) if the target's `.wants` link
-    /// already points at that other copy. Which unit is canonical is open (see the crate report).
+    /// If a package installed this very unit (same text, so the same program), that copy is enabled and ours
+    /// is disabled and removed: ours, in `$XDG_CONFIG_HOME/systemd/user`, would take precedence and keep
+    /// running an older program. Otherwise ours is written and takes precedence over the package's; systemd
+    /// refuses (`force` is false) if the target's `.wants` link already points at that other copy.
     pub async fn enable(&self, unit: &UnitFile) -> Result<()> {
-        self.install(unit).await?;
+        if let Some(vendor) = self.vendor_copy(unit).await? {
+            if self.unit_path().exists() {
+                info!(packaged = %vendor.display(), "using the packaged autostart unit; removing our own copy");
+                self.uninstall().await?;
+            }
+        } else {
+            self.install(unit).await?;
+        }
         let manager = self.manager().await?;
         let (_, changes) = timed(manager.enable_unit_files(&[self.unit_name.as_str()], false, false))
             .await

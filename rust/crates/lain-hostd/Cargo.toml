@@ -42,3 +42,26 @@ tokio = { workspace = true, features = ["rt", "rt-multi-thread", "sync", "time",
 
 [lints]
 workspace = true
+
+# The Ubuntu package (`rust/dist/build-deb.sh`, through cargo-deb). `$auto` adds the linked libraries (libva,
+# libgbm, PipeWire, OpenSSL); the rest is loaded at run time (EGL through glvnd, Mesa's EGL vendor and its VA
+# driver radeonsi) or talked to over sockets and D-Bus (usbmuxd, Avahi, the Secret Service).
+[package.metadata.deb]
+name = "lain"
+maintainer = "dai <daig@users.noreply.github.com>"
+copyright = "dai"
+section = "net"
+priority = "optional"
+extended-description = """\
+The Linux host for lain: an iPad becomes this computer's display, keyboard and trackpad, over USB-C or Wi-Fi \
+(the local network; peer-to-peer AWDL is Apple-only). GNOME on Wayland, HEVC on the AMD iGPU. lain-hostd runs \
+as a systemd user unit with the desktop session (`lain autostart on`); `lain` is its command line."""
+depends = "$auto, libegl1, libegl-mesa0, mesa-libgallium, usbmuxd, avahi-daemon, gnome-keyring"
+recommends = "gnome-shell-ubuntu-extensions"
+maintainer-scripts = "../../dist/debian/"
+assets = [
+    ["target/release/lain-hostd", "usr/bin/", "755"],
+    ["target/release/lain", "usr/bin/", "755"],
+    ["../../dist/lain-hostd.service", "usr/lib/systemd/user/", "644"],
+    ["config.example.toml", "usr/share/doc/lain/", "644"],
+]

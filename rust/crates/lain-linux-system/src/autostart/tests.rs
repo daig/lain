@@ -82,9 +82,9 @@ struct FakeState {
 /// systemd's `(type, file name, destination)` change entries.
 type Change = (String, String, String);
 
-/// The manager's unit directory stands for its whole search path.
+/// The manager's search path: its unit directories, the first taking precedence.
 struct FakeManager {
-    unit_dir: PathBuf,
+    unit_dirs: Vec<PathBuf>,
     state: Arc<Mutex<FakeState>>,
 }
 
@@ -94,6 +94,12 @@ enum FakeError {
     #[zbus(error)]
     ZBus(zbus::Error),
     NoSuchUnit(String),
+}
+
+impl FakeManager {
+    fn exists(&self, file: &str) -> bool {
+        self.unit_dirs.iter().any(|d| d.join(file).exists())
+    }
 }
 
 #[zbus::interface(name = "org.freedesktop.systemd1.Manager")]
@@ -107,7 +113,7 @@ impl FakeManager {
         let mut state = self.state.lock().unwrap();
         state.calls.push(format!("EnableUnitFiles {files:?} {runtime} {force}"));
         for file in &files {
-            if !self.unit_dir.join(file).exists() {
+            if !self.exists(file) {
                 return Err(zbus::fdo::Error::FileNotFound(format!("Unit file {file} does not exist.")));
             }
             state.enabled.insert(file.clone(), true);
@@ -120,7 +126,7 @@ impl FakeManager {
         let mut state = self.state.lock().unwrap();
         state.calls.push(format!("DisableUnitFiles {files:?} {runtime}"));
         for file in files {
-            if !self.unit_dir.join(&file).exists() {
+            if !self.exists(&file) {
                 return Err(FakeError::NoSuchUnit(format!("Unit file {file} does not exist.")));
             }
             state.enabled.insert(file, false);
@@ -135,7 +141,7 @@ impl FakeManager {
     fn get_unit_file_state(&self, file: String) -> zbus::fdo::Result<String> {
         let state = self.state.lock().unwrap();
         match state.enabled.get(&file) {
-            _ if !self.unit_dir.join(&file).exists() => Err(zbus::fdo::Error::FileNotFound("No such file".into())),
+            _ if !self.exists(&file) => Err(zbus::fdo::Error::FileNotFound("No such file".into())),
             Some(true) => Ok("enabled".into()),
             _ => Ok("disabled".into()),
         }
@@ -163,18 +169,30 @@ async fn fixture() -> Option<Fixture> {
 /// With `systemd_dir`, the manager finds its units there rather than in the autostart's own unit directory
 /// (a unit installed elsewhere on its search path).
 async fn fixture_in(systemd_dir: Option<&Path>) -> Option<Fixture> {
+    fixture_with(systemd_dir, None).await
+}
+
+/// With `vendor_dir`, the manager also searches it, after the autostart's own unit directory, and the autostart
+/// looks there for a packaged copy.
+async fn fixture_with(systemd_dir: Option<&Path>, vendor_dir: Option<&Path>) -> Option<Fixture> {
     let bus = TestBus::start().await?;
     let dir = tempfile::tempdir().unwrap();
     let unit_dir = user_unit_dir(dir.path());
     let state = Arc::new(Mutex::new(FakeState::default()));
     let systemd = bus.connect().await;
     let manager = FakeManager {
-        unit_dir: systemd_dir.map_or_else(|| unit_dir.clone(), Path::to_owned),
+        unit_dirs: [systemd_dir.map_or_else(|| unit_dir.clone(), Path::to_owned)]
+            .into_iter()
+            .chain(vendor_dir.map(Path::to_owned))
+            .collect(),
         state: Arc::clone(&state),
     };
     systemd.object_server().at("/org/freedesktop/systemd1", manager).await.unwrap();
     systemd.request_name("org.freedesktop.systemd1").await.unwrap();
-    let autostart = Autostart::new(bus.connect().await, &unit_dir, UNIT_NAME);
+    let mut autostart = Autostart::new(bus.connect().await, &unit_dir, UNIT_NAME);
+    if let Some(vendor) = vendor_dir {
+        autostart = autostart.with_vendor_dir(vendor);
+    }
     Some(Fixture { _bus: bus, _systemd: systemd, _dir: dir, state, autostart })
 }
 
@@ -237,6 +255,54 @@ async fn a_unit_installed_elsewhere_is_reported_and_disabled() {
     a.uninstall().await.unwrap();
     assert_eq!(a.start_at_login(), RequirementState::Missing);
     assert_eq!(a.state().await, AutostartState::Disabled);
+}
+
+/// A packaged install: enabling the packaged program enables the package's unit and removes our own copy (a
+/// build from source installed earlier), which would shadow it; enabling another program writes ours again.
+#[tokio::test(flavor = "multi_thread")]
+async fn the_packaged_unit_is_used_for_the_packaged_program() {
+    let vendor = tempfile::tempdir().unwrap();
+    let packaged = UnitFile::host(Path::new("/usr/bin/lain-hostd"));
+    fs::write(vendor.path().join(UNIT_NAME), packaged.render()).unwrap();
+    let Some(f) = fixture_with(None, Some(vendor.path())).await else { return };
+    let a = &f.autostart;
+
+    // A build from source: our own copy, as before.
+    let from_source = UnitFile::host(Path::new("/home/me/.local/bin/lain-hostd"));
+    a.enable(&from_source).await.unwrap();
+    assert_eq!(fs::read_to_string(a.unit_path()).unwrap(), from_source.render());
+    f.calls();
+
+    // Then the package: ours is disabled and removed, and the unit enabled again by name (now the package's).
+    a.enable(&packaged).await.unwrap();
+    assert!(!a.unit_path().exists());
+    assert_eq!(
+        f.calls(),
+        [
+            "DisableUnitFiles [\"lain-hostd.service\"] false",
+            "Reload",
+            "Reload",
+            "EnableUnitFiles [\"lain-hostd.service\"] false false",
+            "Reload"
+        ]
+    );
+    assert_eq!(a.state().await, AutostartState::Enabled);
+
+    // Again: nothing of ours to remove.
+    a.enable(&packaged).await.unwrap();
+    assert_eq!(f.calls(), ["EnableUnitFiles [\"lain-hostd.service\"] false false", "Reload"]);
+
+    // A package whose unit differs (another program) isn't used.
+    a.enable(&from_source).await.unwrap();
+    assert!(a.unit_path().exists());
+}
+
+/// The unit `rust/dist` packages is exactly what enabling `/usr/bin/lain-hostd` expects, so that
+/// [`Autostart::enable`] recognizes it.
+#[test]
+fn the_packaged_unit_file_is_the_rendered_unit() {
+    let shipped = include_str!("../../../../dist/lain-hostd.service");
+    assert_eq!(shipped, UnitFile::host(Path::new("/usr/bin/lain-hostd")).render());
 }
 
 #[tokio::test(flavor = "multi_thread")]
