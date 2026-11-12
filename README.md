@@ -6,7 +6,7 @@ over USB-C or Wi-Fi on the local network.
 | Part | Where | Get it |
 |---|---|---|
 | **iPad app** (the client) | `Apps/Client`, `Packages/LainKit` | Build from source (below) |
-| **Mac host** (macOS 27) | `Apps/Host`, `Packages/LainKit` | Build from source for now; notarized `lain-mac-host-*.zip` [releases](https://github.com/daig/lain/releases) are coming |
+| **Mac host** (macOS 27) | `Apps/Host`, `Packages/LainKit` | Build from source for now; notarized `lain-mac-host-*.dmg` [releases](https://github.com/daig/lain/releases) are coming |
 | **Linux host** (Ubuntu 26.04, GNOME/Wayland, AMD GPU) | `rust/` | [Releases](https://github.com/daig/lain/releases) (`lain_*_amd64.deb`) |
 
 The first connection must be over USB-C: it pairs the iPad with the host. After that, Wi-Fi works too, and an
@@ -26,9 +26,12 @@ systemctl --user start lain-hostd  # or log out and back in
 peer-to-peer Wi-Fi), so set the iPad's Wi-Fi path to Automatic or Network: Direct never finds a Linux host.
 More: [`rust/HOST-PARITY.md`](rust/HOST-PARITY.md), `/usr/share/doc/lain/config.example.toml`.
 
-**Mac** (macOS 27): unzip `lain-mac-host-<version>.zip`, move `LainHost.app` to `/Applications` and open it.
-It lives in the menu bar. Allow it Screen Recording, Accessibility and Local Network when macOS asks, and pick
-Start at Login in its menu.
+**Mac** (macOS 27): open `lain-mac-host-<version>.dmg`, drag `LainHost.app` onto `Applications` and open it.
+It lives in the menu bar. Allow it Screen Recording and Local Network when macOS asks. Accessibility (which
+input needs) isn't asked for on its own: pick **Grant Accessibility…** in its menu, or turn LainHost on in
+System Settings › Privacy & Security › Accessibility. Then pick Start at Login in its menu. Turn off Universal
+Control (Mac: Displays › Advanced; iPad: AirPlay & Continuity › Cursor and Keyboard), or the Mac's own mouse
+and keyboard can wander onto the iPad and come back through lain.
 
 ## Build the iPad app
 

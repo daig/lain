@@ -27,12 +27,14 @@ gh release create linux-host-v0.1.0-r<commits> --prerelease --target <commit> \
   (`[package.metadata.deb]`). The shipped unit `rust/dist/lain-hostd.service` must stay identical to what
   `UnitFile::host("/usr/bin/lain-hostd")` renders (a test checks), so that `lain autostart on` recognises it.
 
-## Mac host (notarized `.zip`)
+## Mac host (notarized `.dmg`)
 
 One-time setup on the Mac:
 
-1. A **Developer ID Application** certificate: Xcode › Settings › Accounts › (team 8DWR7MSCR6) › Manage
-   Certificates › + › Developer ID Application.
+1. Optional: a local **Developer ID Application** certificate (Xcode › Settings › Accounts › (team 8DWR7MSCR6) ›
+   Manage Certificates › + › Developer ID Application). The export signs the app without it, using a
+   cloud-managed certificate; the local one is needed only to sign the disk image as well (otherwise the image
+   is notarized and stapled unsigned, which Gatekeeper accepts: it checks the app).
 2. An app-specific password (account.apple.com › Sign-In and Security › App-Specific Passwords), stored for
    notarytool:
    ```sh
@@ -42,19 +44,21 @@ One-time setup on the Mac:
 Each release:
 
 ```sh
-git pull && Scripts/release-mac-host.sh --version 0.1 --no-notarize   # optional: check the signing first
-gh release create mac-host-v0.1 --prerelease --title "Mac host 0.1" --notes-file <notes.md>
-Scripts/release-mac-host.sh --version 0.1 --upload mac-host-v0.1
+git pull && Scripts/release-mac-host.sh --version 0.1.0 --no-notarize   # optional: check the signing first
+gh release create mac-host-v0.1.0 --prerelease --title "Mac host 0.1.0" --notes-file <notes.md>
+Scripts/release-mac-host.sh --version 0.1.0 --upload mac-host-v0.1.0
 ```
 
 The script archives the `LainHost` scheme in Release and exports it with Developer ID
 (`Scripts/release/ExportOptions-DeveloperID.plist`). Automatic signing creates the Developer ID provisioning
 profile that the Keychain entitlement needs. The script then checks the signature and hardened runtime,
-notarizes and staples, and checks that Gatekeeper accepts it. It writes `build/release/lain-mac-host-<version>.zip`
-and its `.sha256`, and with `--upload` attaches both to the release. Logs: `build/release/logs/`.
+notarizes and staples the app, and checks that Gatekeeper accepts it. It then puts the app and an
+`Applications` link in a disk image, signs it when the certificate is local, notarizes and staples it, and
+writes `build/release/lain-mac-host-<version>.dmg` and its `.sha256`; with `--upload` it attaches both to the
+release. Logs: `build/release/logs/`.
 
-Not yet run: the first release will show whether the Developer ID profile covers the Keychain entitlement
-(`keychain-access-groups`), and whether Start at Login (the bundled LaunchAgent, `SMAppService`) behaves the same
+Verified (dry run, 2026-11-12): the Developer ID export succeeds with the Keychain entitlement
+(`keychain-access-groups`) and the hardened runtime. Not yet seen: notarization, and whether Start at Login (the bundled LaunchAgent, `SMAppService`) behaves the same
 in a notarized build.
 
 ## iPad app

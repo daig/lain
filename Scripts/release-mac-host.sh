@@ -1,8 +1,9 @@
 #!/bin/zsh
 # Build the Mac host for a GitHub release: a Release archive of LainHost, exported with Developer ID, notarized
-# by Apple, stapled and zipped. The result opens on any Mac (macOS 27) without Gatekeeper warnings; no App
-# Review is involved (notarization is an automated scan). Release steps: RELEASING.md.
-#   Scripts/release-mac-host.sh --version 0.2              # build build/release/lain-mac-host-0.2.zip (+ .sha256)
+# and stapled, in a disk image (the app and an Applications link, to drag it onto) that is itself signed,
+# notarized and stapled. The result opens on any Mac (macOS 27) without Gatekeeper warnings, offline too; no
+# App Review is involved (notarization is an automated scan). Release steps: RELEASING.md.
+#   Scripts/release-mac-host.sh --version 0.2              # build build/release/lain-mac-host-0.2.dmg (+ .sha256)
 #   Scripts/release-mac-host.sh --version 0.2 --upload TAG # and attach both to the GitHub release TAG (gh)
 #   Scripts/release-mac-host.sh --version 0.2 --no-notarize # signed only, for a dry run of the signing
 # Options: --build N (CFBundleVersion; default: the commit count), --notary-profile NAME (default lain-notary).
@@ -43,9 +44,10 @@ OUT=build/release
 ARCHIVE=$OUT/LainHost.xcarchive
 EXPORT=$OUT/export
 APP=$EXPORT/LainHost.app
-ZIP=$OUT/lain-mac-host-$version.zip
+DMG=$OUT/lain-mac-host-$version.dmg
+STAGE=$OUT/dmg
 LOG=$OUT/logs
-rm -rf "$ARCHIVE" "$EXPORT" "$ZIP" "$ZIP.sha256"
+rm -rf "$ARCHIVE" "$EXPORT" "$STAGE" "$DMG" "$DMG.sha256"
 mkdir -p "$LOG"
 
 Scripts/bootstrap.sh --if-stale
@@ -68,35 +70,75 @@ signature=$(codesign -dvv "$APP" 2>&1)
   { echo "$APP isn't signed with Developer ID:"; echo "$signature" | grep Authority; exit 1; }
 [[ $signature == *"runtime"* ]] || { echo "$APP lacks the hardened runtime, which notarization requires"; exit 1; }
 
+# notarize <file> <label>: submit to Apple's notary service and wait for its verdict.
+notarize() {
+  local file=$1 label=$2 json=$LOG/notarize-$2.json
+  if ! xcrun notarytool submit "$file" --keychain-profile "$profile" --wait --output-format json \
+      >"$json" 2>"$LOG/notarize-$label.err"; then
+    cat "$LOG/notarize-$label.err" "$json" 2>/dev/null | tail -20
+    echo "notarization of the $label failed; details: xcrun notarytool log <submission id> --keychain-profile $profile"
+    exit 1
+  fi
+  local result id
+  result=$(plutil -extract status raw -o - "$json" 2>/dev/null || echo unknown)
+  if [[ $result != Accepted ]]; then
+    id=$(plutil -extract id raw -o - "$json" 2>/dev/null || echo "?")
+    xcrun notarytool log "$id" --keychain-profile "$profile" "$LOG/notarize-$label-log.json" >/dev/null 2>&1 || true
+    echo "notarization of the $label: $result (submission $id; Apple's log: $LOG/notarize-$label-log.json)"
+    exit 1
+  fi
+}
+
 if (( notarize )); then
-  echo "==> notarizing (usually a few minutes)"
+  # The app is notarized and stapled on its own first, so that the copy in /Applications carries its ticket and
+  # opens offline; the disk image then gets its own.
+  echo "==> notarizing the app (usually a few minutes)"
   submission=$OUT/LainHost-notarize.zip
   ditto -c -k --keepParent "$APP" "$submission"
-  if ! xcrun notarytool submit "$submission" --keychain-profile "$profile" --wait --output-format json \
-      >"$LOG/notarize.json" 2>"$LOG/notarize.err"; then
-    cat "$LOG/notarize.err" "$LOG/notarize.json" 2>/dev/null | tail -20
-    echo "notarization failed; details: xcrun notarytool log <submission id> --keychain-profile $profile"
-    exit 1
-  fi
-  status=$(plutil -extract status raw -o - "$LOG/notarize.json" 2>/dev/null || echo unknown)
-  if [[ $status != Accepted ]]; then
-    id=$(plutil -extract id raw -o - "$LOG/notarize.json" 2>/dev/null || echo "?")
-    xcrun notarytool log "$id" --keychain-profile "$profile" "$LOG/notarize-log.json" >/dev/null 2>&1 || true
-    echo "notarization: $status (submission $id; Apple's log: $LOG/notarize-log.json)"
-    exit 1
-  fi
+  notarize "$submission" app
   rm -f "$submission"
-  xcrun stapler staple "$APP" >"$LOG/staple.log"
+  xcrun stapler staple "$APP" >>"$LOG/staple.log"
   spctl --assess --type execute -vv "$APP" 2>&1 | grep -q "source=Notarized Developer ID" ||
     { spctl --assess --type execute -vv "$APP"; echo "Gatekeeper doesn't accept $APP"; exit 1; }
 fi
 
-ditto -c -k --keepParent "$APP" "$ZIP"
-(cd "$OUT" && shasum -a 256 "${ZIP:t}" >"${ZIP:t}.sha256")
-echo "Built $ZIP ($(du -h "$ZIP" | cut -f1)); $(cat "$ZIP.sha256")"
+echo "==> building the disk image"
+mkdir -p "$STAGE"
+ditto "$APP" "$STAGE/LainHost.app"
+ln -s /Applications "$STAGE/Applications"
+hdiutil create -volname "LainHost $version" -srcfolder "$STAGE" -fs HFS+ -format UDZO -imagekey zlib-level=9 \
+  -ov "$DMG" >"$LOG/hdiutil.log" 2>&1 || { tail -20 "$LOG/hdiutil.log"; echo "hdiutil failed"; exit 1; }
+rm -rf "$STAGE"
+# The image is signed too when the Developer ID certificate is in the Keychain. Xcode's export can sign with a
+# cloud-managed one that codesign can't use; an unsigned image is still notarized and stapled, and the app in it
+# is what Gatekeeper checks when it opens.
+identity=$(codesign -dvv "$APP" 2>&1 | sed -n 's/^Authority=\(Developer ID Application: .*\)$/\1/p' | head -1)
+dmg_signed=0
+if [[ -n $identity ]] && security find-identity -v -p codesigning | grep -qF "\"$identity\""; then
+  codesign --sign "$identity" --timestamp "$DMG"
+  codesign --verify --strict "$DMG"
+  dmg_signed=1
+else
+  echo "   (no local \"${identity:-Developer ID Application}\" certificate: the disk image stays unsigned)"
+fi
+
+if (( notarize )); then
+  echo "==> notarizing the disk image"
+  notarize "$DMG" dmg
+  xcrun stapler staple "$DMG" >>"$LOG/staple.log"
+  xcrun stapler validate "$DMG" >>"$LOG/staple.log"
+  if (( dmg_signed )); then
+    spctl --assess --type open --context context:primary-signature -vv "$DMG" 2>&1 |
+      grep -q "source=Notarized Developer ID" ||
+      { spctl --assess --type open --context context:primary-signature -vv "$DMG"; echo "Gatekeeper doesn't accept $DMG"; exit 1; }
+  fi
+fi
+
+(cd "$OUT" && shasum -a 256 "${DMG:t}" >"${DMG:t}.sha256")
+echo "Built $DMG ($(du -h "$DMG" | cut -f1)); $(cat "$DMG.sha256")"
 (( notarize )) || echo "Not notarized (--no-notarize): don't publish this one."
 
 if [[ -n $upload ]]; then
   echo "==> attaching to the GitHub release $upload"
-  gh release upload "$upload" "$ZIP" "$ZIP.sha256" --clobber
+  gh release upload "$upload" "$DMG" "$DMG.sha256" --clobber
 fi
