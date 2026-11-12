@@ -17,6 +17,11 @@ for while using it. This note lists them, and the client changes they depend on,
   conformance tests read `GoldenBytes.swift` and fail until the crate has the two messages and the [4, 5]
   window (or keeps [3, 4] and only skips v5 in the golden check). The host doesn't have to send stats: an
   iPad on v5 just shows "waiting for the Mac…" for a v4 host, and nothing breaks.
+- **Linux (done, 2026-11-01):** `lain-proto` is at [4, 5] with both messages; its golden tests pass against
+  `GoldenBytes.swift` (v4 and v5 bytes, digests `50b787cf3ef02169` and `af02268a861c6df9`). `lain-host` answers
+  `StatsRequest` with `HostStats` on realtime, clamped to 100–5000 ms, the first at once, zeros and `NONE` while
+  there's no video (`connection.rs` `stats_loop`, `host_stats`; `tests/live.rs`
+  `the_ipad_asks_for_host_stats_and_stops_them`).
 
 ## 1. Display keep-alive (Linux: done; Mac host: done, not yet on hardware)
 
@@ -89,7 +94,7 @@ What is where today:
   as themselves. The host sees Right Option itself (as `0xE6`) for the arrows and the tap.
 - **Tap length:** a release is a tap only within 300 ms of the press (Mac: `SystemKey.tapMaxNs`). The iPad shows
   its overlay after 350 ms held alone (§6), so a hold that showed it never opens Mission Control / the overview
-  on release. **Linux should do the same.**
+  on release. **Linux: done** (`lain_input::SYSTEM_TAP_MAX_NS`).
 - **Linux host (`lain-input`, `InputConfig::system_key`, on):** does the right-hand column, telling Right from Left
   Option by their own key events. The Cmd+Space and Cmd+H rows also work from the client's remap today.
   Code: `rust/crates/lain-input/src/router.rs`, `tests/router.rs` ("the system key").
@@ -100,8 +105,9 @@ What is where today:
 - **Both hosts, today's client:** the client's remap sends Right Opt-Tab as *Right Option up, Left Command
   down, Tab*. A host that treats that release as a tap opens Mission Control / the overview before the switch
   (Linux's `the_system_key_taps_and_holds_as_command` doesn't cover it). The Mac host only calls a release a tap
-  once the next event isn't a Command press, or 60 ms pass (`SystemKey.tapDelayNs`). Linux should do the same,
-  or the client should stop remapping Right Option (the hosts do it now) and keep its remap for Left Option off.
+  once the next event isn't a Command press, or 60 ms pass (`SystemKey.tapDelayNs`). **Linux: done**, the same
+  rule (`SYSTEM_TAP_DELAY_NS`; the router's `poll` fires a pending tap; `tests/router.rs`
+  `the_clients_remap_release_is_not_a_tap`, `a_long_system_key_hold_is_not_a_tap`).
 
 Not yet checked on the iPad: whether Ctrl + arrows, fn + arrows, Globe combos and the function-row keys arrive (a
 key log in the client's HUD would settle it in minutes).
@@ -115,7 +121,8 @@ Wi-Fi link to another closes at once. The cable always wins: with a USB link up 
 selectable. Mac and Linux hosts alike. Code: `ClientSession.hostList`/`selectHost`, `WiFiDialPlan(only:)`,
 `LastConnectedHost.names`/`selected`, `ControlPanel`.
 
-**What a Linux host needs to be switchable** (all of it exists today, as far as the Swift side knows):
+**What a Linux host needs to be switchable** (all four hold on Linux as of 2026-11-01; checked on hardware only up
+to v4, before the switcher):
 1. Paired once over USB, so the iPad holds its key.
 2. `_lain._tcp` advertised with TXT `id` and `vs`, and the TLS-PSK listener (§7.7, D29).
 3. A non-empty `hostName` in `HelloAck` (the panel's label; recorded on the next session after the update).
@@ -132,7 +139,7 @@ while open), hosts (§5), the iPad's options (pointer speed, scroll speed, scrol
 priority), and a shortcut cheat sheet. Code: `ClientInputPipeline` (`overlayHoldNs`, latched panel mode),
 `ControlPanel`, `PanelView` in `StreamViewController`.
 
-**What this asks of a host:**
+**What this asks of a host** (Linux: all three done, 2026-11-01):
 - **The tap length (needed):** a Right Option release is a tap only within **300 ms** of its press (Mac:
   `SystemKey.tapMaxNs`). Without it, closing the panel's hold opens the overview on release.
 - **The client's remap (needed):** the iPad remaps Right Opt + Tab, Space, H, Q, ` itself (Right Option only):
@@ -147,7 +154,30 @@ priority), and a shortcut cheat sheet. Code: `ClientInputPipeline` (`overlayHold
   `lain-proto`'s golden tests fail until it has the two messages and the new window. A host that doesn't send
   stats is fine: the panel says its lain is older (at v4) or waits for numbers (at v5).
 
-## 7. Video over a weak link (Mac host: done; Linux: worth porting)
+## 7. Video over a weak link (Mac host: done; Linux: adaptive bitrate done)
+
+**Linux (2026-11-01):** `lain_media::BitrateController` is the Swift controller rule for rule, with its trace tests;
+the gate counts held-back frames by cause (`dropped_for_link`, `dropped_for_encoder`); the pipeline feeds it
+every ack and hands the encoder the target (the ceiling for refinements) through `EncodeRequest.bitrate`; it
+starts at the ceiling over USB and 20 Mb/s over Wi-Fi (`HostConfig::wifi_start_bit_rate`). On the AMD iGPU, Mesa
+follows a per-picture change of the CBR rate without an IDR (`gpu_tests::a_live_bitrate_change_takes_effect`:
+60 → 15 → 60 → 6 Mb/s gave 59 → 23 → 60 → 16 Mb/s of near-incompressible content, the whole stream decoding
+clean). `config.toml` `adaptive_bitrate` (on), `lain adaptive-bitrate`; the status lines show the target and
+the delivered rate. Not ported: the per-second diagnostics log, 4:4:4 (the iGPU encodes 4:2:0 only).
+**Fix in both controllers (2026-11-01, from the Linux host's log; Swift written but not built here):** over
+Wi-Fi at both ends the target sat at the 6 Mb/s floor all session (`Target 6.0 Mb/s, delivered 4.7 Mb/s`, ack RTT
+p50 12 ms, 4048 frames held back for the link out of 6360 sent). The iPad's radio pauses (§8) hold frames back
+while the acks stop, so delivery read under 90% of the target ("saturated"), and any frame held back blocked the
+climb. Now a frame held back in a silence over twice the median ack gap isn't counted (`heldBack`,
+`medianAckGap`), and the climb waits for a link that isn't busy instead of for no frame held back at all. New
+traces: `radioPausesOnAFastLinkDontPinTheTargetToTheFloor` (pauses of 100 ms every 250/300/500 ms on a fast
+link: up to 49–60 Mb/s) and `radioPausesOnASlowLinkStillBringTheTargetDown` (12 Mb/s with the same pauses:
+8 Mb/s); every earlier trace passes unchanged (in Rust; run `swift test --filter BitrateControllerTests`).
+**Radio priority:** `radio_priority = "interactive-video"` (`lain radio-priority`) marks every connection the
+Wi-Fi listener accepts DSCP AF41, the Linux side of `.interactiveVideo` (WMM's video category on a Wi-Fi hop);
+default `standard`, from the next start. Peer-to-peer (AWDL) and its advertising have no Linux counterpart.
+
+Mac host:
 
 Measured on the device over Wi-Fi (`log show --predicate 'subsystem == "lain" AND category == "diag"'`):
 - **Adaptive bitrate** (`LainMedia/BitrateController.swift`, pure and trace-tested): from each `FrameAck` (size,
@@ -176,6 +206,24 @@ Measured on the device over Wi-Fi (`log show --predicate 'subsystem == "lain" AN
   same pauses with the same iPad on the same Wi-Fi.
 - WiFiAware is unavailable on macOS 27 (every declaration `@available(macOS, unavailable)`).
 
+## 9. Wi-Fi paths on a Linux host: the network only, never peer-to-peer
+
+**A Linux host is reachable over USB and over the network (LAN or Wi-Fi through a router), never over
+peer-to-peer Wi-Fi.** The Mac host also offers the iPad a direct link with no Wi-Fi network at all: AWDL, Apple's
+own peer-to-peer Wi-Fi, which only Apple devices speak. Linux has no AWDL (decision L4), so `lain-hostd` advertises
+on the network only, and pairing over USB doesn't change that (it stores the Wi-Fi key, nothing more).
+
+On the iPad, the panel's **Wi-Fi path** decides which hosts count (`ClientWiFi.swift`, `WiFiPath`):
+- **Automatic** and **Network** reach a Linux host;
+- **Direct** (peer-to-peer only) never does: it keeps only hosts seen on a peer-to-peer interface, so a Linux
+  host looks absent. Confirmed on hardware 2026-11-11: USB and the network work; Direct finds nothing.
+
+With no router, make the Linux computer a hotspot (`nmcli device wifi hotspot ifname <wifi> ssid lain password
+<pw>`; its Wi-Fi then leaves its usual network) and join it from the iPad: one hop, the Network path. Not
+alternatives: Wi-Fi Direct (iPadOS gives apps no access to it), and open AWDL implementations (research code,
+specific chipsets only). A possible client change: on Direct, say that a host seen only on the network can't
+be reached peer-to-peer, instead of showing nothing.
+
 ## Open on the Linux side
 
 - Scroll feel; a scroll-momentum bug found by `lain-input`'s property test (its failing case is kept in
@@ -183,3 +231,10 @@ Measured on the device over Wi-Fi (`log show --predicate 'subsystem == "lain" AN
 - The lock screen on lain's display, unlocked from the iPad.
 - Moving windows between workspaces from the system key (Right Opt + Shift + Left/Right) is proposed, not built;
   GNOME's own Shift+Ctrl+Alt+Left/Right works from the iPad meanwhile.
+- On hardware (the v5 build, 2026-11-01 and 2026-11-11): USB and the network work. Adaptive bitrate over Wi-Fi,
+  from the log: before the radio-pause fix the target sat at the 6 Mb/s floor; after it, it mostly climbs to the
+  60 Mb/s ceiling. Peer-to-peer can't work (§9).
+- Not yet on hardware: v5 with the iPad's panel (host stats, the hold), switching to and from the Mac, the radio
+  priority's effect on the iPad's pauses (§8: a host on Ethernet should show them too). The host doesn't log the
+  protocol version agreed, so v5 can't be confirmed from the log.
+- The per-second diagnostics log (§7) and the Mac's Color setting (the iGPU's encoder is 4:2:0 only).
