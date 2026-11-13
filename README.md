@@ -55,7 +55,8 @@ Typing and dictation need Mac host 0.2 or later; the Linux host doesn't have the
 A Mac host (0.2 or later) plays its sound on the iPad, and mutes its own speakers while the iPad is
 connected. It is tuned for alerts and speech, not music: about a tenth of a second behind on a steady
 connection, and more on Wi-Fi that stalls, where the iPad holds extra sound so that it doesn't stutter.
-lain's panel shows the delay under **Sound**.
+lain's panel shows the delay under **Sound**. To keep the sound on the Mac, turn off **Play Sound on the
+iPad** in lain's menu on the Mac.
 
 ## Install a host
 

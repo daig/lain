@@ -16,6 +16,9 @@ public struct HostPreferences: Sendable, Equatable {
     /// After the owner stops lain's capture from the Mac's menu bar, start it again by itself (at most once
     /// per `HostSession.resumeMinGap`).
     public var resumeAfterStop = true
+    /// The Mac's sound plays on the iPad (and the Mac's own output is muted meanwhile). Off: it plays on the
+    /// Mac as usual. Applies at once.
+    public var sound = true
     /// Right Option is lain's system key (`SystemKey`). Applies to the next session.
     public var systemKey = true
     /// The stream's chroma. Applies to the next session (the menu reconnects).
@@ -60,6 +63,7 @@ public struct HostPreferences: Sendable, Equatable {
         static let scale = "displayScale"
         static let resume = "resumeAfterStop"
         static let systemKey = "systemKey"
+        static let sound = "sound"
         static let colorFormat = "colorFormat"
         static let radioPriority = "radioPriority"
         static let peerToPeer = "peerToPeer"
@@ -72,6 +76,7 @@ public struct HostPreferences: Sendable, Equatable {
         if defaults.object(forKey: Key.scale) != nil { p.displayScale = defaults.double(forKey: Key.scale) }
         if defaults.object(forKey: Key.resume) != nil { p.resumeAfterStop = defaults.bool(forKey: Key.resume) }
         if defaults.object(forKey: Key.systemKey) != nil { p.systemKey = defaults.bool(forKey: Key.systemKey) }
+        if defaults.object(forKey: Key.sound) != nil { p.sound = defaults.bool(forKey: Key.sound) }
         if let raw = defaults.string(forKey: Key.colorFormat), let f = ColorFormat(rawValue: raw) { p.colorFormat = f }
         if let raw = defaults.string(forKey: Key.radioPriority), let r = NetworkStreamOptions.RadioPriority(rawValue: raw) {
             p.radioPriority = r
@@ -85,6 +90,7 @@ public struct HostPreferences: Sendable, Equatable {
         defaults.set(displayScale, forKey: Key.scale)
         defaults.set(resumeAfterStop, forKey: Key.resume)
         defaults.set(systemKey, forKey: Key.systemKey)
+        defaults.set(sound, forKey: Key.sound)
         defaults.set(colorFormat.rawValue, forKey: Key.colorFormat)
         defaults.set(radioPriority.rawValue, forKey: Key.radioPriority)
         defaults.set(peerToPeer, forKey: Key.peerToPeer)

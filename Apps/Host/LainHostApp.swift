@@ -103,6 +103,9 @@ struct LainHostApp: App {
                     }
                 }
             }
+            Button((host.preferences.sound ? "✓ " : "") + "Play Sound on the iPad") {
+                host.update { $0.sound.toggle() }
+            }
             Button((host.preferences.resumeAfterStop ? "✓ " : "") + "Resume Video After Stop") {
                 host.update { $0.resumeAfterStop.toggle() }
             }

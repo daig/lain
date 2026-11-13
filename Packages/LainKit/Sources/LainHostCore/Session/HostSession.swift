@@ -939,6 +939,9 @@ final class HostConnection: Sendable {
     let video: HostVideoPipeline?
     /// Capture stopped on its own and closed the link (the connect loop backs off before the next).
     let captureFailed = Atomic<Bool>(false)
+    /// Sound is going to the iPad (and the Mac is muted for it): follows `HostPreferences.sound`.
+    private let audioSending = AudioSending()
+    private final class AudioSending: Sendable { let on = Atomic<Bool>(false) }
     private let deps: HostSession.Dependencies
     private let tuning: HostSession.Tuning
     private let activityQueue = DispatchQueue(label: "lain.host.activity", qos: .utility)
@@ -1021,6 +1024,8 @@ final class HostConnection: Sendable {
 
     /// v6: the Mac's sound goes to the iPad on the audio channel, from the screen capture, and the Mac's own
     /// speakers are muted meanwhile. Nothing to a peer without `ProtocolFeature.audio`, or without video.
+    /// `HostPreferences.sound` is read with each packet, so the menu's switch takes effect at once: off,
+    /// nothing is sent and the Mac plays its sound itself.
     private func startAudio() {
         guard ProtocolFeature.audio.isSupported(at: link.version), let source = video?.frameSource as? any AudioSource else { return }
         let channel = link.audio
@@ -1031,16 +1036,21 @@ final class HostConnection: Sendable {
             channel?.send(.pong(Pong(id: p.id, pingSentAtNs: p.sentAtNs, receivedAtNs: now, sentAtNs: now)))
         }
         channel.send(.audioConfig(source.audioFormat))
+        let preferences = deps.preferences, sending = audioSending
         source.setAudioHandler { samples, captureNs in
-            channel.send(.audioPacket(AudioPacket(captureTimeNs: captureNs, samples: samples)))
+            let on = preferences().sound
+            if sending.on.exchange(on, ordering: .relaxed) != on {
+                #if os(macOS)
+                if on { OutputMute.shared.begin() } else { OutputMute.shared.end() }
+                #endif
+            }
+            if on { channel.send(.audioPacket(AudioPacket(captureTimeNs: captureNs, samples: samples))) }
         }
-        #if os(macOS)
-        OutputMute.shared.begin()
-        #endif
     }
 
     private func stopAudio() {
         (video?.frameSource as? any AudioSource)?.setAudioHandler(nil)
+        audioSending.on.store(false, ordering: .relaxed)
         #if os(macOS)
         OutputMute.shared.end()
         #endif
