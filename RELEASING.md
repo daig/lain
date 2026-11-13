@@ -15,8 +15,8 @@ libpipewire-0.3-dev libssl-dev pkg-config`):
 ```sh
 rust/dist/build-deb.sh   # rust/target/debian/lain_<version>+<commits>.g<hash>_amd64.deb
 cd rust/target/debian && sha256sum lain_*.deb > SHA256SUMS
-gh release create linux-host-v0.1.0-r<commits> --prerelease --target <commit> \
-  --title "Linux host 0.1.0 (r<commits>)" --notes-file <notes.md> lain_*.deb SHA256SUMS
+gh release create linux-host-v<version>-r<commits> --target <commit> \
+  --title "Linux host <version> (r<commits>)" --notes-file <notes.md> lain_*.deb SHA256SUMS   # --prerelease below 1.0
 ```
 
 - The version is the workspace's (`rust/Cargo.toml`) plus the commit count and hash, so apt always takes a newer

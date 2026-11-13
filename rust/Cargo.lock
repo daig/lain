@@ -899,7 +899,7 @@ dependencies = [
 
 [[package]]
 name = "lain-gnome"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "futures",
  "lain-platform",
@@ -915,7 +915,7 @@ dependencies = [
 
 [[package]]
 name = "lain-host"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "lain-input",
  "lain-link",
@@ -929,7 +929,7 @@ dependencies = [
 
 [[package]]
 name = "lain-hostd"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "anyhow",
  "clap",
@@ -961,7 +961,7 @@ dependencies = [
 
 [[package]]
 name = "lain-input"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "lain-platform",
  "lain-proto",
@@ -971,7 +971,7 @@ dependencies = [
 
 [[package]]
 name = "lain-link"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "futures",
  "hex",
@@ -988,7 +988,7 @@ dependencies = [
 
 [[package]]
 name = "lain-linux-audio"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "lain-platform",
  "pipewire",
@@ -998,7 +998,7 @@ dependencies = [
 
 [[package]]
 name = "lain-linux-system"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "futures",
  "hex",
@@ -1014,7 +1014,7 @@ dependencies = [
 
 [[package]]
 name = "lain-linux-video"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "bindgen",
  "glow",
@@ -1033,7 +1033,7 @@ dependencies = [
 
 [[package]]
 name = "lain-media"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "lain-platform",
  "lain-proto",
@@ -1044,7 +1044,7 @@ dependencies = [
 
 [[package]]
 name = "lain-platform"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "rustix",
  "thiserror",
@@ -1053,7 +1053,7 @@ dependencies = [
 
 [[package]]
 name = "lain-proto"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "hex",
  "proptest",
@@ -1063,7 +1063,7 @@ dependencies = [
 
 [[package]]
 name = "lain-usbmux"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "bytes",
  "plist",
@@ -1075,7 +1075,7 @@ dependencies = [
 
 [[package]]
 name = "lain-wifi"
-version = "0.1.0"
+version = "1.1.0"
 dependencies = [
  "hex",
  "hkdf 0.13.0",
