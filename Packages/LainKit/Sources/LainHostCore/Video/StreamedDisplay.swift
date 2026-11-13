@@ -26,6 +26,9 @@ public struct StreamedDisplay: Sendable, Equatable {
 public protocol StreamedDisplayProvider: Sendable {
     /// Creates the display and waits until it is active in its streaming mode.
     func create() async throws -> StreamedDisplay
+    /// The same, for a client that asks for this many pixels (its `Hello`): the display takes that shape. By
+    /// default the size is ignored.
+    func create(pixelWidth: Int, pixelHeight: Int) async throws -> StreamedDisplay
     /// The display's current global point bounds (the owner may rearrange it in System Settings at any
     /// time), or nil when it no longer exists.
     func currentBounds() -> CGRect?
@@ -42,6 +45,8 @@ public protocol StreamedDisplayProvider: Sendable {
 }
 
 extension StreamedDisplayProvider {
+    public func create(pixelWidth: Int, pixelHeight: Int) async throws -> StreamedDisplay { try await create() }
+
     public func waitUntilRemoved() async {}
 
     /// The default: removed, as `destroy()`.
@@ -73,8 +78,13 @@ public final class VirtualStreamedDisplayProvider: StreamedDisplayProvider {
         self.keeper = keeper
     }
 
-    public func create() async throws -> StreamedDisplay {
-        let spec = self.spec
+    public func create() async throws -> StreamedDisplay { try await create(spec) }
+
+    public func create(pixelWidth: Int, pixelHeight: Int) async throws -> StreamedDisplay {
+        try await create(spec.sized(pixelWidth: pixelWidth, pixelHeight: pixelHeight))
+    }
+
+    private func create(_ spec: VirtualDisplay.Spec) async throws -> StreamedDisplay {
         let log = Telemetry.logger("vdisplay")
         let vd: VirtualDisplay
         if let kept = await keeper?.take(key: spec.keeperKey) as? KeptVirtualDisplay, let reused = kept.takeDisplay() {
@@ -141,7 +151,7 @@ public final class VirtualStreamedDisplayProvider: StreamedDisplayProvider {
     /// the id to wait out when it was released.
     private func handOver() -> CGDirectDisplayID? {
         guard let vd = display.withLock({ d -> VirtualDisplay? in defer { d = nil }; return d }) else { return nil }
-        if let keeper, keeper.keep(KeptVirtualDisplay(vd), key: spec.keeperKey) { return nil }
+        if let keeper, keeper.keep(KeptVirtualDisplay(vd), key: vd.spec.keeperKey) { return nil }   // its own shape's
         return vd.displayID
     }
 }

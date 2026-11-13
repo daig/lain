@@ -19,7 +19,25 @@ public final class VirtualDisplay: @unchecked Sendable {
         /// desktop of `pointWidth`×`pointHeight` points, rendered at 2× (`backingWidth`), and capture scales it
         /// to the panel (or to the backing size, when that is smaller).
         public var scale = 2.0
+        /// Tells displays of different geometry apart for macOS, which remembers a display's arrangement and
+        /// mode by its vendor, product and serial numbers: 1 is the 13-inch iPad Pro's, as always.
+        public var serial: UInt32 = 1
         public init() {}
+
+        /// The display a client asks for (its `Hello`: pixels, long side first). The 13-inch iPad Pro's own is
+        /// the default spec, untouched; another client (an iPhone Duo, which asks for its inner display)
+        /// gets a display of that shape, with a serial number of its own so that macOS
+        /// arranges it separately. A size that makes no display (nothing, or absurd) falls back to the iPad's.
+        public func sized(pixelWidth w: Int, pixelHeight h: Int) -> Spec {
+            guard (w, h) != (pixelWidth, pixelHeight), (640...4096).contains(w), (480...4096).contains(h), w >= h else { return self }
+            var s = self
+            s.pixelWidth = w
+            s.pixelHeight = h
+            // No client says how large its panel is: the iPad's pixel density stands in.
+            s.sizeMillimeters = CGSize(width: Double(w) / 264 * 25.4, height: Double(h) / 264 * 25.4)
+            s.serial = UInt32(w) << 16 | UInt32(h)
+            return s
+        }
 
         /// The desktop's size in points (even, so every size derived from it is too).
         public var pointWidth: Int { Self.even(Double(pixelWidth) / scale) }
@@ -54,7 +72,7 @@ public final class VirtualDisplay: @unchecked Sendable {
         d.sizeInMillimeters = spec.sizeMillimeters
         d.vendorID = Self.vendorID
         d.productID = 0x0001
-        d.serialNum = 0x0001
+        d.serialNum = spec.serial
         // Display P3: DCI-P3 primaries with a D65 white point.
         d.redPrimary = CGPoint(x: 0.680, y: 0.320)
         d.greenPrimary = CGPoint(x: 0.265, y: 0.690)

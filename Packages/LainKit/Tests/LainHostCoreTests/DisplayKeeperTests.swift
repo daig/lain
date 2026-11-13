@@ -100,6 +100,19 @@ import Testing
         return s
     }
 
+    @Test func aClientsRequestShapesItsDisplay() {
+        // An iPhone Duo asks for its inner display; here at the owner's 2.5.
+        let duo = spec(2.5).sized(pixelWidth: 2853, pixelHeight: 2007)
+        #expect((duo.pointWidth, duo.pointHeight) == (1142, 802))
+        #expect((duo.streamWidth, duo.streamHeight) == (2284, 1604))
+        #expect(duo.serial != 1 && duo.keeperKey != spec(2.5).keeperKey, "macOS and the keeper tell it from the iPad's")
+        // The iPad's own size, or none that makes a display: the iPad's display, as before.
+        for (w, h) in [(2752, 2064), (0, 0), (2007, 2853), (100_000, 2000)] {
+            let same = spec(2).sized(pixelWidth: w, pixelHeight: h)
+            #expect((same.pixelWidth, same.pixelHeight, same.serial) == (2752, 2064, 1))
+        }
+    }
+
     @Test func twoIsTheNativeMode() {
         let s = spec(2)
         #expect((s.pointWidth, s.pointHeight) == (1376, 1032))

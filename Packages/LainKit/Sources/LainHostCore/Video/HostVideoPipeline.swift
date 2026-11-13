@@ -195,7 +195,7 @@ public final class HostVideoPipeline: Sendable {
         let cursor: CursorMonitor?
         let timer: DispatchSourceTimer
         do {
-            display = try await displayProvider.create()
+            display = try await displayProvider.create(pixelWidth: Int(hello.pixelWidth), pixelHeight: Int(hello.pixelHeight))
             guard state.withLock({ $0.phase == .starting }) else { throw HostVideoError.stopped }
 
             var wanted = VideoEncoder.Settings(width: display.pixelWidth, height: display.pixelHeight)
