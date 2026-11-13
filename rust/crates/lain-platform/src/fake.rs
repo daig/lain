@@ -730,6 +730,7 @@ struct AudioState {
     /// The running capture's sender and format, if any.
     running: Option<(mpsc::Sender<AudioChunk>, AudioFormat, u32)>,
     starts: usize,
+    stops: usize,
     fail_next: Option<PlatformError>,
 }
 
@@ -743,7 +744,9 @@ pub struct FakeAudioCapture(Arc<Mutex<AudioState>>);
 
 impl Drop for FakeAudioCapture {
     fn drop(&mut self) {
-        lock(&self.0).running = None;
+        let mut state = lock(&self.0);
+        state.running = None;
+        state.stops += 1;
     }
 }
 
@@ -761,6 +764,11 @@ impl FakeAudio {
     /// How many captures were started.
     pub fn starts(&self) -> usize {
         lock(&self.0).starts
+    }
+
+    /// How many captures were stopped (dropped).
+    pub fn stops(&self) -> usize {
+        lock(&self.0).stops
     }
 
     /// The next start fails with `error`.

@@ -280,7 +280,10 @@ async fn an_older_ipad_works_with_a_newer_host_which_says_what_updating_adds() {
     // The host's status says what updating adds.
     assert_eq!(
         rig.session.peer_version_note().as_deref(),
-        Some("lain on the iPad is older (protocol v4): update it for the host's video stats on the iPad")
+        Some(
+            "lain on the iPad is older (protocol v4): update it for the host's video stats on the iPad, dictation \
+             and the on-screen keyboard, the computer's sound on the iPad"
+        )
     );
     rig.session.stop().await;
 }

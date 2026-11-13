@@ -161,6 +161,10 @@ impl lain_hostd::Control for FakeControl {
         true
     }
     fn set_resume_after_stop(&self, _on: bool) {}
+    fn sound(&self) -> bool {
+        true
+    }
+    fn set_sound(&self, _on: bool) {}
     fn scale_setting(&self) -> Option<f64> {
         *self.scale.lock().unwrap()
     }

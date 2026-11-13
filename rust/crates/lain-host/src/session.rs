@@ -273,6 +273,8 @@ struct Inner<P: Platform> {
     keeper: Arc<DisplayKeeper<P::Display>>,
     /// [`HostConfig::resume_after_stop`], changeable at run time.
     resume_after_stop: std::sync::atomic::AtomicBool,
+    /// [`HostConfig::sound`], changeable at run time: shared with each connection, read with each packet.
+    sound: Arc<std::sync::atomic::AtomicBool>,
     /// When video was last resumed by itself after a stop on the desktop.
     last_auto_resume: Mutex<Option<Instant>>,
 }
@@ -328,6 +330,7 @@ impl<P: Platform> HostSession<P> {
         let inner = Arc::new(Inner {
             keeper,
             resume_after_stop,
+            sound: Arc::new(std::sync::atomic::AtomicBool::new(config.sound)),
             last_auto_resume: Mutex::new(None),
             platform: Arc::new(platform),
             config,
@@ -392,6 +395,16 @@ impl<P: Platform> HostSession<P> {
     /// [`HostConfig::resume_after_stop`] at run time.
     pub fn set_resume_after_stop(&self, on: bool) {
         self.inner.resume_after_stop.store(on, Ordering::Relaxed);
+    }
+
+    /// Whether the desktop's sound plays on the client ([`HostConfig::sound`]).
+    pub fn sound(&self) -> bool {
+        self.inner.sound.load(Ordering::Relaxed)
+    }
+
+    /// [`HostConfig::sound`] at run time: takes effect with the next packet.
+    pub fn set_sound(&self, on: bool) {
+        self.inner.sound.store(on, Ordering::Relaxed);
     }
 
     /// How long lain's display outlives a session whose link went away ([`HostConfig::display_keep_alive`]).
@@ -1054,7 +1067,7 @@ impl<P: Platform> Inner<P> {
     // MARK: Session
 
     fn make_connection(&self, link: Link) -> Arc<HostConnection<P>> {
-        HostConnection::new(link, self.platform.clone(), self.power.clone(), &self.config)
+        HostConnection::new(link, self.platform.clone(), self.power.clone(), &self.config, self.sound.clone())
     }
 
     /// A claimed session of `peer`, strictly in order (Swift: `serve`): the connection starts (it takes the

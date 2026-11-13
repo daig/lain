@@ -1,7 +1,7 @@
 //! One live link (Swift: `HostConnection` in `HostSession.swift`): the realtime handler, the warp sampler,
 //! layout updates and teardown.
 
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::Duration;
 
@@ -9,11 +9,12 @@ use lain_input::{InputRouter, Outcome};
 use lain_link::{ChannelSender, Link, LinkTransport, MessageChannel};
 use lain_media::HostVideoStats;
 use lain_platform::{
-    Clock, DisplayBackend, InputAction, InputBackend, Monitor, Platform, Requirement, RequirementState, SetupReport,
+    AudioBackend, AudioFormat, Clock, DisplayBackend, InputAction, InputBackend, Monitor, Platform, Requirement,
+    RequirementState, SetupReport,
 };
 use lain_proto::{
-    CursorWarp, DisplayLayout, HostSetup, HostStats, KeyboardType, LayoutDisplay, Message, Pong, ProtocolFeature,
-    SetupItem, SetupRequirement, SetupState, VersionList,
+    AudioConfig, AudioEncoding, AudioPacket, CursorWarp, DisplayLayout, HostSetup, HostStats, KeyboardType,
+    LayoutDisplay, Message, Pong, ProtocolFeature, SetupItem, SetupRequirement, SetupState, VersionList,
 };
 use tokio::sync::{Notify, watch};
 use tokio::task::AbortHandle;
@@ -27,6 +28,11 @@ use crate::warp::CursorWarpDetector;
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
+
+/// How much sound one `AudioPacket` carries (Swift: ScreenCaptureKit's buffers, about 20 ms).
+const AUDIO_CHUNK_MS: u32 = 20;
+/// How long to wait before capturing sound again after the capture failed or ended (a restarted sound server).
+const AUDIO_RETRY: Duration = Duration::from_secs(2);
 
 /// After video or audio closes alone, the rest of the link is closed this much later (Swift: 0.2 s).
 const LONE_CLOSE_DELAY: Duration = Duration::from_millis(200);
@@ -86,10 +92,18 @@ pub(crate) struct HostConnection<P: Platform> {
     stats_interval: watch::Sender<u32>,
     /// Set once realtime has closed or the connection was finished.
     ended: watch::Sender<bool>,
+    /// [`HostConfig::sound`](crate::HostConfig::sound) as the session has it now.
+    sound: Arc<AtomicBool>,
 }
 
 impl<P: Platform> HostConnection<P> {
-    pub(crate) fn new(link: Link, platform: Arc<P>, power: Arc<Power<P::Power>>, config: &HostConfig) -> Arc<Self> {
+    pub(crate) fn new(
+        link: Link,
+        platform: Arc<P>,
+        power: Arc<Power<P::Power>>,
+        config: &HostConfig,
+        sound: Arc<AtomicBool>,
+    ) -> Arc<Self> {
         let Link { realtime, video, audio, version, local_versions, transport, .. } = link;
         let layout_changed = Arc::new(Notify::new());
         let mut warp = config.tuning.warp;
@@ -122,6 +136,7 @@ impl<P: Platform> HostConnection<P> {
             layout_changed,
             stats_interval: watch::Sender::new(0),
             ended: watch::Sender::new(false),
+            sound,
         })
     }
 
@@ -199,15 +214,29 @@ impl<P: Platform> HostConnection<P> {
             })
             .abort_handle(),
         );
+        // The iPad pings on the audio channel to line its clock up with ours, for its sound-delay reading.
         let this = self.clone();
         handles.push(
             tokio::spawn(async move {
-                while audio.recv().await.is_ok() {}
+                while let Ok(env) = audio.recv().await {
+                    if let Message::Ping(p) = env.message {
+                        let clock = this.platform.clock();
+                        let received = clock.now_ns();
+                        let _ = this.audio_channel.send(&Message::Pong(Pong {
+                            id: p.id,
+                            ping_sent_at_ns: p.sent_at_ns,
+                            received_at_ns: received,
+                            sent_at_ns: clock.now_ns(),
+                        }));
+                    }
+                }
                 tokio::time::sleep(LONE_CLOSE_DELAY).await;
                 this.close_link();
             })
             .abort_handle(),
         );
+        let this = self.clone();
+        handles.push(tokio::spawn(async move { this.audio_loop().await }).abort_handle());
         let this = self.clone();
         handles.push(tokio::spawn(async move { this.sample_loop().await }).abort_handle());
         let this = self.clone();
@@ -313,6 +342,55 @@ impl<P: Platform> HostConnection<P> {
         };
         if declare {
             self.power.user_activity();
+        }
+    }
+
+    /// v6: the desktop's sound to the iPad on the audio channel, as it is captured (Swift:
+    /// `HostConnection.startAudio`). Nothing to a peer without [`ProtocolFeature::Audio`]. The `sound` setting is
+    /// read with each packet, so switching it takes effect at once: off, the capture runs on and nothing is sent.
+    /// A capture that fails or ends is tried again every [`AUDIO_RETRY`], each new one announced by its
+    /// `AudioConfig`. Intended difference from Swift: sound doesn't need video, and the computer's own output
+    /// isn't muted. Aborted with the connection's other tasks, which drops (stops) the capture.
+    async fn audio_loop(&self) {
+        if !self.supports(ProtocolFeature::Audio) {
+            return;
+        }
+        let format = AudioFormat::SESSION;
+        let mut failures = 0u32;
+        loop {
+            match self.platform.audio().start(format, AUDIO_CHUNK_MS).await {
+                Ok((capture, mut chunks)) => {
+                    failures = 0;
+                    let config = AudioConfig {
+                        sample_rate: format.sample_rate,
+                        channels: format.channels,
+                        encoding: AudioEncoding::Pcm16Le,
+                    };
+                    if self.audio_channel.send(&Message::AudioConfig(config)).is_err() {
+                        return;
+                    }
+                    info!(rate = format.sample_rate, channels = format.channels, "sound to the iPad: capturing");
+                    while let Some(chunk) = chunks.recv().await {
+                        if !self.sound.load(Ordering::Relaxed) {
+                            continue;
+                        }
+                        let packet = AudioPacket { capture_time_ns: chunk.capture_time_ns, samples: chunk.samples };
+                        if self.audio_channel.send(&Message::AudioPacket(packet)).is_err() {
+                            return;
+                        }
+                    }
+                    drop(capture);
+                    info!("sound to the iPad: the capture ended");
+                }
+                Err(e) => {
+                    // Logged once, then quietly retried (no sound server is a lasting state).
+                    if failures == 0 {
+                        info!("sound to the iPad: no capture ({e})");
+                    }
+                    failures = failures.saturating_add(1);
+                }
+            }
+            tokio::time::sleep(AUDIO_RETRY).await;
         }
     }
 
@@ -584,7 +662,7 @@ mod tests {
             VersionList::offered().clone(),
         );
         let power = Arc::new(Power::new(platform.power.clone()));
-        (HostConnection::new(link, Arc::new(platform.clone()), power, &HostConfig::default()), platform)
+        (HostConnection::new(link, Arc::new(platform.clone()), power, &HostConfig::default(), Arc::default()), platform)
     }
 
     fn key(usage: u16) -> Message {

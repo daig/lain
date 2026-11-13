@@ -139,6 +139,12 @@ impl crate::Control for LinuxControl {
     fn set_resume_after_stop(&self, on: bool) {
         crate::Control::set_resume_after_stop(&self.handle, on)
     }
+    fn sound(&self) -> bool {
+        crate::Control::sound(&self.handle)
+    }
+    fn set_sound(&self, on: bool) {
+        crate::Control::set_sound(&self.handle, on)
+    }
     fn scale_setting(&self) -> Option<f64> {
         self.display.scale_setting()
     }

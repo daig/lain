@@ -48,6 +48,9 @@ pub trait Control: Send + Sync + 'static {
     fn resume_video(&self) -> bool;
     fn resume_after_stop(&self) -> bool;
     fn set_resume_after_stop(&self, on: bool);
+    /// The computer's sound on the iPad (v6).
+    fn sound(&self) -> bool;
+    fn set_sound(&self, on: bool);
     /// The scale setting (`None`: the iPad's own). Platforms without one say `None` and ignore changes.
     fn scale_setting(&self) -> Option<f64> {
         None
@@ -106,6 +109,12 @@ where
     fn set_resume_after_stop(&self, on: bool) {
         DaemonHandle::set_resume_after_stop(self, on)
     }
+    fn sound(&self) -> bool {
+        DaemonHandle::sound(self)
+    }
+    fn set_sound(&self, on: bool) {
+        DaemonHandle::set_sound(self, on)
+    }
 }
 
 /// Sets resuming after a stop on the desktop, now and in `config.toml`.
@@ -116,6 +125,12 @@ pub fn set_resume_after_stop_persisted(
 ) -> Result<(), String> {
     control.set_resume_after_stop(on);
     persist(config, "resume_after_stop", Some(on.to_string()))
+}
+
+/// Sets whether the computer's sound plays on the iPad, now and in `config.toml`.
+pub fn set_sound_persisted(control: &dyn Control, config: Option<&PathBuf>, on: bool) -> Result<(), String> {
+    control.set_sound(on);
+    persist(config, "sound", Some(on.to_string()))
 }
 
 fn persist(config: Option<&PathBuf>, key: &str, value: Option<String>) -> Result<(), String> {
@@ -283,6 +298,24 @@ impl HostService {
     ) -> zbus::fdo::Result<()> {
         set_resume_after_stop_persisted(&*self.control, self.config.as_ref(), on).map_err(zbus::fdo::Error::Failed)?;
         let _ = self.resume_after_stop_changed(&emitter).await;
+        Ok(())
+    }
+
+    /// The computer's sound plays on the iPad (v6).
+    #[zbus(property)]
+    fn sound(&self) -> bool {
+        self.control.sound()
+    }
+
+    /// Sets whether the computer's sound plays on the iPad, now and in `config.toml`.
+    async fn set_sound(
+        &self,
+        on: bool,
+        #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>,
+    ) -> zbus::fdo::Result<()> {
+        info!(on, "sound set over D-Bus");
+        set_sound_persisted(&*self.control, self.config.as_ref(), on).map_err(zbus::fdo::Error::Failed)?;
+        let _ = self.sound_changed(&emitter).await;
         Ok(())
     }
 

@@ -152,7 +152,7 @@ async fn a_legacy_v2_peer_is_answered_in_v2_in_either_role() {
         // (bytes 12..20) is the clock's.
         answer[12..20].fill(0);
         let why = format!("lain here speaks protocol {}", VersionList::supported());
-        assert_eq!(why, "lain here speaks protocol v4–v5");
+        assert_eq!(why, "lain here speaks protocol v4–v6");
         assert_eq!(hex::encode(answer), hex::encode(MessageCodec::legacy_version_mismatch(2, &why, 0, 0)));
         let error = next(&mut acceptor.rejections, T).await.unwrap();
         assert_eq!(error, TransportError::VersionMismatch { remote: 2 });

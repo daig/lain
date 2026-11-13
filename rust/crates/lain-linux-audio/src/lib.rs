@@ -8,7 +8,9 @@ use tokio::sync::mpsc;
 
 /// Captures the default output's monitor through PipeWire.
 #[derive(Debug, Clone, Default)]
-pub struct PipeWireAudio;
+pub struct PipeWireAudio {
+    _stub: (),
+}
 
 /// A running capture; dropping it stops the capture.
 #[derive(Debug)]
