@@ -124,6 +124,53 @@ private let frameVersions: [UInt8] = [LainProtocol.handshakeVersion] + LainProto
         #expect(TextInput.split("").isEmpty)
     }
 
+    /// v7: the client asks for a scale and the host answers with the one it applied and the ones it can. For
+    /// an older peer the fields are advisory: dropped, and read back as 0 and none.
+    @Test func displayScalesAreVersionSevenFields() throws {
+        let hello = Hello(deviceModel: "iPhone19,4", pixelWidth: 2853, pixelHeight: 2007, scale: 3, maxRefreshRate: 120,
+                          decodeCapabilities: [.hevcMain], keyboardType: .unknown, desiredScale: 300)
+        var w7 = ByteWriter(version: 7)
+        hello.encode(into: &w7)
+        var r7 = ByteReader(w7.bytes, version: 7)
+        #expect(try Hello(from: &r7).desiredScale == 300)
+        var w6 = ByteWriter(version: 6)
+        hello.encode(into: &w6)
+        #expect(w6.dropped == ["desiredScale"] && w6.refused == nil && w6.bytes.count == w7.bytes.count - 2)
+        var r6 = ByteReader(w6.bytes, version: 6)
+        #expect(try Hello(from: &r6).desiredScale == 0)
+
+        var ack = Self.ack()
+        ack.displayScale = 200
+        ack.displayScales = [150, 200, 300]
+        var a7 = ByteWriter(version: 7)
+        ack.encode(into: &a7)
+        var ra7 = ByteReader(a7.bytes, version: 7)
+        let back = try HelloAck(from: &ra7)
+        #expect(back.displayScale == 200 && back.displayScales == [150, 200, 300])
+        var a6 = ByteWriter(version: 6)
+        ack.encode(into: &a6)
+        #expect(a6.dropped == ["displayScale", "displayScales"])
+        var ra6 = ByteReader(a6.bytes, version: 6)
+        let old = try HelloAck(from: &ra6)
+        #expect(old.displayScale == 0 && old.displayScales.isEmpty)
+    }
+
+    @Test func aScaleListLongerThanTheLimitIsMalformed() {
+        var w = ByteWriter(version: 7)
+        Self.ack().encode(into: &w)
+        var bytes = w.bytes
+        bytes[bytes.count - 1] = UInt8(HelloAck.maxDisplayScales + 1)   // the list's count (the list is empty)
+        var r = ByteReader(bytes, version: 7)
+        #expect(throws: ProtocolError.self) { _ = try HelloAck(from: &r) }
+    }
+
+    private static func ack() -> HelloAck {
+        HelloAck(codec: .hevc, chroma: .yuv444, bitDepth: 10, displayMode: .extend, bitrate: 1, refreshRate: 60,
+                 displayPointWidth: 1, displayPointHeight: 1, audioSampleRate: 48_000, audioChannels: 2,
+                 audioEncoding: .pcm16LE, doubleClickIntervalMs: 1, keyRepeatDelayMs: 1, keyRepeatIntervalMs: 1,
+                 macInputSource: "")
+    }
+
     @Test func sessionMessagesCantBeHandshakeFramedAndViceVersa() {
         var ping = MessageCodec.encode(.ping(Ping(id: 1, sentAtNs: 2)), sequence: 0, timestampNs: 0)
         ping[2] = LainProtocol.handshakeVersion
@@ -234,9 +281,11 @@ struct Widget: WireMessage, Equatable {
         #expect(ProtocolFeature.hostSetup.isSupported(at: 4))
         #expect(!ProtocolFeature.hostStats.isSupported(at: 4))
         #expect(ProtocolFeature.hostStats.isSupported(at: 5))
-        #expect(ProtocolFeature.missing(at: 4) == [.hostStats, .textInput, .audio])
-        #expect(ProtocolFeature.missing(at: 5) == [.textInput, .audio])
+        #expect(ProtocolFeature.missing(at: 4) == [.hostStats, .textInput, .audio, .displayScale])
+        #expect(ProtocolFeature.missing(at: 5) == [.textInput, .audio, .displayScale])
+        #expect(ProtocolFeature.missing(at: 6) == [.displayScale])
         #expect(ProtocolFeature.missing(at: LainProtocol.newestVersion).isEmpty)
+        #expect(ProtocolFeature.displayScale.isSupported(at: 7) && !ProtocolFeature.displayScale.isSupported(at: 6))
     }
 
     /// A feature replaced before the oldest supported version is dead compatibility code: delete it.

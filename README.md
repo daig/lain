@@ -24,8 +24,13 @@ your local network. A Mac host plays its sound through the iPad too. Hosts run o
    host. After that, Wi-Fi works too; when the cable is plugged in, lain uses it.
 
 On the iPad, **hold the right Option key** to open lain's panel: settings (scroll direction, touch, which
-computer and network to use) and the keyboard shortcuts. The right Option key also stands in for Command, so
-that shortcuts like ⌘ Tab reach the computer instead of the iPad.
+computer and network to use, and the display scale) and the keyboard shortcuts. **Display scale** sets how
+large things are on the computer's display: 2× is the iPad's own size, smaller gives more room, larger is
+bigger (3× is an iPhone's own). Each device keeps its own, from the scales the computer offers; changing it
+reconnects. It needs a host with protocol v7; with an older host, the host's own scale applies.
+
+The right Option key also stands in for Command, so that shortcuts like ⌘ Tab reach the computer instead of the
+iPad.
 
 ### Without a Magic Keyboard
 

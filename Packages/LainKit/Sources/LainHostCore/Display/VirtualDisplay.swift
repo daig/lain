@@ -51,6 +51,23 @@ public final class VirtualDisplay: @unchecked Sendable {
         /// Tells displays of different geometry apart (`DisplayKeeper`).
         public var keeperKey: String { "\(pixelWidth)x\(pixelHeight)@\(pointWidth)x\(pointHeight)" }
 
+        /// The largest backing store (twice the points, in pixels) a display is made with, on either side.
+        /// Scale 1.5 on the 13-inch iPad Pro's panel (3668 px) has been in use since the scale setting
+        /// arrived; 3840 leaves the Duo's inner display (3804 px at 1.5) the same choices. Not measured beyond.
+        public static let maxBackingPixels = 3840
+        /// The scales offered: every quarter from 1 to 3 pixels per point.
+        public static let scaleSteps: [Double] = Array(stride(from: 1.0, through: 3.0, by: 0.25))
+
+        /// The scales a display of this many pixels can be made at (v7 `HelloAck.displayScales`), ascending:
+        /// the steps whose backing store fits `maxBackingPixels`.
+        public static func scales(pixelWidth: Int, pixelHeight: Int) -> [Double] {
+            var s = Spec().sized(pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+            return scaleSteps.filter { step in
+                s.scale = step
+                return max(s.backingWidth, s.backingHeight) <= maxBackingPixels
+            }
+        }
+
         static func even(_ x: Double) -> Int { max(2, Int((x / 2).rounded()) * 2) }
     }
 

@@ -40,6 +40,10 @@ public final class ClientSession: Sendable {
         /// The Mac's setup (v4 `HostSetup`): what's missing, why there's no video. nil until one arrives,
         /// and always with a Mac on an older version.
         public var setup: HostSetup?
+        /// v7: the display's scale, in hundredths, and the ones the host can make for this device (`HelloAck`);
+        /// 0 and none with an older host.
+        public var displayScale: UInt16 = 0
+        public var displayScales: [UInt16] = []
         public init() {}
 
         /// The Mac runs an older protocol than this iPad's newest: what updating it adds (empty if not).
@@ -137,11 +141,21 @@ public final class ClientSession: Sendable {
         public var selected: String?
         /// The current link is the cable: it wins, and the panel offers no switching.
         public var onCable = false
+        /// v7: the scales the current host can make for this device (in hundredths, ascending), and the one it
+        /// applied; none without a link, or with an older host. The panel offers them.
+        public var displayScales: [UInt16] = []
+        public var displayScale: UInt16 = 0
         public init() {}
     }
 
     /// The saved Macs, the pick and whether the cable is in (from the session queue: cheap, for the panel).
     public func hostList() -> HostList { core.queue.sync { core.hostList() } }
+
+    /// The display scale to ask the host for (v7 `Hello.desiredScale`, in hundredths): on every link from now
+    /// on, and on the current one at once, which reconnects to take it (a new scale is a new display).
+    public func setDesiredScale(_ scale: UInt16) {
+        core.queue.async { [core] in core.setDesiredScale(scale) }
+    }
 
     /// Picks the Mac to use over Wi-Fi (nil: automatic). Over Wi-Fi, a link to another Mac closes and the
     /// picked one is dialed at once; over the cable nothing changes (the panel doesn't offer it then).
@@ -232,7 +246,8 @@ final class SessionCore: @unchecked Sendable {
     let secrets: any SecretStore
     /// The protocol versions this iPad offers.
     let versions: VersionList
-    let hello: Hello
+    /// What every link says first; its `desiredScale` changes with the owner's choice.
+    var hello: Hello
     let input: ClientInput
     let video: ClientVideoPipeline?
     /// Where the audio channel's messages go (the player); nil drops them.
@@ -406,6 +421,8 @@ final class SessionCore: @unchecked Sendable {
                     i.displayPointHeight = ack.displayPointHeight
                     i.macInputSource = ack.macInputSource
                     i.chroma = ack.chroma
+                    i.displayScale = ack.displayScale
+                    i.displayScales = ack.displayScales
                     i.isConfigured = true
                     if !ack.hostName.isEmpty { i.hostName = ack.hostName }
                 }, publish: { info in
@@ -492,8 +509,12 @@ final class SessionCore: @unchecked Sendable {
     }
 
     /// On `queue`, in the order the link's snapshots were taken.
+    /// The scales the last host offered and the one it applied (v7 `HelloAck`), kept across reconnects.
+    private var lastDisplayScales: (scales: [UInt16], applied: UInt16) = ([], 0)
+
     private func helloAcked(_ ack: HelloAck, info: ClientSession.ConnectionInfo, generation g: UInt64) {
         guard let c = current, c.generation == g else { return }
+        lastDisplayScales = (ack.displayScales, ack.displayScale)
         current?.hostId = ack.hostId
         if PairingAccounts.isCanonicalHostId(ack.hostId), !ack.hostName.isEmpty {
             wifi?.config.lastHost.setName(ack.hostId, ack.hostName)
@@ -512,6 +533,9 @@ final class SessionCore: @unchecked Sendable {
 
     func hostList() -> ClientSession.HostList {
         var list = ClientSession.HostList()
+        // The last host's, also while a new link comes up (a new scale reconnects): the setting stays put.
+        list.displayScales = lastDisplayScales.scales
+        list.displayScale = lastDisplayScales.applied
         guard let w = wifi else { return list }
         list.selected = w.config.lastHost.selected()
         if let c = current, c.via.isUSB { list.onCable = true }
@@ -532,6 +556,21 @@ final class SessionCore: @unchecked Sendable {
         // A Wi-Fi link to another Mac makes way at once; the cable always stays.
         if let id, let c = current, !c.via.isUSB, c.hostId != id { redialWiFi(because: "to switch hosts") }
         redialNow()
+    }
+
+    func setDesiredScale(_ scale: UInt16) {
+        guard hello.desiredScale != scale else { return }
+        hello.desiredScale = scale
+        log.notice("display scale \(scale): reconnecting to take it")
+        guard let c = current, !stopped else { return }
+        // A new link says the new `Hello`. Over the cable the Mac dials again by itself; over Wi-Fi, at once.
+        current = nil
+        input.disconnect()
+        video?.disconnect()
+        c.link.close()
+        release(c.link)
+        if !c.via.isUSB { redialNow() }
+        publish()
     }
 
     func setNetwork(path: WiFiPath, radioPriority: NetworkStreamOptions.RadioPriority) {

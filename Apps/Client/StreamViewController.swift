@@ -49,7 +49,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     private let panelView = PanelView()
     private var panel = ControlPanel()
     /// The iPad's own options, from the panel.
-    private var preferences = ClientPreferences.load()
+    private var preferences: ClientPreferences
     /// Read by the render thread: draw the local cursor only while a session is up.
     private let connected = SharedFlag()
     private var renderLoop: StreamRenderLoop?
@@ -136,7 +136,9 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     private var lastScrollTranslation = CGPoint.zero
     private var lastWheelTranslation = CGPoint.zero
 
-    init(input: ClientInput, video: ClientVideoPipeline, referenceWidth: Double) {
+    /// `nativeScale`: the device screen's pixels per point, in hundredths: the display scale until one is picked.
+    init(input: ClientInput, video: ClientVideoPipeline, referenceWidth: Double, nativeScale: UInt16) {
+        preferences = ClientPreferences.load(nativeScale: nativeScale)
         self.input = input
         self.video = video
         self.referenceWidth = referenceWidth
@@ -497,6 +499,10 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             guard let self else { return }
             self.apply(self.panel.click(row: row, hosts: self.hostList, preferences: self.preferences))
         }
+        sheet.onChoose = { [weak self] row, index in
+            guard let self else { return }
+            self.apply(self.panel.choose(row: row, index: index, hosts: self.hostList, preferences: self.preferences))
+        }
         sheet.onClose = { [weak self] in
             guard let self else { return }
             self.settingsSheet = nil
@@ -508,7 +514,8 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         setTouchKeyboard(false)
         session?.setHostStatsInterval(ms: ControlPanel.hostStatsIntervalMs)
         renderPanel(video.stats())
-        let navigation = UINavigationController(rootViewController: sheet)
+        let navigation = SheetNavigationController(rootViewController: sheet)
+        navigation.onGone = { [weak sheet] in sheet?.onClose() }
         navigation.overrideUserInterfaceStyle = .dark
         navigation.sheetPresentationController?.detents = [.medium(), .large()]
         navigation.sheetPresentationController?.prefersGrabberVisible = true
@@ -541,6 +548,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             input.setInvertScroll(p.reverseScroll)
             input.setTouchMode(p.touchMode)
             session?.setNetwork(path: p.wifiPath, radioPriority: p.radioPriority)
+            session?.setDesiredScale(p.displayScale)   // a new scale reconnects the session to take it
         }
         renderPanel()
         // The session applies a pick on its queue: show its result once it has.

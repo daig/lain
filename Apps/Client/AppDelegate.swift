@@ -44,8 +44,11 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         var display = (pixelWidth: Int(max(native.width, native.height)), pixelHeight: Int(min(native.width, native.height)),
                        scale: Int(screen.nativeScale))
         if let home = ClientStatus.homeDisplay(model: model) { display = home }
+        // The scale of the screen the display is for (the Duo's inner one: 3×): the display scale until one is picked.
+        let nativeScale = UInt16(clamping: max(display.scale, 1) * 100)
         let stream = StreamViewController(input: input, video: video,
-                                          referenceWidth: Double(display.pixelWidth) / Double(max(display.scale, 1)))
+                                          referenceWidth: Double(display.pixelWidth) / Double(max(display.scale, 1)),
+                                          nativeScale: nativeScale)
         let window = UIWindow(windowScene: windowScene)
         window.rootViewController = stream
         window.makeKeyAndVisible()
@@ -55,7 +58,9 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                           scale: UInt8(display.scale), maxRefreshRate: UInt16(screen.maximumFramesPerSecond),
                           // S3c: HEVC Main 4:4:4 10 only if the embedded vector decodes in hardware here.
                           decodeCapabilities: ClientVideoPipeline.probeDecodeCapabilities(),
-                          keyboardType: .unknown)
+                          keyboardType: .unknown,
+                          // v7: the scale this device asks for, from its settings (its screen's own, at first).
+                          desiredScale: ClientPreferences.load(nativeScale: nativeScale).displayScale)
         startSession(hello: hello, view: stream)
     }
 
