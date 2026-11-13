@@ -156,6 +156,10 @@ public final class HostVideoPipeline: Sendable {
     /// The streamed display while the pipeline runs (nil before, and once stopped or failed: its
     /// display is being removed and must not be flagged or targeted).
     public var streamedDisplay: StreamedDisplay? { state.withLock { $0.phase == .running ? $0.display : nil } }
+    /// The scale the display was made at, and the ones it could have been (v7 `HelloAck`); nil before a start
+    /// has chosen.
+    public var displayScale: DisplayScaleChoice? { scaleChoice.withLock { $0 } }
+    private let scaleChoice = Mutex<DisplayScaleChoice?>(nil)
     public var streamedDisplayID: UInt32? { streamedDisplay?.displayID }
     /// Live global point bounds of the streamed display (for `DisplayLayout`); the owner may move it in
     /// System Settings at any time, so this re-reads it.
@@ -195,7 +199,15 @@ public final class HostVideoPipeline: Sendable {
         let cursor: CursorMonitor?
         let timer: DispatchSourceTimer
         do {
-            display = try await displayProvider.create(pixelWidth: Int(hello.pixelWidth), pixelHeight: Int(hello.pixelHeight))
+            // v7: the scale the client asks for (an older one asks for none: the host's own), the nearest the
+            // provider can make.
+            let (w, h) = (Int(hello.pixelWidth), Int(hello.pixelHeight))
+            let choice = DisplayScaleChoice.choose(requested: hello.desiredScale, supported: displayProvider.scales(pixelWidth: w, pixelHeight: h),
+                                                   own: displayProvider.ownScale)
+            scaleChoice.withLock { $0 = choice }
+            func x(_ s: Double) -> String { String(format: "%g×", s) }
+            log.notice("display scale \(x(choice.applied), privacy: .public) (\(choice.askedFor ? "asked for \(x(Double(hello.desiredScale) / 100))" : "the host's own", privacy: .public); offered \(choice.supported.map(x).joined(separator: ", "), privacy: .public))")
+            display = try await displayProvider.create(pixelWidth: w, pixelHeight: h, scale: choice.applied)
             guard state.withLock({ $0.phase == .starting }) else { throw HostVideoError.stopped }
 
             var wanted = VideoEncoder.Settings(width: display.pixelWidth, height: display.pixelHeight)

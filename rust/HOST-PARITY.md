@@ -57,7 +57,7 @@ Video** in the menu does it by hand. Code: `HostSession.resumeAfterStop`, `resum
 
 Linux: `lain` CLI, a tray menu and the D-Bus interface `dev.sub.lain.Host1`, each written to `config.toml`:
 scale (1–3; the closest the desktop supports is applied, live), keep-alive (live), Wi-Fi on/off (live),
-resume-after-stop (live), Start at login, bitrate (next start). Mac host: the menu now has Display Scale, Keep Display After Disconnect, Resume Video After Stop and Right
+resume-after-stop (live), Start at login, bitrate (next start). Mac host: the menu has Keep Display After Disconnect (and had Display Scale until v7, below), Resume Video After Stop and Right
 Option Is the System Key (`HostPreferences`, in the app's defaults). Scale presets 1.5–2.5 pixels per point
 (2 = 1376×1032 pt); a scale other than 2 renders at 2× of its points and capture scales that to the panel's
 2752×2064 (or streams the smaller backing size, above 2). Scale and system key reconnect the live session to
@@ -65,6 +65,21 @@ apply; keep-alive applies to the next display kept.
 
 Note on scale: Linux makes lain's display at 2× by default, as the Mac host does (1376×1032 points on a 13" iPad
 Pro). GNOME draws its interface larger than macOS at the same scale, which is why Linux needed the setting first.
+
+**Since protocol v7 the scale is the client's** (Mac host: done; Linux: to do). The device asks for one in
+`Hello.desiredScale` (hundredths: 200 = 2×; 0 = no preference) from a setting kept on the device, so each
+device has its own; the iPad and Duo default to 200, the desktop they had before. The host makes the display at
+the nearest scale it supports (on a tie, the larger) and says so in `HelloAck.displayScale`, with every scale it
+can make for that device in `HelloAck.displayScales` (hundredths, ascending, at most 32; empty = only its own).
+The device's settings offer exactly that list; choosing one reconnects with the new `Hello`. A device that asks
+for none (any v6 client) gets the host's own scale, the setting above, which the Mac's menu no longer offers
+(it shows the scale in use, and whether the device chose it). `Hello.scale` stays the screen's native scale,
+for information. Mac host: every quarter from 1 to 3 whose 2× backing store fits 3840 px
+(`VirtualDisplay.Spec.scales`: 1.5–3 for the iPad and the Duo); the display keeper's key includes the scale, so
+a reconnect at the same scale takes the kept display back without redrawing. Linux: offer the scales the desktop
+can apply (its "closest the desktop supports" set), never one it can't. Code: `DisplayScaleChoice`,
+`StreamedDisplayProvider.scales`, `HostVideoPipeline.displayScale`; tests `DisplayScaleTests`,
+`VersioningTests.displayScalesAreVersionSevenFields`, `DisplayScaleSettingTests`.
 
 ## 4. Keyboard: Right Option is the system key (Linux host: done; client and Mac host: to do)
 

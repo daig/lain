@@ -7,7 +7,7 @@ extension HelloAck {
     /// M5 will use. `hostId` and `hostName` say which Mac this is (§7.7 D29: over USB the client keys its
     /// Wi-Fi secret by the id; empty without a host identity).
     public static func host(display: HostDisplay, settings: HostInputSettings, chroma: ChromaFormat = .yuv444,
-                            hostId: String = "", hostName: String = "") -> HelloAck {
+                            hostId: String = "", hostName: String = "", scale: DisplayScaleChoice? = nil) -> HelloAck {
         HelloAck(codec: .hevc, chroma: chroma, bitDepth: chroma == .yuv444 ? 10 : 8, displayMode: .extend, bitrate: 60_000_000,
                  refreshRate: 120,
                  displayPointWidth: UInt32(max(display.pointSize.width, 0).rounded()),
@@ -15,7 +15,8 @@ extension HelloAck {
                  audioSampleRate: 48_000, audioChannels: 2, audioEncoding: .pcm16LE,
                  doubleClickIntervalMs: settings.doubleClickIntervalMs, keyRepeatDelayMs: settings.keyRepeatDelayMs,
                  keyRepeatIntervalMs: settings.keyRepeatIntervalMs, macInputSource: settings.inputSourceID,
-                 hostId: hostId, hostName: hostName)
+                 hostId: hostId, hostName: hostName, displayScale: scale?.wireApplied ?? 0,
+                 displayScales: scale?.wireSupported ?? [])
     }
 }
 
@@ -320,6 +321,11 @@ public final class HostSession: Sendable {
     /// The live session's streamed display (nil when no session has video).
     public var streamedDisplay: StreamedDisplay? {
         state.withLock { s in s.live != nil ? s.video : nil }?.streamedDisplay
+    }
+
+    /// The scale the live session's display was made at (v7: the client's choice), for the menu.
+    public var displayScale: DisplayScaleChoice? {
+        state.withLock { s in s.live != nil ? s.video : nil }?.displayScale
     }
 
     /// Why the current session streams no video, if it failed to start.
@@ -832,7 +838,8 @@ public final class HostSession: Sendable {
             // decodes them regardless.
             let display = connection.provider.targetDisplay()
             connection.link.realtime.send(.helloAck(.host(display: display, settings: deps.settings(), chroma: chroma ?? .yuv444,
-                                                          hostId: deps.identity?.id ?? "", hostName: deps.identity?.name ?? "")))
+                                                          hostId: deps.identity?.id ?? "", hostName: deps.identity?.name ?? "",
+                                                          scale: connection.video?.displayScale)))
             connection.sendLayoutIfChanged()   // the first one always goes
             sendSetup(to: connection)
             if !connection.link.olderPeerMisses.isEmpty {

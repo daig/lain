@@ -22,6 +22,38 @@ public struct StreamedDisplay: Sendable, Equatable {
     }
 }
 
+/// The scale a session's display is made at (v7): the one the client asked for (`Hello.desiredScale`), or the
+/// host's own for a client that asked for none, brought to the nearest the host can make.
+public struct DisplayScaleChoice: Sendable, Equatable {
+    /// Pixels per point.
+    public var applied: Double
+    /// What the host can make for this client, ascending; empty: only `applied`.
+    public var supported: [Double]
+    /// The client asked for a scale (else `applied` is the host's own).
+    public var askedFor: Bool
+
+    public init(applied: Double, supported: [Double], askedFor: Bool = false) {
+        self.applied = applied
+        self.supported = supported
+        self.askedFor = askedFor
+    }
+
+    /// `requested`: hundredths (0: none). The nearest supported scale to it (on a tie, the larger: a little
+    /// more room rather than less), or to `own` when none was asked for.
+    public static func choose(requested: UInt16, supported: [Double], own: Double) -> DisplayScaleChoice {
+        let wanted = requested > 0 ? Double(requested) / 100 : own
+        guard let nearest = supported.min(by: { a, b in
+            let da = abs(a - wanted), db = abs(b - wanted)
+            return da != db ? da < db : a > b   // the larger first on a tie
+        }) else { return DisplayScaleChoice(applied: own, supported: [], askedFor: requested > 0) }
+        return DisplayScaleChoice(applied: nearest, supported: supported, askedFor: requested > 0)
+    }
+
+    /// Hundredths, for `HelloAck`.
+    public var wireApplied: UInt16 { UInt16((applied * 100).rounded()) }
+    public var wireSupported: [UInt16] { supported.map { UInt16(($0 * 100).rounded()) } }
+}
+
 /// Creates and removes the streamed display. Injected so tests never create a real one.
 public protocol StreamedDisplayProvider: Sendable {
     /// Creates the display and waits until it is active in its streaming mode.
@@ -29,6 +61,14 @@ public protocol StreamedDisplayProvider: Sendable {
     /// The same, for a client that asks for this many pixels (its `Hello`): the display takes that shape. By
     /// default the size is ignored.
     func create(pixelWidth: Int, pixelHeight: Int) async throws -> StreamedDisplay
+    /// The same at `scale` pixels per point (one of `scales(pixelWidth:pixelHeight:)`). By default the scale
+    /// is ignored.
+    func create(pixelWidth: Int, pixelHeight: Int, scale: Double) async throws -> StreamedDisplay
+    /// The scales a display for a client of this many pixels can be made at, ascending (v7
+    /// `HelloAck.displayScales`); empty: only `ownScale`, by default.
+    func scales(pixelWidth: Int, pixelHeight: Int) -> [Double]
+    /// The scale for a client that asks for none (an older one): the owner's (`HostPreferences.displayScale`).
+    var ownScale: Double { get }
     /// The display's current global point bounds (the owner may rearrange it in System Settings at any
     /// time), or nil when it no longer exists.
     func currentBounds() -> CGRect?
@@ -46,6 +86,11 @@ public protocol StreamedDisplayProvider: Sendable {
 
 extension StreamedDisplayProvider {
     public func create(pixelWidth: Int, pixelHeight: Int) async throws -> StreamedDisplay { try await create() }
+    public func create(pixelWidth: Int, pixelHeight: Int, scale: Double) async throws -> StreamedDisplay {
+        try await create(pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+    }
+    public func scales(pixelWidth: Int, pixelHeight: Int) -> [Double] { [] }
+    public var ownScale: Double { HostPreferences.defaultScale }
 
     public func waitUntilRemoved() async {}
 
@@ -83,6 +128,18 @@ public final class VirtualStreamedDisplayProvider: StreamedDisplayProvider {
     public func create(pixelWidth: Int, pixelHeight: Int) async throws -> StreamedDisplay {
         try await create(spec.sized(pixelWidth: pixelWidth, pixelHeight: pixelHeight))
     }
+
+    public func create(pixelWidth: Int, pixelHeight: Int, scale: Double) async throws -> StreamedDisplay {
+        var s = spec.sized(pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+        s.scale = scale
+        return try await create(s)
+    }
+
+    public func scales(pixelWidth: Int, pixelHeight: Int) -> [Double] {
+        VirtualDisplay.Spec.scales(pixelWidth: pixelWidth, pixelHeight: pixelHeight)
+    }
+
+    public var ownScale: Double { spec.scale }
 
     private func create(_ spec: VirtualDisplay.Spec) async throws -> StreamedDisplay {
         let log = Telemetry.logger("vdisplay")

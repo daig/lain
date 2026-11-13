@@ -144,3 +144,98 @@ import Testing
         #expect(ClientPreferences.load(from: defaults) == p)
     }
 }
+
+/// v7: the display's scale is this device's to choose, from what the host offers.
+@Suite struct DisplayScaleSettingTests {
+    func offering(_ scales: [UInt16], applied: UInt16 = 200) -> ClientSession.HostList {
+        var l = ClientSession.HostList()
+        l.displayScales = scales
+        l.displayScale = applied
+        return l
+    }
+    let quarters: [UInt16] = [150, 175, 200, 225, 250, 275, 300]
+
+    @Test func theRowShowsOnlyWhenTheHostOffersScales() {
+        #expect(!ControlPanel.rows(hosts: ClientSession.HostList()).contains(.displayScale), "an older host, or none")
+        #expect(ControlPanel.rows(hosts: offering(quarters)).last == .displayScale)
+    }
+
+    @Test func leftAndRightStepThroughTheOfferedScales() {
+        var panel = ControlPanel()
+        let h = offering(quarters)
+        let row = ControlPanel.rows(hosts: h).firstIndex(of: .displayScale)!
+        var p = ClientPreferences()
+        #expect(p.displayScale == 200, "2×: an iPad's desktop, as before")
+        for _ in 0..<row { _ = panel.key(ControlPanelTests.down, hosts: h, preferences: p) }
+        guard case .setPreferences(let up) = panel.key(ControlPanelTests.right, hosts: h, preferences: p) else { Issue.record("no change"); return }
+        #expect(up.displayScale == 225)
+        p.displayScale = 300
+        guard case .setPreferences(let wrapped) = panel.key(ControlPanelTests.right, hosts: h, preferences: p) else { Issue.record("no change"); return }
+        #expect(wrapped.displayScale == 150)
+    }
+
+    @Test func aChoiceTheHostDoesntOfferMovesToTheNearest() {
+        #expect(ControlPanel.nextScale(after: 300, in: [150, 200, 250], by: 1) == 250)
+        #expect(ControlPanel.nextScale(after: 200, in: [150, 200, 250], by: -1) == 150)
+        #expect(ControlPanel.nextScale(after: 200, in: [], by: 1) == 200)
+    }
+
+    @Test func theValueSaysTheScaleAndWhatTheHostMade() {
+        #expect(ControlPanel.scaleText(200) == "2×" && ControlPanel.scaleText(175) == "1.75×" && ControlPanel.scaleText(150) == "1.5×")
+        #expect(ControlPanel.scaleText(205) == "2.05×")
+        var info = ClientSession.ConnectionInfo()
+        info.displayPointWidth = 951
+        info.displayPointHeight = 669
+        #expect(ControlPanel.scaleValue(300, hosts: offering(quarters, applied: 300), info: info) == "3× · 951×669 pt")
+        #expect(ControlPanel.scaleValue(300, hosts: offering([150, 200], applied: 200), info: info) == "3× (host: 2×)")
+    }
+
+    @Test func onATouchScreenTheScaleIsPickedFromAList() throws {
+        let h = offering([150, 200, 300])
+        let p = ClientPreferences()
+        var three = p
+        three.displayScale = 300
+        let sheet = ControlPanel().sheet(info: nil, video: VideoStats(), host: nil, hosts: h, preferences: p)
+        let item = try #require(sheet.options.first { $0.title == "Display scale" })
+        #expect(item.choices == ["1.5× · more room", "2× · this screen's size", "3× · larger"] && item.chosen == 1)
+        let row = try #require(item.row)
+        #expect(ControlPanel().choose(row: row, index: 2, hosts: h, preferences: p) == .setPreferences(three))
+        #expect(ControlPanel().choose(row: row, index: 1, hosts: h, preferences: ClientPreferences()) == .none, "already chosen")
+        #expect(ControlPanel().choose(row: row, index: 9, hosts: h, preferences: ClientPreferences()) == .none)
+        #expect(ControlPanel().choose(row: 0, index: 0, hosts: h, preferences: ClientPreferences()) == .none, "not the scale's row")
+        // The other options are still tapped, not picked from a list.
+        let othersAreTapped = sheet.options.filter { $0.title != "Display scale" }.allSatisfy { $0.choices.isEmpty }
+        #expect(othersAreTapped)
+    }
+
+    @Test func untilOneIsPickedTheScaleIsTheScreensOwn() throws {
+        let defaults = try #require(UserDefaults(suiteName: "lain.test.nativeScale"))
+        defaults.removePersistentDomain(forName: "lain.test.nativeScale")
+        // An iPhone Duo (3×) asks for its own scale; an iPad (2×), for the desktop it has always had.
+        let duo = ClientPreferences.load(from: defaults, nativeScale: 300)
+        #expect(duo.displayScale == 300 && duo.nativeDisplayScale == 300)
+        #expect(ClientPreferences.load(from: defaults, nativeScale: 200).displayScale == 200)
+        // The list says which is the screen's own.
+        let sheet = ControlPanel().sheet(info: nil, video: VideoStats(), host: nil, hosts: offering(quarters), preferences: duo)
+        let item = try #require(sheet.options.first { $0.title == "Display scale" })
+        #expect(item.choices.last == "3× · this screen's size" && item.choices.first == "1.5× · more room")
+        #expect(item.chosen == quarters.firstIndex(of: 300))
+        // A pick is kept over the default.
+        var picked = duo
+        picked.displayScale = 200
+        picked.save(to: defaults)
+        #expect(ClientPreferences.load(from: defaults, nativeScale: 300).displayScale == 200)
+        defaults.removePersistentDomain(forName: "lain.test.nativeScale")
+    }
+
+    @Test func theChoiceIsKept() throws {
+        let defaults = try #require(UserDefaults(suiteName: "lain.test.displayScale"))
+        defaults.removePersistentDomain(forName: "lain.test.displayScale")
+        var p = ClientPreferences()
+        p.displayScale = 275
+        p.save(to: defaults)
+        #expect(ClientPreferences.load(from: defaults).displayScale == 275)
+        defaults.removePersistentDomain(forName: "lain.test.displayScale")
+        #expect(ClientPreferences.load(from: defaults).displayScale == 200)
+    }
+}

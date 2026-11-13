@@ -11,6 +11,9 @@ public enum ProtocolFeature: CaseIterable, Sendable {
     case textInput
     /// v6: the host sends its sound (`AudioConfig`, `AudioPacket`) and the iPad plays it.
     case audio
+    /// v7: the client asks for its display's scale (`Hello.desiredScale`) and the host says which it applied
+    /// and which it can (`HelloAck.displayScale`, `displayScales`).
+    case displayScale
 
     /// The first version with the feature.
     public var since: UInt8 {
@@ -18,13 +21,14 @@ public enum ProtocolFeature: CaseIterable, Sendable {
         case .hostSetup: 4
         case .hostStats: 5
         case .textInput, .audio: 6
+        case .displayScale: 7
         }
     }
 
     /// The first version without it, when a newer behavior replaced it; nil while current.
     public var until: UInt8? {
         switch self {
-        case .hostSetup, .hostStats, .textInput, .audio: nil
+        case .hostSetup, .hostStats, .textInput, .audio, .displayScale: nil
         }
     }
 
@@ -37,6 +41,7 @@ public enum ProtocolFeature: CaseIterable, Sendable {
         case .hostStats: "the Mac's video stats on the iPad"
         case .textInput: "dictation and the on-screen keyboard"
         case .audio: "the computer's sound on the iPad"
+        case .displayScale: "choosing the display's scale on the iPad"
         }
     }
 

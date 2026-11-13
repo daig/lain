@@ -134,6 +134,8 @@ final class ScrollRibbon: UIView {
 final class SettingsSheet: UITableViewController {
     /// A row of `ControlPanel.rows` was tapped.
     var onSelect: (Int) -> Void = { _ in }
+    /// Entry `index` of a row's list was picked (`ControlPanel.choose(row:index:)`).
+    var onChoose: (_ row: Int, _ index: Int) -> Void = { _, _ in }
     var onClose: () -> Void = {}
     private var content = ControlPanel.Sheet()
 
@@ -155,10 +157,6 @@ final class SettingsSheet: UITableViewController {
         tableView.accessibilityIdentifier = "settings.sheet"
     }
 
-    override func viewDidDisappear(_ animated: Bool) {
-        super.viewDidDisappear(animated)
-        onClose()
-    }
 
     func show(_ new: ControlPanel.Sheet) {
         guard new != content else { return }
@@ -220,13 +218,77 @@ final class SettingsSheet: UITableViewController {
         c.secondaryText = item.value
         c.textProperties.color = item.row == nil ? .secondaryLabel : .label
         cell.contentConfiguration = c
-        cell.accessoryType = item.isChecked ? .checkmark : .none
+        cell.accessoryType = item.isChecked ? .checkmark : item.choices.isEmpty ? .none : .disclosureIndicator
         cell.selectionStyle = item.row == nil ? .none : .default
         return cell
     }
 
     override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
         tableView.deselectRow(at: indexPath, animated: true)
-        if let row = item(at: indexPath)?.row { onSelect(row) }
+        guard let item = item(at: indexPath), let row = item.row else { return }
+        guard !item.choices.isEmpty else { return onSelect(row) }
+        // Picked from a list, as in Settings: the entries with the current one checked; a tap applies it and
+        // comes back here.
+        let list = ChoiceList(title: item.title, choices: item.choices, chosen: item.chosen)
+        list.onPick = { [weak self, weak list] index in
+            self?.onChoose(row, index)
+            list?.navigationController?.popViewController(animated: true)
+        }
+        navigationController?.pushViewController(list, animated: true)
+    }
+}
+
+/// The settings sheet's navigation: it going away is the sheet closing, however it went (Done, a swipe down)
+/// and whatever showed in it (the sheet, or a list pushed over it, which hides the sheet without closing it).
+final class SheetNavigationController: UINavigationController {
+    var onGone: () -> Void = {}
+
+    override func viewDidDisappear(_ animated: Bool) {
+        super.viewDidDisappear(animated)
+        onGone()
+    }
+}
+
+/// A setting's entries to pick one from, the current one checked (the display scale).
+final class ChoiceList: UITableViewController {
+    var onPick: (Int) -> Void = { _ in }
+    private let choices: [String]
+    private var chosen: Int?
+
+    init(title: String, choices: [String], chosen: Int?) {
+        self.choices = choices
+        self.chosen = chosen
+        super.init(style: .insetGrouped)
+        self.title = title
+    }
+
+    @available(*, unavailable)
+    required init?(coder: NSCoder) { fatalError("init(coder:) is not used") }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        tableView.register(UITableViewCell.self, forCellReuseIdentifier: "cell")
+    }
+
+    override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int { choices.count }
+
+    override func tableView(_ tableView: UITableView, titleForFooterInSection section: Int) -> String? {
+        "Changing it reconnects to the computer."
+    }
+
+    override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: "cell", for: indexPath)
+        var c = UIListContentConfiguration.cell()
+        c.text = choices[indexPath.row]
+        cell.contentConfiguration = c
+        cell.accessoryType = indexPath.row == chosen ? .checkmark : .none
+        return cell
+    }
+
+    override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        tableView.deselectRow(at: indexPath, animated: true)
+        chosen = indexPath.row
+        tableView.reloadData()
+        onPick(indexPath.row)
     }
 }

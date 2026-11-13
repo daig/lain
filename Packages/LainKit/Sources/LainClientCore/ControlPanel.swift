@@ -15,20 +15,37 @@ public struct ClientPreferences: Sendable, Equatable {
     public var wifiPath = WiFiPath.automatic
     /// How video and audio ask the radio for airtime (D34).
     public var radioPriority = NetworkStreamOptions.RadioPriority.standard
+    /// The pixels per point this device asks the host's display to be, in hundredths (v7), from what the host
+    /// offers (`HostList.displayScales`). Until the owner picks one, the device screen's own
+    /// (`nativeDisplayScale`): things on the computer's display are the size they are on the device (an
+    /// iPad's 2× desktop, as always; 3× on an iPhone); more room is a setting away.
+    public var displayScale: UInt16 = ClientPreferences.defaultDisplayScale
+    /// The device screen's own pixels per point, in hundredths: the default scale. Not kept: the device says.
+    public var nativeDisplayScale: UInt16 = ClientPreferences.defaultDisplayScale
+
+    /// 2×: an iPad's own, and the desktop lain has always made.
+    public static let defaultDisplayScale: UInt16 = 200
 
     public init() {}
 
     static let scrollKey = "lain.reverseScroll"
     static let pathKey = "lain.wifiPath", priorityKey = "lain.radioPriority", touchKey = "lain.touchMode"
+    static let scaleKey = "lain.displayScale"
 
-    public static func load(from defaults: UserDefaults = .standard) -> ClientPreferences {
+    /// `nativeScale`: the device screen's pixels per point, in hundredths (`nativeDisplayScale`), the scale
+    /// until one is picked.
+    public static func load(from defaults: UserDefaults = .standard, nativeScale: UInt16 = defaultDisplayScale) -> ClientPreferences {
         var p = ClientPreferences()
+        p.nativeDisplayScale = nativeScale
+        p.displayScale = nativeScale
         p.reverseScroll = defaults.bool(forKey: scrollKey)
         if let raw = defaults.string(forKey: touchKey), let mode = TouchMode(rawValue: raw) { p.touchMode = mode == .off ? .off : .direct }
         if let raw = defaults.string(forKey: pathKey), let path = WiFiPath(rawValue: raw) { p.wifiPath = path }
         if let raw = defaults.string(forKey: priorityKey), let priority = NetworkStreamOptions.RadioPriority(rawValue: raw) {
             p.radioPriority = priority
         }
+        let scale = defaults.integer(forKey: scaleKey)
+        if (50...400).contains(scale) { p.displayScale = UInt16(scale) }
         return p
     }
 
@@ -37,6 +54,7 @@ public struct ClientPreferences: Sendable, Equatable {
         defaults.set(touchMode.rawValue, forKey: Self.touchKey)
         defaults.set(wifiPath.rawValue, forKey: Self.pathKey)
         defaults.set(radioPriority.rawValue, forKey: Self.priorityKey)
+        defaults.set(Int(displayScale), forKey: Self.scaleKey)
     }
 }
 
@@ -58,6 +76,8 @@ public struct ControlPanel: Sendable, Equatable {
         case touchMode
         case wifiPath
         case radioPriority
+        /// v7: the display's scale, from those the host offers.
+        case displayScale
     }
 
     public enum Action: Sendable, Equatable {
@@ -88,7 +108,9 @@ public struct ControlPanel: Sendable, Equatable {
             rows.append(.host(nil))
             rows += hosts.hosts.map { .host($0.id) }
         }
-        return rows + [.scrollDirection, .touchMode, .wifiPath, .radioPriority]
+        rows += [.scrollDirection, .touchMode, .wifiPath, .radioPriority]
+        if !hosts.displayScales.isEmpty { rows.append(.displayScale) }
+        return rows
     }
 
     // MARK: Input
@@ -109,9 +131,9 @@ public struct ControlPanel: Sendable, Equatable {
         case Self.down:
             selection = min(selection + 1, rows.count - 1)
         case Self.left, Self.right:
-            return change(rows[selection], by: key.usage == Self.left ? -1 : 1, preferences: preferences)
+            return change(rows[selection], by: key.usage == Self.left ? -1 : 1, hosts: hosts, preferences: preferences)
         case Self.enter, Self.keypadEnter, Self.space:
-            return activate(rows[selection], preferences: preferences)
+            return activate(rows[selection], hosts: hosts, preferences: preferences)
         default:
             break
         }
@@ -123,17 +145,18 @@ public struct ControlPanel: Sendable, Equatable {
         let rows = Self.rows(hosts: hosts)
         guard rows.indices.contains(row) else { return .none }
         selection = row
-        return activate(rows[row], preferences: preferences)
+        return activate(rows[row], hosts: hosts, preferences: preferences)
     }
 
-    private func activate(_ row: Row, preferences: ClientPreferences) -> Action {
+    private func activate(_ row: Row, hosts: ClientSession.HostList, preferences: ClientPreferences) -> Action {
         switch row {
         case .host(let id): .selectHost(id)
-        case .scrollDirection, .touchMode, .wifiPath, .radioPriority: change(row, by: 1, preferences: preferences)
+        case .scrollDirection, .touchMode, .wifiPath, .radioPriority, .displayScale:
+            change(row, by: 1, hosts: hosts, preferences: preferences)
         }
     }
 
-    private func change(_ row: Row, by step: Int, preferences: ClientPreferences) -> Action {
+    private func change(_ row: Row, by step: Int, hosts: ClientSession.HostList, preferences: ClientPreferences) -> Action {
         var p = preferences
         switch row {
         case .host: return .none
@@ -141,6 +164,7 @@ public struct ControlPanel: Sendable, Equatable {
         case .touchMode: p.touchMode = p.touchMode == .off ? .direct : .off
         case .wifiPath: p.wifiPath = Self.cycle(p.wifiPath, by: step)
         case .radioPriority: p.radioPriority = Self.cycle(p.radioPriority, by: step)
+        case .displayScale: p.displayScale = Self.nextScale(after: p.displayScale, in: hosts.displayScales, by: step)
         }
         return p == preferences ? .none : .setPreferences(p)
     }
@@ -195,6 +219,8 @@ public struct ControlPanel: Sendable, Equatable {
                 add(Self.pad("Wi-Fi path") + "‹ " + Self.title(preferences.wifiPath) + " ›", row: i)
             case .radioPriority:
                 add(Self.pad("Radio priority") + "‹ " + Self.title(preferences.radioPriority) + " ›", row: i)
+            case .displayScale:
+                add(Self.pad("Display scale") + "‹ " + Self.scaleValue(preferences.displayScale, hosts: hosts, info: info) + " ›", row: i)
             case .host:
                 break
             }
@@ -217,6 +243,10 @@ public struct ControlPanel: Sendable, Equatable {
             public var title: String
             public var value: String
             public var isChecked = false
+            /// An option picked from a list (the display scale): the list's entries, and the current one. A tap
+            /// opens the list; `choose(row:index:)` applies an entry. Empty: a tap acts on the row.
+            public var choices: [String] = []
+            public var chosen: Int?
         }
         public var title = ""
         /// The stream's numbers, a line each.
@@ -260,9 +290,56 @@ public struct ControlPanel: Sendable, Equatable {
             case .touchMode: out.options.append(.init(row: i, title: "Touch screen", value: Self.title(preferences.touchMode)))
             case .wifiPath: out.options.append(.init(row: i, title: "Wi-Fi path", value: Self.title(preferences.wifiPath)))
             case .radioPriority: out.options.append(.init(row: i, title: "Radio priority", value: Self.title(preferences.radioPriority)))
+            case .displayScale:
+                var item = Sheet.Item(row: i, title: "Display scale", value: Self.scaleValue(preferences.displayScale, hosts: hosts, info: info))
+                item.choices = hosts.displayScales.map { Self.scaleChoiceTitle($0, native: preferences.nativeDisplayScale) }
+                item.chosen = hosts.displayScales.firstIndex(of: preferences.displayScale)
+                out.options.append(item)
             }
         }
         return out
+    }
+
+    /// Picks entry `index` of a row's list (`Sheet.Item.choices`): the display scale.
+    public func choose(row: Int, index: Int, hosts: ClientSession.HostList, preferences: ClientPreferences) -> Action {
+        let rows = Self.rows(hosts: hosts)
+        guard rows.indices.contains(row), rows[row] == .displayScale, hosts.displayScales.indices.contains(index) else { return .none }
+        var p = preferences
+        p.displayScale = hosts.displayScales[index]
+        return p == preferences ? .none : .setPreferences(p)
+    }
+
+    /// "3× · this screen's size", "2× · more room": a scale in the list, against the device screen's own.
+    static func scaleChoiceTitle(_ scale: UInt16, native: UInt16) -> String {
+        scaleText(scale) + (scale == native ? " · this screen's size" : scale < native ? " · more room" : " · larger")
+    }
+
+    /// The scale after `current` among `offered` (hundredths, ascending), `step` along, wrapping: from the
+    /// offered scale nearest `current` when it isn't one of them.
+    static func nextScale(after current: UInt16, in offered: [UInt16], by step: Int) -> UInt16 {
+        guard !offered.isEmpty else { return current }
+        let at = offered.firstIndex(of: current)
+            ?? offered.indices.min { abs(Int(offered[$0]) - Int(current)) < abs(Int(offered[$1]) - Int(current)) }!
+        let moved = offered.firstIndex(of: current) == nil ? at : at + step
+        return offered[((moved % offered.count) + offered.count) % offered.count]
+    }
+
+    /// "2×" (hundredths in), with the desktop's size in points where the connection says it, and what the host
+    /// applied when that differs from the choice.
+    static func scaleValue(_ scale: UInt16, hosts: ClientSession.HostList, info: ClientSession.ConnectionInfo?) -> String {
+        var text = scaleText(scale)
+        if hosts.displayScale != 0, hosts.displayScale != scale {
+            text += " (host: \(scaleText(hosts.displayScale)))"
+        } else if let info, info.displayPointWidth > 0 {
+            text += " · \(info.displayPointWidth)×\(info.displayPointHeight) pt"
+        }
+        return text
+    }
+
+    static func scaleText(_ hundredths: UInt16) -> String {
+        let whole = hundredths / 100, fraction = hundredths % 100
+        if fraction == 0 { return "\(whole)×" }
+        return fraction % 10 == 0 ? "\(whole).\(fraction / 10)×" : "\(whole).\(String(format: "%02d", fraction))×"
     }
 
     /// The cheat sheet. Where a host's systems differ: the Mac's, then Linux's (GNOME).

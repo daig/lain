@@ -107,15 +107,22 @@ public struct ChannelAccept: WireMessage {
 public struct Hello: WireMessage {
     public static let type = MessageType.hello
     public var deviceModel: String
+    /// The display the client asks for, in pixels, long side first.
     public var pixelWidth: UInt32
     public var pixelHeight: UInt32
+    /// The client screen's own pixels per point (2 on an iPad, 3 on an iPhone): what it is, not what it
+    /// asks for (`desiredScale`).
     public var scale: UInt8
     public var maxRefreshRate: UInt16
     public var decodeCapabilities: DecodeCapabilities
     public var keyboardType: KeyboardType
+    /// v7: the pixels per point the client wants the host's display at, in hundredths (200: 2×, the desktop
+    /// an iPad has always had); 0: no preference, the host's own. The host applies the nearest scale it
+    /// supports and says which in `HelloAck.displayScale`. Advisory: dropped for an older host.
+    public var desiredScale: UInt16
 
     public init(deviceModel: String, pixelWidth: UInt32, pixelHeight: UInt32, scale: UInt8, maxRefreshRate: UInt16,
-                decodeCapabilities: DecodeCapabilities, keyboardType: KeyboardType) {
+                decodeCapabilities: DecodeCapabilities, keyboardType: KeyboardType, desiredScale: UInt16 = 0) {
         self.deviceModel = deviceModel
         self.pixelWidth = pixelWidth
         self.pixelHeight = pixelHeight
@@ -123,17 +130,20 @@ public struct Hello: WireMessage {
         self.maxRefreshRate = maxRefreshRate
         self.decodeCapabilities = decodeCapabilities
         self.keyboardType = keyboardType
+        self.desiredScale = desiredScale
     }
 
     public func encode(into w: inout ByteWriter) {
         w.string(deviceModel); w.u32(pixelWidth); w.u32(pixelHeight); w.u8(scale)
         w.u16(maxRefreshRate); w.u32(decodeCapabilities.rawValue); w.u8(keyboardType.rawValue)
+        w.since(7, "desiredScale", desiredScale, default: 0, lowering: .drop) { $0.u16($1) }
     }
 
     public init(from r: inout ByteReader) throws(ProtocolError) {
         deviceModel = try r.string(); pixelWidth = try r.u32(); pixelHeight = try r.u32()
         scale = try r.u8(); maxRefreshRate = try r.u16()
         decodeCapabilities = DecodeCapabilities(rawValue: try r.u32()); keyboardType = try r.enumValue(KeyboardType.self)
+        desiredScale = try r.since(7, default: 0) { r throws(ProtocolError) in try r.u16() }
     }
 }
 
@@ -161,12 +171,17 @@ public struct HelloAck: WireMessage {
     public var hostId: String
     /// The Mac's computer name, for the client's status.
     public var hostName: String
+    /// v7: the display's pixels per point, in hundredths (200: 2×); 0: not said (an older host).
+    public var displayScale: UInt16
+    /// v7: every scale the host can make this client's display at, in hundredths, ascending: what the client
+    /// may ask for in `Hello.desiredScale` (on its next connection). Empty: the host decides alone.
+    public var displayScales: [UInt16]
 
     public init(codec: VideoCodec, chroma: ChromaFormat, bitDepth: UInt8, displayMode: DisplayMode, bitrate: UInt32,
                 refreshRate: UInt16, displayPointWidth: UInt32, displayPointHeight: UInt32, audioSampleRate: UInt32,
                 audioChannels: UInt8, audioEncoding: AudioEncoding, doubleClickIntervalMs: UInt32,
                 keyRepeatDelayMs: UInt32, keyRepeatIntervalMs: UInt32, macInputSource: String, hostId: String = "",
-                hostName: String = "") {
+                hostName: String = "", displayScale: UInt16 = 0, displayScales: [UInt16] = []) {
         self.codec = codec
         self.chroma = chroma
         self.bitDepth = bitDepth
@@ -184,13 +199,24 @@ public struct HelloAck: WireMessage {
         self.macInputSource = macInputSource
         self.hostId = hostId
         self.hostName = hostName
+        self.displayScale = displayScale
+        self.displayScales = displayScales
     }
+
+    /// At most this many scales (a list longer than this is malformed).
+    public static let maxDisplayScales = 32
 
     public func encode(into w: inout ByteWriter) {
         w.u8(codec.rawValue); w.u8(chroma.rawValue); w.u8(bitDepth); w.u8(displayMode.rawValue); w.u32(bitrate)
         w.u16(refreshRate); w.u32(displayPointWidth); w.u32(displayPointHeight); w.u32(audioSampleRate)
         w.u8(audioChannels); w.u8(audioEncoding.rawValue); w.u32(doubleClickIntervalMs); w.u32(keyRepeatDelayMs)
         w.u32(keyRepeatIntervalMs); w.string(macInputSource); w.string(hostId); w.string(hostName)
+        w.since(7, "displayScale", displayScale, default: 0, lowering: .drop) { $0.u16($1) }
+        w.since(7, "displayScales", displayScales, default: [], lowering: .drop) { w, scales in
+            let kept = scales.prefix(Self.maxDisplayScales)
+            w.u8(UInt8(kept.count))
+            for s in kept { w.u16(s) }
+        }
     }
 
     public init(from r: inout ByteReader) throws(ProtocolError) {
@@ -200,6 +226,14 @@ public struct HelloAck: WireMessage {
         audioChannels = try r.u8(); audioEncoding = try r.enumValue(AudioEncoding.self)
         doubleClickIntervalMs = try r.u32(); keyRepeatDelayMs = try r.u32(); keyRepeatIntervalMs = try r.u32()
         macInputSource = try r.string(); hostId = try r.string(); hostName = try r.string()
+        displayScale = try r.since(7, default: 0) { r throws(ProtocolError) in try r.u16() }
+        displayScales = try r.since(7, default: []) { r throws(ProtocolError) in
+            let count = Int(try r.u8())
+            guard count <= Self.maxDisplayScales else { throw .malformed("\(count) display scales") }
+            var scales: [UInt16] = []
+            for _ in 0..<count { scales.append(try r.u16()) }
+            return scales
+        }
     }
 }
 

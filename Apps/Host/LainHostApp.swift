@@ -71,13 +71,6 @@ struct LainHostApp: App {
                 Button("Resume Video") { host.resumeVideo() }
             }
             Divider()
-            Menu("Display Scale") {
-                ForEach(HostPreferences.scaleChoices, id: \.self) { scale in
-                    Button((host.preferences.displayScale == scale ? "✓ " : "") + HostController.scaleTitle(scale)) {
-                        host.update { $0.displayScale = scale }
-                    }
-                }
-            }
             Menu("Color") {
                 ForEach(HostPreferences.ColorFormat.allCases, id: \.self) { format in
                     Button((host.preferences.colorFormat == format ? "✓ " : "") + format.title) {
@@ -246,9 +239,13 @@ final class HostController {
             return ["No video: \(session.videoError ?? "starting")"]
         }
         // Fixed for the session: live numbers would rebuild the menu every second (the iPad's HUD has them).
+        // The scale is the device's to choose (v7, in lain's settings there); an older device gets this Mac's.
+        let scale = session.displayScale.map { c in
+            " at \(scaleText(c.applied)), \(c.askedFor ? "chosen on the device" : "this Mac's default")"
+        } ?? ""
         return [
             "Video \(d.pixelWidth)×\(d.pixelHeight) px, \(v.chroma == .yuv444 ? "4:4:4 10-bit" : "4:2:0"), \(d.refreshRate) Hz",
-            "lain display \(Int(d.bounds.width))×\(Int(d.bounds.height)) points",
+            "lain display \(Int(d.bounds.width))×\(Int(d.bounds.height)) points" + scale,
         ]
     }
 
@@ -276,14 +273,9 @@ final class HostController {
         session?.resumeVideo()
     }
 
-    nonisolated static func scaleTitle(_ scale: Double) -> String {
-        let spec = { var s = VirtualDisplay.Spec(); s.scale = scale; return s }()
-        let name = switch scale {
-        case ..<1.9: "More Space"
-        case 1.9..<2.1: "Default"
-        default: "Larger"
-        }
-        return "\(name): \(spec.pointWidth)×\(spec.pointHeight)"
+    /// "2×", "1.75×".
+    nonisolated static func scaleText(_ scale: Double) -> String {
+        (scale * 100).rounded().truncatingRemainder(dividingBy: 100) == 0 ? "\(Int(scale))×" : "\(scale.formatted(.number.precision(.fractionLength(0...2))))×"
     }
 
     nonisolated static func keepAliveTitle(_ seconds: Int) -> String {
