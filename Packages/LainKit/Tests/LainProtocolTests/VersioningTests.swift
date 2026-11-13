@@ -234,8 +234,8 @@ struct Widget: WireMessage, Equatable {
         #expect(ProtocolFeature.hostSetup.isSupported(at: 4))
         #expect(!ProtocolFeature.hostStats.isSupported(at: 4))
         #expect(ProtocolFeature.hostStats.isSupported(at: 5))
-        #expect(ProtocolFeature.missing(at: 4) == [.hostStats, .textInput])
-        #expect(ProtocolFeature.missing(at: 5) == [.textInput])
+        #expect(ProtocolFeature.missing(at: 4) == [.hostStats, .textInput, .audio])
+        #expect(ProtocolFeature.missing(at: 5) == [.textInput, .audio])
         #expect(ProtocolFeature.missing(at: LainProtocol.newestVersion).isEmpty)
     }
 

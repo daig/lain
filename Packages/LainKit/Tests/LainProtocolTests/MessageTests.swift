@@ -98,7 +98,8 @@ import Testing
         #expect(throws: ProtocolError.unknownType(0x22)) { try MessageCodec.decode(mutated(3, 0x22)) }
         #expect(throws: ProtocolError.unknownType(0xFE)) { try MessageCodec.decode(mutated(3, 0xFE)) }
         // Defined in v1–v2 but never sent, so left out of v3 and reserved (PROTOCOL-VERSIONING §7).
-        for pruned: UInt8 in [0x03, 0x04, 0x08, 0x09, 0x0A, 0x30, 0x31, 0x60, 0x61] {
+        // (0x30 and 0x31, the audio messages, came back in v6.)
+        for pruned: UInt8 in [0x03, 0x04, 0x08, 0x09, 0x0A, 0x60, 0x61] {
             #expect(throws: ProtocolError.unknownType(pruned)) { try MessageCodec.decode(mutated(3, pruned)) }
         }
     }

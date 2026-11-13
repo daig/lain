@@ -1006,6 +1006,7 @@ final class HostConnection: Sendable {
             // routing when it started; without video they're dropped.
             link.video.setHandler { [video] env in video?.handleVideo(env) }
             link.audio.setHandler { _ in }
+            startAudio()
             // Realtime carries the input: the session ends when it closes, after its last message has
             // been handled. If video or audio drop alone, close the rest shortly after.
             link.realtime.setCloseHandler { [self] _ in signalEnded() }
@@ -1016,6 +1017,33 @@ final class HostConnection: Sendable {
             }
             startTimers()
         }
+    }
+
+    /// v6: the Mac's sound goes to the iPad on the audio channel, from the screen capture, and the Mac's own
+    /// speakers are muted meanwhile. Nothing to a peer without `ProtocolFeature.audio`, or without video.
+    private func startAudio() {
+        guard ProtocolFeature.audio.isSupported(at: link.version), let source = video?.frameSource as? any AudioSource else { return }
+        let channel = link.audio
+        // The iPad pings on this channel to line its clock up with ours, for its sound-delay reading.
+        channel.setHandler { [weak channel] env in
+            guard case .ping(let p) = env.message else { return }
+            let now = MonotonicClock.now()
+            channel?.send(.pong(Pong(id: p.id, pingSentAtNs: p.sentAtNs, receivedAtNs: now, sentAtNs: now)))
+        }
+        channel.send(.audioConfig(source.audioFormat))
+        source.setAudioHandler { samples, captureNs in
+            channel.send(.audioPacket(AudioPacket(captureTimeNs: captureNs, samples: samples)))
+        }
+        #if os(macOS)
+        OutputMute.shared.begin()
+        #endif
+    }
+
+    private func stopAudio() {
+        (video?.frameSource as? any AudioSource)?.setAudioHandler(nil)
+        #if os(macOS)
+        OutputMute.shared.end()
+        #endif
     }
 
     private func signalEnded() {
@@ -1029,6 +1057,7 @@ final class HostConnection: Sendable {
     /// Idempotent teardown: stop video (the virtual display goes in the background), stop sampling,
     /// close the link, release everything, drop the assertion.
     func finish() {
+        stopAudio()
         video?.stop()
         timers.withLock { t in
             for timer in t { timer.cancel() }

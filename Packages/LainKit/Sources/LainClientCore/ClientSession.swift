@@ -84,6 +84,10 @@ public final class ClientSession: Sendable {
     ///   - wifi: nil keeps the session USB-only.
     ///   - versions: the protocol versions offered (PROTOCOL-VERSIONING §3.2); nil: `VersionList.offered`.
     ///   - onStatus: called in order on the session's queue; hop to the main queue for UI.
+    /// What plays the host's sound (v6 `AudioConfig` and `AudioPacket`); nil drops it. The player is handed
+    /// the audio channel's messages on that channel's queue.
+    public func setAudioPlayer(_ player: ClientAudioPlayer?) { core.audioSink.player.withLock { $0 = player } }
+
     public init(port: UInt16? = nil, secrets: some SecretStore, hello: Hello,
                 input: ClientInput = ClientInput(), video: ClientVideoPipeline? = nil, wifi: ClientWiFiConfig? = nil,
                 versions: VersionList? = nil, onStatus: @escaping @Sendable (Status) -> Void) throws {
@@ -231,6 +235,11 @@ final class SessionCore: @unchecked Sendable {
     let hello: Hello
     let input: ClientInput
     let video: ClientVideoPipeline?
+    /// Where the audio channel's messages go (the player); nil drops them.
+    let audioSink = AudioSink()
+    final class AudioSink: Sendable {
+        let player = Mutex<ClientAudioPlayer?>(nil)
+    }
     let wifi: WiFiLoop?
     let log = Telemetry.logger("client")
     private let onStatus: @Sendable (ClientSession.Status) -> Void
@@ -444,7 +453,12 @@ final class SessionCore: @unchecked Sendable {
             let n = state.frames.add(1, ordering: .relaxed).newValue
             if n % 30 == 0 { state.update({ $0.framesReceived = n }, publish: publishInfo) }
         }
-        link.audio.setHandler { _ in }
+        let audioSink = audioSink
+        let audioChannel = link.audio
+        audioChannel.setHandler { [weak audioChannel] env in
+            guard let channel = audioChannel else { return }
+            audioSink.player.withLock { $0 }?.handle(env.message, on: channel)
+        }
         realtime.setCloseHandler { [weak self] _ in
             guard let self else { return }
             queue.async { self.closed(generation: g) }

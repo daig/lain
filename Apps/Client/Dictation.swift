@@ -93,7 +93,8 @@ final class Dictation {
         try Task.checkCancellation()
 
         let session = AVAudioSession.sharedInstance()
-        try session.setCategory(.record, mode: .measurement)
+        // Playing and recording, so the host's sound (muted while listening) comes back afterwards.
+        try session.setCategory(.playAndRecord, mode: .measurement, options: [.defaultToSpeaker, .mixWithOthers])
         try session.setActive(true)
         let engine = AVAudioEngine()
         let format = engine.inputNode.outputFormat(forBus: 0)
@@ -147,7 +148,8 @@ final class Dictation {
         engine?.stop()
         feed?.finish()
         (engine, feed, analyzer) = (nil, nil, nil)
-        try? AVAudioSession.sharedInstance().setActive(false, options: .notifyOthersOnDeactivation)
+        // Back to playing only (the host's sound), with the session left active.
+        try? AVAudioSession.sharedInstance().setCategory(.playback, mode: .default, options: [.mixWithOthers])
     }
 
     private struct Failure: LocalizedError {

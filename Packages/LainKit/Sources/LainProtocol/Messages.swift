@@ -584,6 +584,36 @@ public struct CursorWarp: WireMessage {
     public init(from r: inout ByteReader) throws(ProtocolError) { x = try r.f64(); y = try r.f64() }
 }
 
+// MARK: - Audio (H→C, the audio channel)
+
+/// v6: the format of the `AudioPacket`s that follow, sent before the first and again if it changes. Only to
+/// peers with `ProtocolFeature.audio`.
+public struct AudioConfig: WireMessage {
+    public static let type = MessageType.audioConfig
+    public var sampleRate: UInt32
+    public var channels: UInt8
+    public var encoding: AudioEncoding
+    public init(sampleRate: UInt32, channels: UInt8, encoding: AudioEncoding) {
+        self.sampleRate = sampleRate; self.channels = channels; self.encoding = encoding
+    }
+    public func encode(into w: inout ByteWriter) { w.u32(sampleRate); w.u8(channels); w.u8(encoding.rawValue) }
+    public init(from r: inout ByteReader) throws(ProtocolError) {
+        sampleRate = try r.u32(); channels = try r.u8(); encoding = try r.enumValue(AudioEncoding.self)
+    }
+}
+
+/// v6: a few milliseconds of the host's sound in the last `AudioConfig`'s format (interleaved), sent as it is
+/// captured. Uncompressed: no codec delay, and small next to the video.
+public struct AudioPacket: WireMessage {
+    public static let type = MessageType.audioPacket
+    /// When the host captured the first sample (its `CLOCK_UPTIME_RAW`, ns).
+    public var captureTimeNs: UInt64
+    public var samples: [UInt8]
+    public init(captureTimeNs: UInt64, samples: [UInt8]) { self.captureTimeNs = captureTimeNs; self.samples = samples }
+    public func encode(into w: inout ByteWriter) { w.u64(captureTimeNs); w.blob(samples) }
+    public init(from r: inout ByteReader) throws(ProtocolError) { captureTimeNs = try r.u64(); samples = try r.blob() }
+}
+
 // MARK: - Input (C→H)
 
 /// A physical key (D18): HID usage page + usage; the host maps it to a macOS keycode.

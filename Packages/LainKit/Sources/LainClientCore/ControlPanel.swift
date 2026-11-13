@@ -149,7 +149,8 @@ public struct ControlPanel: Sendable, Equatable {
 
     /// The panel's lines, top to bottom.
     public func lines(info: ClientSession.ConnectionInfo?, video: VideoStats, host: HostStats?,
-                      hosts: ClientSession.HostList, preferences: ClientPreferences) -> [Line] {
+                      hosts: ClientSession.HostList, preferences: ClientPreferences,
+                      sound: ClientAudioPlayer.Delay? = nil) -> [Line] {
         let rows = Self.rows(hosts: hosts)
         let selected = min(selection, rows.count - 1)
         var out: [Line] = []
@@ -168,6 +169,7 @@ public struct ControlPanel: Sendable, Equatable {
         add(Self.streamLine(video))
         add("iPad   " + Self.iPadLine(video))
         add("Host   " + Self.hostLine(info: info, host: host), host == nil ? .dim : .text)
+        if let sound { add("Sound  " + Self.soundLine(sound)) }
 
         add("HOSTS", .heading)
         if hosts.hosts.isEmpty {
@@ -216,6 +218,13 @@ public struct ControlPanel: Sendable, Equatable {
         ("touch the screen", "press where you touch · two fingers: scroll, or tap to right-click"),
         ("trackpad areas", "move · tap: click · hold still, then move: drag (no keyboard attached)"),
     ]
+
+    /// "62 ms behind (arrives 18, worst 31 · buffer 38 of 40 · output 6) · gaps 0 · dropped 0 ms"
+    static func soundLine(_ d: ClientAudioPlayer.Delay) -> String {
+        func ms(_ v: Double) -> String { String(Int(v.rounded())) }
+        return "\(ms(d.totalMs)) ms behind (arrives \(ms(d.arrivalMs)), worst \(ms(d.worstArrivalMs)) · buffer \(ms(d.bufferedMs)) of \(ms(d.targetMs))"
+            + " · output \(ms(d.outputMs))) · gaps \(d.underruns) · dropped \(ms(d.droppedMs)) ms"
+    }
 
     static func cycle<T: CaseIterable & Equatable>(_ value: T, by step: Int) -> T {
         let all = Array(T.allCases)

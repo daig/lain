@@ -5,7 +5,7 @@
 
 Use an iPad Pro and its Magic Keyboard as your computer's display, keyboard and trackpad. The computer (the
 *host*) streams its screen to the iPad with low latency and takes input back, over a USB-C cable or Wi-Fi on
-your local network. Hosts run on a Mac or on Linux.
+your local network. A Mac host plays its sound through the iPad too. Hosts run on a Mac or on Linux.
 
 ## What you need
 
@@ -48,7 +48,14 @@ lain also works with the iPad on its own: touch, an on-screen keyboard and dicta
 
 With a Magic Keyboard attached, none of this shows; press Globe twice to dictate.
 
-Typing and dictation need a host from this version or later.
+Typing and dictation need Mac host 0.2 or later; the Linux host doesn't have them yet.
+
+### Sound
+
+A Mac host (0.2 or later) plays its sound on the iPad, and mutes its own speakers while the iPad is
+connected. It is tuned for alerts and speech, not music: about a tenth of a second behind on a steady
+connection, and more on Wi-Fi that stalls, where the iPad holds extra sound so that it doesn't stutter.
+lain's panel shows the delay under **Sound**.
 
 ## Install a host
 

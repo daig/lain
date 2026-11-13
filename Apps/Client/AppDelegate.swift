@@ -30,6 +30,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     var window: UIWindow?
     private let input = ClientInput()
     private let video = ClientVideoPipeline()
+    /// The host's sound, played on the iPad.
+    private let audio = ClientAudioPlayer()
     private var session: ClientSession?
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
@@ -81,6 +83,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
                 DispatchQueue.main.async { MainActor.assumeIsolated { view?.status = ClientStatus(status) } }
             }
             view.session = session
+            view.audio = audio
+            session?.setAudioPlayer(audio)
         } catch {
             view.status = .failed("\(error)")
         }

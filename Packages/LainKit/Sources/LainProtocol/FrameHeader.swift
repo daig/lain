@@ -2,7 +2,7 @@
 /// `ChannelAccept`, `Pair`, and `Error` before a version is agreed), framed in header version 0xFF; and
 /// the session messages, framed in the negotiated version. Reserved, never reuse: 0x03 `Start`, 0x04
 /// `Stop`, 0x08 `Stats`, 0x09 `ConfigUpdate`, 0x0A `DisplayChanged`, 0x22 `VideoFragment`, 0x23
-/// `VideoNack`, 0x30 `AudioConfig`, 0x31 `AudioPacket`, 0x60 `ProbeRequest`, 0x61 `ProbeAck` (defined in
+/// `VideoNack`, 0x60 `ProbeRequest`, 0x61 `ProbeAck` (defined in
 /// v1–v2 but never sent; each comes back in the version that first uses it).
 public enum MessageType: UInt8, Sendable, CaseIterable {
     case channelHello = 0x00
@@ -18,6 +18,8 @@ public enum MessageType: UInt8, Sendable, CaseIterable {
     /// v5: the iPad asks for host stats (`statsRequest`), and the Mac sends them (`hostStats`).
     case statsRequest = 0x10, hostStats = 0x11
     case videoConfig = 0x20, videoFrame = 0x21, frameAck = 0x24
+    /// v6: the host's sound, on the audio channel.
+    case audioConfig = 0x30, audioPacket = 0x31
     case cursorShape = 0x40, cursorSelect = 0x41, cursorWarp = 0x42
     case keyEvent = 0x50, pointerMove = 0x51, pointerButton = 0x52, scroll = 0x53, gesture = 0x54, releaseAll = 0x55
     /// v6: text for the host to type (dictation, the on-screen keyboard).
@@ -45,7 +47,7 @@ public enum MessageType: UInt8, Sendable, CaseIterable {
         switch self {
         case .hostSetup: 4
         case .statsRequest, .hostStats: 5
-        case .textInput: 6
+        case .textInput, .audioConfig, .audioPacket: 6
         default: 3
         }
     }

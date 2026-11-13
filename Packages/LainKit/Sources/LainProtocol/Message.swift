@@ -14,6 +14,7 @@ public enum Message: Sendable, Equatable {
     case keyEvent(KeyEvent), pointerMove(PointerMove), pointerButton(PointerButton), scroll(Scroll), gesture(Gesture)
     case releaseAll(ReleaseAll)
     case textInput(TextInput)
+    case audioConfig(AudioConfig), audioPacket(AudioPacket)
 
     public var payload: any WireMessage {
         switch self {
@@ -43,6 +44,8 @@ public enum Message: Sendable, Equatable {
         case .gesture(let m): m
         case .releaseAll(let m): m
         case .textInput(let m): m
+        case .audioConfig(let m): m
+        case .audioPacket(let m): m
         }
     }
 
@@ -89,6 +92,8 @@ public enum Message: Sendable, Equatable {
         case .gesture: m = .gesture(try Gesture(from: &r))
         case .releaseAll: m = .releaseAll(try ReleaseAll(from: &r))
         case .textInput: m = .textInput(try TextInput(from: &r))
+        case .audioConfig: m = .audioConfig(try AudioConfig(from: &r))
+        case .audioPacket: m = .audioPacket(try AudioPacket(from: &r))
         }
         try r.finish()
         return m

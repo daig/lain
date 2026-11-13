@@ -9,20 +9,22 @@ public enum ProtocolFeature: CaseIterable, Sendable {
     case hostStats
     /// v6: the iPad sends text for the host to type (`TextInput`): dictation and the on-screen keyboard.
     case textInput
+    /// v6: the host sends its sound (`AudioConfig`, `AudioPacket`) and the iPad plays it.
+    case audio
 
     /// The first version with the feature.
     public var since: UInt8 {
         switch self {
         case .hostSetup: 4
         case .hostStats: 5
-        case .textInput: 6
+        case .textInput, .audio: 6
         }
     }
 
     /// The first version without it, when a newer behavior replaced it; nil while current.
     public var until: UInt8? {
         switch self {
-        case .hostSetup, .hostStats, .textInput: nil
+        case .hostSetup, .hostStats, .textInput, .audio: nil
         }
     }
 
@@ -34,6 +36,7 @@ public enum ProtocolFeature: CaseIterable, Sendable {
         case .hostSetup: "setup status on the iPad"
         case .hostStats: "the Mac's video stats on the iPad"
         case .textInput: "dictation and the on-screen keyboard"
+        case .audio: "the computer's sound on the iPad"
         }
     }
 

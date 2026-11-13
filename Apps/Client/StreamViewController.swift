@@ -28,6 +28,9 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         didSet { session?.setNetwork(path: preferences.wifiPath, radioPriority: preferences.radioPriority) }
     }
 
+    /// The host's sound: silenced while dictation listens, so the microphone doesn't hear it.
+    var audio: ClientAudioPlayer?
+
     var status = ClientStatus.waitingForMac(wifi: false) {
         didSet {
             UIApplication.shared.isIdleTimerDisabled = status.isConnected
@@ -352,7 +355,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         let stats = stats ?? panelView.lastStats
         panelView.lastStats = stats
         panelView.show(panel.lines(info: info, video: stats, host: session?.hostStats, hosts: hostList,
-                                   preferences: preferences))
+                                   preferences: preferences, sound: audio?.delay))
     }
 
     private var hostList: ClientSession.HostList { session?.hostList() ?? ClientSession.HostList() }
@@ -840,6 +843,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         dictationPill.configuration?.title = title
         dictationPill.configuration?.baseBackgroundColor = state == .listening ? UIColor.systemRed.withAlphaComponent(0.85) : UIColor(white: 0.08, alpha: 0.9)
         keyCapture.keyRow.setDictating(dictation.isActive)
+        audio?.setMuted(dictation.isActive)
         menuButton.setImage(UIImage(systemName: dictation.isActive ? "mic.fill" : "mic"), for: .normal)
         menuButton.backgroundColor = dictation.isActive ? UIColor.systemRed.withAlphaComponent(0.85) : UIColor(white: 0.1, alpha: 0.55)
         if case .failed = state {

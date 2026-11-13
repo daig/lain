@@ -55,6 +55,8 @@ public enum ProtocolSamples {
         .scroll(Scroll(dx: 0.5, dy: -12.25, phase: .ended, momentumPhase: .changed)),
         .gesture(Gesture(kind: .rotate, phase: .changed, value: 0.125)),
         .releaseAll(ReleaseAll(reason: .pointerLockLost)),
+        .audioConfig(AudioConfig(sampleRate: 48_000, channels: 2, encoding: .pcm16LE)),
+        .audioPacket(AudioPacket(captureTimeNs: 123_456_789, samples: [0x01, 0x80, 0xFF, 0x7F, 0x00, 0x00, 0x34, 0x12])),
         .textInput(TextInput(text: "naïve café ✓\n\t{x}", modifiers: [.control, .option])),
     ]
 }
