@@ -83,6 +83,9 @@ pub struct Config {
     /// After GNOME's sharing indicator stops lain's display, bring video back by itself
     /// (`HostConfig::resume_after_stop`). On by default: Stop has no use for this app.
     pub resume_after_stop: bool,
+    /// The computer's sound plays on the iPad (`HostConfig::sound`; Swift: `HostPreferences.sound`). On by
+    /// default; it applies at once. The computer's own output isn't muted meanwhile.
+    pub sound: bool,
     /// The panel-barrier detour of pointer moves (`lain_gnome::Barrier`; no Swift counterpart).
     pub barrier: BarrierConfig,
     pub input: InputSection,
@@ -99,6 +102,7 @@ impl Default for Config {
             keep_alive_seconds: 30,
             scale: None,
             resume_after_stop: true,
+            sound: true,
             barrier: BarrierConfig { detour: barrier.detour, band: barrier.band },
             input: InputSection::from(&InputConfig::default()),
         }
@@ -481,6 +485,7 @@ impl Config {
             input: self.input_config(),
             display_keep_alive: std::time::Duration::from_secs(u64::from(self.keep_alive_seconds)),
             resume_after_stop: self.resume_after_stop,
+            sound: self.sound,
             ..HostConfig::default()
         }
     }

@@ -50,7 +50,8 @@ use lain_platform::{
 };
 use tokio::sync::{mpsc, watch};
 
-const IPAD: DisplaySpec = DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, refresh_hz: 120 };
+const IPAD: DisplaySpec =
+    DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, desired_scale: 0, refresh_hz: 120 };
 
 fn encode_config() -> EncodeConfig {
     EncodeConfig {

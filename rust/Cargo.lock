@@ -909,6 +909,7 @@ dependencies = [
  "tokio",
  "toml",
  "tracing",
+ "xkbcommon",
  "zbus",
 ]
 
@@ -938,6 +939,7 @@ dependencies = [
  "lain-host",
  "lain-input",
  "lain-link",
+ "lain-linux-audio",
  "lain-linux-system",
  "lain-linux-video",
  "lain-media",
@@ -980,6 +982,16 @@ dependencies = [
  "sha2 0.11.1",
  "socket2",
  "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "lain-linux-audio"
+version = "0.1.0"
+dependencies = [
+ "lain-platform",
+ "pipewire",
  "tokio",
  "tracing",
 ]
@@ -2308,6 +2320,22 @@ name = "wit-bindgen"
 version = "0.57.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "1ebf944e87a7c253233ad6766e082e3cd714b5d03812acc24c318f549614536e"
+
+[[package]]
+name = "xkbcommon"
+version = "0.9.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "a7a974f48060a14e95705c01f24ad9c3345022f4d97441b8a36beb7ed5c4a02d"
+dependencies = [
+ "libc",
+ "xkeysym",
+]
+
+[[package]]
+name = "xkeysym"
+version = "0.2.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "b9cc00251562a284751c9973bace760d86c0276c471b4be569fe6b068ee97a56"
 
 [[package]]
 name = "zbus"

@@ -55,11 +55,19 @@ impl<T: DisplayBackend> DisplayBackend for Arc<T> {
     fn cursor_location(&self) -> Option<PointF> {
         (**self).cursor_location()
     }
+
+    fn applied_scale(&self) -> Option<f64> {
+        (**self).applied_scale()
+    }
 }
 
 impl<T: InputBackend + ?Sized> InputBackend for Arc<T> {
     fn apply(&self, actions: &[InputAction]) {
         (**self).apply(actions)
+    }
+
+    fn text_key(&self, c: char) -> Option<crate::TextKey> {
+        (**self).text_key(c)
     }
 }
 
@@ -163,5 +171,17 @@ mod tests {
 
         display(&Arc::new(FakeDisplay::new()));
         video(&Arc::new(FakeVideo::new(FakeClock::new(0))));
+    }
+}
+
+impl<T: crate::AudioBackend> crate::AudioBackend for Arc<T> {
+    type Capture = T::Capture;
+
+    fn start(
+        &self,
+        format: crate::AudioFormat,
+        chunk_ms: u32,
+    ) -> impl Future<Output = Result<(Self::Capture, mpsc::Receiver<crate::AudioChunk>)>> + Send {
+        (**self).start(format, chunk_ms)
     }
 }

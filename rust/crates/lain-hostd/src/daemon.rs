@@ -126,6 +126,16 @@ impl<P: Platform> DaemonHandle<P> {
         self.session.set_resume_after_stop(on)
     }
 
+    /// Whether the computer's sound plays on the iPad ([`lain_host::HostSession::sound`]).
+    pub fn sound(&self) -> bool {
+        self.session.sound()
+    }
+
+    /// Changes it at run time.
+    pub fn set_sound(&self, on: bool) {
+        self.session.set_sound(on)
+    }
+
     /// How long lain's display outlives the iPad leaving ([`lain_host::HostSession::display_keep_alive`]).
     pub fn display_keep_alive(&self) -> Duration {
         self.session.display_keep_alive()

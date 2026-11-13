@@ -66,7 +66,7 @@ apply; keep-alive applies to the next display kept.
 Note on scale: Linux makes lain's display at 2× by default, as the Mac host does (1376×1032 points on a 13" iPad
 Pro). GNOME draws its interface larger than macOS at the same scale, which is why Linux needed the setting first.
 
-**Since protocol v7 the scale is the client's** (Mac host: done; Linux: to do). The device asks for one in
+**Since protocol v7 the scale is the client's** (Mac host: done; Linux: done, not yet on hardware). The device asks for one in
 `Hello.desiredScale` (hundredths: 200 = 2×; 0 = no preference) from a setting kept on the device, so each
 device has its own; the iPad and Duo default to 200, the desktop they had before. The host makes the display at
 the nearest scale it supports (on a tie, the larger) and says so in `HelloAck.displayScale`, with every scale it
@@ -76,8 +76,14 @@ for none (any v6 client) gets the host's own scale, the setting above, which the
 (it shows the scale in use, and whether the device chose it). `Hello.scale` stays the screen's native scale,
 for information. Mac host: every quarter from 1 to 3 whose 2× backing store fits 3840 px
 (`VirtualDisplay.Spec.scales`: 1.5–3 for the iPad and the Duo); the display keeper's key includes the scale, so
-a reconnect at the same scale takes the kept display back without redrawing. Linux: offer the scales the desktop
-can apply (its "closest the desktop supports" set), never one it can't. Code: `DisplayScaleChoice`,
+a reconnect at the same scale takes the kept display back without redrawing. Linux: offers every quarter from 1 to 3 (it renders at the
+panel's pixels, so no backing-store limit), the nearest chosen as on the Mac. Mutter applies a scale n/d only
+if it divides both sides exactly (Mutter 50.1 `for_each_scale`), and Linux video doesn't scale, so a chosen
+scale makes lain's display the largest even size within the device's that the scale divides: the Duo's
+2853×2007 is 2852×2006 at 2× (or with no choice), 2850×2004 at 3×, 2842×2002 at 1.75×; the device fits the
+stream to its screen. A device that chooses none gets the owner's `scale` setting, which then no longer
+changes a display a device chose the scale of. Code: `lain-host` `video.rs` (`display_spec`,
+`OFFERED_SCALES`, `size_for_scale`), `lain-gnome` `display.rs`; tests `crates/lain-host/tests/scale.rs`. Code: `DisplayScaleChoice`,
 `StreamedDisplayProvider.scales`, `HostVideoPipeline.displayScale`; tests `DisplayScaleTests`,
 `VersioningTests.displayScalesAreVersionSevenFields`, `DisplayScaleSettingTests`.
 

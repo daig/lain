@@ -21,7 +21,8 @@ use tokio::sync::mpsc;
 use tracing::{info, warn};
 
 use crate::service::{
-    Control, set_keep_alive_persisted, set_resume_after_stop_persisted, set_scale_persisted, set_wifi_persisted,
+    Control, set_keep_alive_persisted, set_resume_after_stop_persisted, set_scale_persisted, set_sound_persisted,
+    set_wifi_persisted,
 };
 
 enum Action {
@@ -31,6 +32,7 @@ enum Action {
     KeepAlive(u32),
     Resume,
     ResumeAfterStop(bool),
+    Sound(bool),
 }
 
 /// The keep-alive choices offered, in seconds.
@@ -63,6 +65,7 @@ struct LainTray {
     /// Video was stopped on the desktop (GNOME's sharing indicator).
     stopped: bool,
     resume_after_stop: bool,
+    sound: bool,
     actions: mpsc::UnboundedSender<Action>,
 }
 
@@ -180,6 +183,17 @@ impl ksni::Tray for LainTray {
         );
         items.push(
             CheckmarkItem {
+                label: "Play Sound on the iPad".into(),
+                checked: self.sound,
+                activate: Box::new(|t: &mut Self| {
+                    let _ = t.actions.send(Action::Sound(!t.sound));
+                }),
+                ..Default::default()
+            }
+            .into(),
+        );
+        items.push(
+            CheckmarkItem {
                 label: "Resume after Stop sharing".into(),
                 checked: self.resume_after_stop,
                 activate: Box::new(|t: &mut Self| {
@@ -220,6 +234,7 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
         keep_alive: 0,
         stopped: false,
         resume_after_stop: false,
+        sound: true,
         actions,
     };
     let handle = match tray.assume_sni_available(true).spawn().await {
@@ -243,6 +258,7 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
             (control.scale_setting(), control.scale_options(), control.keep_alive_seconds());
         let (stopped, resume_after_stop) =
             (control.video_problem() == "capture stopped on the desktop", control.resume_after_stop());
+        let sound = control.sound();
         handle
             .update(|t| {
                 t.connected = s.is_connected();
@@ -258,6 +274,7 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
                 t.keep_alive = keep_alive;
                 t.stopped = stopped;
                 t.resume_after_stop = resume_after_stop;
+                t.sound = sound;
             })
             .await;
         tokio::select! {
@@ -283,6 +300,12 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
                 }
                 Action::ResumeAfterStop(on) => {
                     if let Err(e) = set_resume_after_stop_persisted(&*control, Some(&config), on) {
+                        warn!("tray: {e}");
+                    }
+                }
+                Action::Sound(on) => {
+                    info!(on, "tray: sound on the iPad");
+                    if let Err(e) = set_sound_persisted(&*control, Some(&config), on) {
                         warn!("tray: {e}");
                     }
                 }

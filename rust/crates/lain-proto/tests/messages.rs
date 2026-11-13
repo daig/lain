@@ -27,8 +27,8 @@ fn magic_is_la_in_little_endian() {
 
 #[test]
 fn versions_and_bonjour_service() {
-    assert_eq!(SUPPORTED_VERSIONS, [4, 5]);
-    assert_eq!(NEWEST_VERSION, 5);
+    assert_eq!(SUPPORTED_VERSIONS, [4, 5, 6, 7]);
+    assert_eq!(NEWEST_VERSION, 7);
     assert_eq!(HANDSHAKE_VERSION, 0xFF);
     assert!(*LEGACY_VERSIONS.end() < SUPPORTED_VERSIONS[0]);
     assert_eq!(BONJOUR_SERVICE_TYPE, "_lain._tcp");
@@ -189,7 +189,8 @@ fn answers_a_legacy_peer_in_its_own_version() {
 fn unknown_and_reserved_types() {
     assert_eq!(MessageCodec::decode(&mutated(3, 0x22)), Err(ProtocolError::UnknownType(0x22)));
     assert_eq!(MessageCodec::decode(&mutated(3, 0xFE)), Err(ProtocolError::UnknownType(0xFE)));
-    for pruned in [0x03, 0x04, 0x08, 0x09, 0x0A, 0x23, 0x30, 0x31, 0x60, 0x61] {
+    // (0x30 and 0x31, the audio messages, came back in v6.)
+    for pruned in [0x03, 0x04, 0x08, 0x09, 0x0A, 0x23, 0x60, 0x61] {
         assert_eq!(MessageCodec::decode(&mutated(3, pruned)), Err(ProtocolError::UnknownType(pruned)));
     }
 }

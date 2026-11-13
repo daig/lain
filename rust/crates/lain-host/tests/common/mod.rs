@@ -15,8 +15,8 @@ use lain_link::{
     PairingAccounts, StreamDialer, TransportError, memory_pair,
 };
 use lain_platform::fake::{
-    FakeClock, FakeCursor, FakeDisplay, FakeInput, FakePlatform, FakePower, FakeSettings, FakeSetup, FakeSource,
-    FakeVideo, MemorySecretStore,
+    FakeAudio, FakeClock, FakeCursor, FakeDisplay, FakeInput, FakePlatform, FakePower, FakeSettings, FakeSetup,
+    FakeSource, FakeVideo, MemorySecretStore,
 };
 use lain_platform::{
     Clock, DisplayBackend, DisplaySpec, InputAction, InputSettings, Monitor, Platform, PointF, Result as PResult,
@@ -46,6 +46,7 @@ pub fn hello() -> Hello {
         max_refresh_rate: 120,
         decode_capabilities: DecodeCapabilities::HEVC_MAIN | DecodeCapabilities::HEVC_MAIN_444_10_HARDWARE,
         keyboard_type: KeyboardType::Iso,
+        desired_scale: 0,
     }
 }
 
@@ -201,6 +202,10 @@ impl DisplayBackend for TestDisplay {
     fn cursor_location(&self) -> Option<PointF> {
         self.fake.cursor_location()
     }
+
+    fn applied_scale(&self) -> Option<f64> {
+        self.fake.applied_scale()
+    }
 }
 
 /// [`FakePlatform`]'s fakes with a [`TestDisplay`] and a [`TokioClock`]. Clone it to drive the fakes.
@@ -243,6 +248,7 @@ impl Platform for TestPlatform {
     type Setup = FakeSetup;
     type Secrets = MemorySecretStore;
     type Clock = TokioClock;
+    type Audio = FakeAudio;
 
     fn display(&self) -> &TestDisplay {
         &self.display
@@ -271,6 +277,9 @@ impl Platform for TestPlatform {
     fn clock(&self) -> &TokioClock {
         &self.clock
     }
+    fn audio(&self) -> &FakeAudio {
+        &self.fake.audio
+    }
 }
 
 // Silence an unused-import lint for FakeClock in builds of tests that don't use it.
@@ -287,6 +296,8 @@ pub struct ClientLink {
     pub transport: LinkTransport,
     pub received: mpsc::UnboundedReceiver<Message>,
     pub video_received: mpsc::UnboundedReceiver<Envelope>,
+    /// What the host sends on the audio channel (v6 sound, and pongs).
+    pub audio_received: mpsc::UnboundedReceiver<Message>,
 }
 
 impl ClientLink {
@@ -294,6 +305,7 @@ impl ClientLink {
         let Link { mut realtime, mut video, mut audio, version, transport, .. } = link;
         let (rt_tx, received) = mpsc::unbounded_channel();
         let (video_tx, video_received) = mpsc::unbounded_channel();
+        let (audio_tx, audio_received) = mpsc::unbounded_channel();
         let senders = (realtime.sender(), video.sender(), audio.sender());
         tokio::spawn(async move {
             while let Ok(env) = realtime.recv().await {
@@ -305,8 +317,21 @@ impl ClientLink {
                 let _ = video_tx.send(env);
             }
         });
-        tokio::spawn(async move { while audio.recv().await.is_ok() {} });
-        Self { realtime: senders.0, video: senders.1, audio: senders.2, version, transport, received, video_received }
+        tokio::spawn(async move {
+            while let Ok(env) = audio.recv().await {
+                let _ = audio_tx.send(env.message);
+            }
+        });
+        Self {
+            realtime: senders.0,
+            video: senders.1,
+            audio: senders.2,
+            version,
+            transport,
+            received,
+            video_received,
+            audio_received,
+        }
     }
 
     pub fn send(&self, message: Message) {

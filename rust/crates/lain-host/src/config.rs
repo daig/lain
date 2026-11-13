@@ -44,6 +44,10 @@ pub struct HostConfig {
     /// [`RESUME_AFTER_STOP_MIN_GAP`](crate::RESUME_AFTER_STOP_MIN_GAP), so a desktop that keeps stopping it
     /// doesn't loop.
     pub resume_after_stop: bool,
+    /// The desktop's sound plays on the client (v6 `AudioConfig`, `AudioPacket`); changeable at run time
+    /// ([`HostSession::set_sound`](crate::HostSession::set_sound)). Swift: `HostPreferences.sound` (default on).
+    /// Unlike the Mac host, the computer's own output isn't muted meanwhile.
+    pub sound: bool,
     /// Where adaptive bitrate starts over the network (Swift: 20 Mb/s, from the logs on a weak AWDL link); over
     /// USB it starts at the ceiling, `video.average_bit_rate`, where it rarely moves.
     pub wifi_start_bit_rate: u32,
@@ -60,6 +64,7 @@ impl Default for HostConfig {
             tuning: Tuning::default(),
             display_keep_alive: Duration::ZERO,
             resume_after_stop: false,
+            sound: true,
             wifi_start_bit_rate: 20_000_000,
         }
     }

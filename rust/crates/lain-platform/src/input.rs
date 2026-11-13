@@ -41,6 +41,18 @@ pub enum InputAction {
     ScrollStop { source: ScrollSource },
 }
 
+/// How the desktop's current keyboard layout types one character (v6 `TextInput`): the key, and what must be
+/// held with it to reach the character's level.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub struct TextKey {
+    /// The evdev key code.
+    pub code: u16,
+    /// Shift is held (level 2, or 4 with `level3`).
+    pub shift: bool,
+    /// The evdev key that selects level 3 (AltGr, `ISO_Level3_Shift` in the layout) is held, if `Some`.
+    pub level3: Option<u16>,
+}
+
 /// Performs input on the desktop.
 ///
 /// Input must keep working whether or not lain's display exists: a session whose video failed, or whose
@@ -51,4 +63,12 @@ pub trait InputBackend: Send + Sync + 'static {
     /// Performs `actions` in order. Called from the realtime connection's reader: never blocks or waits
     /// (queue internally if the platform call can).
     fn apply(&self, actions: &[InputAction]);
+
+    /// How the current keyboard layout types `c`, if it does with Shift and level 3 at most (v6 `TextInput`).
+    /// Read for each character of a `TextInput`: never blocks (a table kept current as the layout changes).
+    /// `None` by default: the platform can't type text.
+    fn text_key(&self, c: char) -> Option<TextKey> {
+        let _ = c;
+        None
+    }
 }

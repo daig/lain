@@ -224,7 +224,7 @@ async fn both_newest_the_ipad_hears_the_setup_and_its_changes() {
     let mut rig = Rig::new(skew(both(), both())).await;
     rig.platform.fake.setup.set(mac_setup(RequirementState::Missing));
     let mut link = rig.usb.next_link(T).await.expect("a USB link");
-    assert_eq!(link.version, 5);
+    assert_eq!(link.version, NEWEST_VERSION);
     assert!(link.hello_ack().await.is_some());
     let Some(Message::HostSetup(setup)) = link.first(T, |m| matches!(m, Message::HostSetup(_))).await else {
         panic!("no HostSetup")
@@ -280,7 +280,10 @@ async fn an_older_ipad_works_with_a_newer_host_which_says_what_updating_adds() {
     // The host's status says what updating adds.
     assert_eq!(
         rig.session.peer_version_note().as_deref(),
-        Some("lain on the iPad is older (protocol v4): update it for the host's video stats on the iPad")
+        Some(
+            "lain on the iPad is older (protocol v4): update it for the host's video stats on the iPad, dictation \
+             and the on-screen keyboard, the computer's sound on the iPad, choosing the display's scale on the iPad"
+        )
     );
     rig.session.stop().await;
 }

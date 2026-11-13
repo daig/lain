@@ -85,6 +85,9 @@ pub struct GnomeDisplay {
     scale: Arc<std::sync::Mutex<Option<f64>>>,
     /// The iPad's own scale, from the last `create`'s spec (what `None` means).
     own_scale: Arc<std::sync::Mutex<u32>>,
+    /// The live display's scale was the client's choice (v7 `Hello.desiredScale`): the owner's setting then
+    /// applies to the next display a client makes without choosing, not to this one.
+    client_chose: Arc<std::sync::atomic::AtomicBool>,
 }
 
 fn failed(what: &str, e: impl std::fmt::Display) -> PlatformError {
@@ -101,6 +104,7 @@ impl GnomeDisplay {
             active: Arc::new(Mutex::new(None)),
             scale: Arc::default(),
             own_scale: Arc::new(std::sync::Mutex::new(2)),
+            client_chose: Arc::default(),
         }
     }
 
@@ -120,6 +124,10 @@ impl GnomeDisplay {
     /// supports, as at `create`).
     pub fn set_scale(&self, scale: Option<f64>) {
         *self.scale.lock().unwrap_or_else(|e| e.into_inner()) = scale;
+        if self.client_chose.load(std::sync::atomic::Ordering::Relaxed) {
+            tracing::info!("lain's display: the client chose its scale; the setting applies to the next one");
+            return;
+        }
         let connector = self.desktop.desktop.borrow().lain().map(|m| m.spec.connector.clone());
         if let Some(connector) = connector {
             let own = *self.own_scale.lock().unwrap_or_else(|e| e.into_inner());
@@ -297,7 +305,15 @@ impl GnomeDisplay {
         self.cursor.reset();
         // Scale 0 counts as 1, as in `DisplaySpec::logical_size` (review A4).
         *self.own_scale.lock().unwrap_or_else(|e| e.into_inner()) = spec.scale.max(1);
-        let wanted = self.scale_setting().unwrap_or_else(|| f64::from(spec.scale.max(1)));
+        // v7: the client's chosen scale wins (the core sized the display so Mutter can apply it exactly); else the
+        // owner's setting, else the spec's own.
+        let chose = spec.desired_scale > 0;
+        self.client_chose.store(chose, std::sync::atomic::Ordering::Relaxed);
+        let wanted = if chose {
+            f64::from(spec.desired_scale) / 100.0
+        } else {
+            self.scale_setting().unwrap_or_else(|| f64::from(spec.scale.max(1)))
+        };
         self.desktop.send(Command::SetLain { connector: connector.clone(), scale: wanted });
         let reached = |m: &crate::desktop::DesktopMonitor| {
             (m.scale - crate::display_config::nearest_scale(&m.supported_scales, wanted)).abs() < 1e-3
@@ -409,5 +425,9 @@ impl DisplayBackend for GnomeDisplay {
 
     fn cursor_location(&self) -> Option<PointF> {
         self.cursor.location()
+    }
+
+    fn applied_scale(&self) -> Option<f64> {
+        GnomeDisplay::applied_scale(self)
     }
 }

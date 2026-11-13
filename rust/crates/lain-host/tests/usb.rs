@@ -56,6 +56,9 @@ async fn handshake_input_and_release_on_close() {
             mac_input_source: "xkb:us+colemak".into(),
             host_id: identity().id,
             host_name: identity().name,
+            // v7: the display's scale (the host's own: the client asked for none), and every quarter from 1 to 3.
+            display_scale: 200,
+            display_scales: vec![100, 125, 150, 175, 200, 225, 250, 275, 300],
         }
     );
     assert!(rig.statuses.reaches(&HostStatus::connected_usb("iPad16,6"), T).await);

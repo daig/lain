@@ -19,6 +19,7 @@ lain-host.workspace = true
 lain-gnome.workspace = true
 lain-linux-video.workspace = true
 lain-linux-system.workspace = true
+lain-linux-audio.workspace = true
 anyhow.workspace = true
 clap.workspace = true
 # The tray icon (StatusNotifierItem), on the same zbus 5 as everything else.

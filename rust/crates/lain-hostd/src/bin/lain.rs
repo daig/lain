@@ -53,6 +53,8 @@ enum Command {
     Resume,
     /// Show or set whether video comes back by itself after "Stop sharing".
     AutoResume { state: Option<OnOff> },
+    /// Show or set whether the computer's sound plays on the iPad.
+    Sound { state: Option<OnOff> },
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -212,6 +214,15 @@ async fn run(command: Command) -> Result<(), String> {
             }
             let on: bool = host.get_property("ResumeAfterStop").await.map_err(|e| e.to_string())?;
             println!("resume after Stop sharing: {}", if on { "on" } else { "off" });
+            Ok(())
+        }
+        Command::Sound { state } => {
+            let host = host(&conn).await?.ok_or("lain-hostd isn't running")?;
+            if let Some(state) = state {
+                host.call_method("SetSound", &(matches!(state, OnOff::On),)).await.map_err(|e| e.to_string())?;
+            }
+            let on: bool = host.get_property("Sound").await.map_err(|e| e.to_string())?;
+            println!("sound on the iPad: {}", if on { "on" } else { "off" });
             Ok(())
         }
         Command::KeepAlive { seconds } => {

@@ -24,6 +24,7 @@ lain-host = { path = "crates/lain-host" }
 lain-gnome = { path = "crates/lain-gnome" }
 lain-linux-video = { path = "crates/lain-linux-video" }
 lain-linux-system = { path = "crates/lain-linux-system" }
+lain-linux-audio = { path = "crates/lain-linux-audio" }
 
 # External dependencies: one version each across the workspace. Crates add the features they need.
 anyhow = "1.0.104"
@@ -65,6 +66,8 @@ tracing-subscriber = "0.3.23"
 uuid = "1.29"
 # zbus 5, not 6: oo7 0.6 and ksni 0.3 are built on zbus 5, and one copy of zbus serves every crate.
 zbus = { version = "5.19", default-features = false, features = ["tokio"] }
+# lain-gnome: which key and level types each character of TextInput in the current layout (libxkbcommon).
+xkbcommon = { version = "0.9", default-features = false }
 
 [workspace.lints.rust]
 # FFI code opts in per module with #[allow(unsafe_code)], one module per C API.

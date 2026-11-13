@@ -382,6 +382,22 @@ impl InputRouter {
         self.chorded = None;
     }
 
+    /// v6 `TextInput` ([`crate::text`]): the text typed through `lookup` (the platform's
+    /// [`InputBackend::text_key`](lain_platform::InputBackend::text_key)), with the desktop modifiers the
+    /// message's flags hold under the [`ModifierMap`] pressed around each key. Nothing stays held. Returns the
+    /// outcome and how many characters no key typed.
+    pub fn text(
+        &mut self,
+        message: &lain_proto::TextInput,
+        lookup: impl Fn(char) -> Option<lain_platform::TextKey>,
+        out: &mut Vec<InputAction>,
+    ) -> (Outcome, usize) {
+        let start = out.len();
+        let held = self.config.modifiers.apply(message.modifiers);
+        let skipped = crate::text::type_text(&message.text, held, lookup, out);
+        (Self::outcome(out, start, None), skipped)
+    }
+
     fn outcome(out: &[InputAction], start: usize, pointer: Option<PointF>) -> Outcome {
         if out.len() > start { Outcome::Injected { pointer } } else { Outcome::Ignored }
     }

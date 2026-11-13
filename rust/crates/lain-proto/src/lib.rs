@@ -48,9 +48,11 @@ pub const MAGIC: u16 = 0x4C41;
 pub const HANDSHAKE_VERSION: u8 = 0xFF;
 
 /// Every protocol version this build implements, oldest first: the support window. v3 (below the floor since
-/// v5): negotiation, the last breaking change; v4: `HostSetup`; v5: `StatsRequest` and `HostStats`. Swift:
+/// v5): negotiation, the last breaking change; v4: `HostSetup`; v5: `StatsRequest` and `HostStats`; v6:
+/// `TextInput`, `AudioConfig` and `AudioPacket`; v7: the display's scale, asked for in `Hello` and answered in
+/// `HelloAck`. (v4 stays, past the policy, for the hosts released at v4–v5.) Swift:
 /// `LainProtocol.supportedVersions`.
-pub const SUPPORTED_VERSIONS: &[u8] = &[4, 5];
+pub const SUPPORTED_VERSIONS: &[u8] = &[4, 5, 6, 7];
 
 /// The lockstep major versions from before negotiation. A peer framing in one of them runs an older lain.
 /// Swift: `LainProtocol.legacyVersions`.

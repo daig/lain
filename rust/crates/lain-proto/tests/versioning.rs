@@ -226,6 +226,13 @@ fn features_follow_their_versions() {
     assert!(!ProtocolFeature::HostStats.is_supported(4));
     assert!(ProtocolFeature::HostStats.is_supported(5));
     assert_eq!(ProtocolFeature::missing(4, Some(5)), [ProtocolFeature::HostStats]);
+    assert_eq!(
+        ProtocolFeature::missing(4, Some(6)),
+        [ProtocolFeature::HostStats, ProtocolFeature::TextInput, ProtocolFeature::Audio]
+    );
+    assert_eq!(ProtocolFeature::missing(5, Some(6)), [ProtocolFeature::TextInput, ProtocolFeature::Audio]);
+    assert_eq!(ProtocolFeature::missing(6, Some(7)), [ProtocolFeature::DisplayScale]);
+    assert!(ProtocolFeature::DisplayScale.is_supported(7) && !ProtocolFeature::DisplayScale.is_supported(6));
     assert!(ProtocolFeature::missing(NEWEST_VERSION, Some(NEWEST_VERSION)).is_empty());
     assert!(ProtocolFeature::missing(4, Some(4)).is_empty());
     // Without a newest, the offered list's newest (a LAIN_PROTOCOL_MAX cap lowers it).
@@ -241,4 +248,53 @@ fn no_feature_outlives_the_floor() {
             assert!(until > SUPPORTED_VERSIONS[0], "{f:?} is dead: delete it");
         }
     }
+}
+
+#[test]
+fn text_input_and_audio_are_version_six_messages() {
+    for ty in [MessageType::TextInput, MessageType::AudioConfig, MessageType::AudioPacket] {
+        let sample = ProtocolSamples::all().iter().find(|m| m.ty() == ty).unwrap();
+        assert_eq!(
+            MessageCodec::lower(sample, 5, 0, 0, None),
+            Lowered::Unrepresentable(format!("{ty} doesn't exist in v5"))
+        );
+        assert!(MessageCodec::lower(sample, 6, 0, 0, None).bytes().is_some());
+    }
+    assert!(!ProtocolFeature::TextInput.is_supported(5) && ProtocolFeature::TextInput.is_supported(6));
+    assert!(!ProtocolFeature::Audio.is_supported(5) && ProtocolFeature::Audio.is_supported(6));
+}
+
+/// v7: the client asks for a scale and the host answers with the one it applied and the ones it can. For an
+/// older peer the fields are advisory: dropped, and read back as 0 and none. Swift:
+/// `displayScalesAreVersionSevenFields`, `aScaleListLongerThanTheLimitIsMalformed`.
+#[test]
+fn display_scales_are_version_seven_fields() {
+    let all = ProtocolSamples::all();
+    let Some(Message::Hello(hello)) = all.iter().find(|m| m.ty() == MessageType::Hello).cloned() else { panic!() };
+    let Some(Message::HelloAck(ack)) = all.iter().find(|m| m.ty() == MessageType::HelloAck).cloned() else { panic!() };
+    let at = |m: &Message, v: u8| MessageCodec::lower(m, v, 0, 0, None);
+    for (m, dropped) in [
+        (Message::Hello(hello.clone()), vec!["desiredScale"]),
+        (Message::HelloAck(ack.clone()), vec!["displayScale", "displayScales"]),
+    ] {
+        let Lowered::Projected { bytes, dropped: d } = at(&m, 6) else { panic!("{m:?} isn't projected at v6") };
+        assert_eq!(d, dropped);
+        match MessageCodec::decode(&bytes).unwrap().message {
+            Message::Hello(h) => assert_eq!(h, Hello { desired_scale: 0, ..hello.clone() }),
+            Message::HelloAck(a) => assert_eq!(a, HelloAck { display_scale: 0, display_scales: vec![], ..ack.clone() }),
+            other => panic!("{other:?}"),
+        }
+        assert_eq!(MessageCodec::decode(at(&m, 7).bytes().unwrap()).unwrap().message, m);
+    }
+    // A list longer than the limit is malformed: the count is the payload's last byte for an empty list.
+    let empty = Message::HelloAck(HelloAck { display_scales: vec![], ..ack.clone() });
+    let mut bytes = at(&empty, 7).into_bytes().unwrap();
+    *bytes.last_mut().unwrap() = (HelloAck::MAX_DISPLAY_SCALES + 1) as u8;
+    assert!(matches!(MessageCodec::decode(&bytes), Err(ProtocolError::Malformed(_)) | Err(ProtocolError::Truncated)));
+    // At most 32 are written.
+    let long = Message::HelloAck(HelloAck { display_scales: (0..40).collect(), ..ack });
+    let Message::HelloAck(back) = MessageCodec::decode(at(&long, 7).bytes().unwrap()).unwrap().message else {
+        panic!()
+    };
+    assert_eq!(back.display_scales.len(), HelloAck::MAX_DISPLAY_SCALES);
 }

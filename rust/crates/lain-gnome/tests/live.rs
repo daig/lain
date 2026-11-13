@@ -31,7 +31,8 @@ use lain_platform::{DisplayBackend, DisplaySpec, InputAction, InputBackend, Moni
 use zbus::Connection;
 use zbus::zvariant::OwnedObjectPath;
 
-const IPAD: DisplaySpec = DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, refresh_hz: 120 };
+const IPAD: DisplaySpec =
+    DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, desired_scale: 0, refresh_hz: 120 };
 
 async fn conn() -> Connection {
     Connection::session().await.expect("the session bus")

@@ -10,10 +10,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::{mpsc, watch};
 
 use crate::{
-    Advertiser, Chroma, Clock, ColorTags, CursorImage, CursorSource, DisplayBackend, DisplaySpec, EncodeConfig,
-    EncodeRequest, EncodedFrame, InputAction, InputBackend, InputSettings, Monitor, Platform, PlatformError, PointF,
-    PowerBackend, RectF, Result, SecretStore, ServiceAd, SettingsSource, SetupReport, SetupSource, StreamInfo,
-    StreamedDisplay, VideoBackend, VideoEvent, VideoSession,
+    AUDIO_QUEUE_CHUNKS, Advertiser, AudioBackend, AudioChunk, AudioFormat, Chroma, Clock, ColorTags, CursorImage,
+    CursorSource, DisplayBackend, DisplaySpec, EncodeConfig, EncodeRequest, EncodedFrame, InputAction, InputBackend,
+    InputSettings, Monitor, Platform, PlatformError, PointF, PowerBackend, RectF, Result, SecretStore, ServiceAd,
+    SettingsSource, SetupReport, SetupSource, StreamInfo, StreamedDisplay, VideoBackend, VideoEvent, VideoSession,
 };
 
 /// A poisoned fake is still inspectable: a failed assertion elsewhere shouldn't hide the state.
@@ -66,6 +66,8 @@ pub struct FakeSource {
 struct DisplayState {
     physical: Vec<Monitor>,
     created: Option<(StreamedDisplay, Monitor)>,
+    /// The spec the live display was made for.
+    spec: Option<DisplaySpec>,
     next_id: u32,
     fail_next_create: Option<PlatformError>,
     creates: usize,
@@ -100,6 +102,7 @@ impl FakeDisplay {
             state: Mutex::new(DisplayState {
                 physical,
                 created: None,
+                spec: None,
                 next_id: 100,
                 fail_next_create: None,
                 creates: 0,
@@ -188,6 +191,7 @@ impl DisplayBackend for FakeDisplay {
         };
         let monitor = Monitor { id, bounds: RectF::new(x, 0.0, width, height), primary: false, lain: true };
         s.created = Some((display, monitor));
+        s.spec = Some(spec);
         self.publish(&s);
         Ok((display, FakeSource { display_id: id }))
     }
@@ -195,6 +199,7 @@ impl DisplayBackend for FakeDisplay {
     async fn destroy(&self) {
         let mut s = lock(&self.0.state);
         if s.created.take().is_some() {
+            s.spec = None;
             s.destroys += 1;
             self.publish(&s);
         }
@@ -206,6 +211,13 @@ impl DisplayBackend for FakeDisplay {
 
     fn cursor_location(&self) -> Option<PointF> {
         lock(&self.0.state).cursor
+    }
+
+    /// The live display's scale: the client's choice, else the spec's own.
+    fn applied_scale(&self) -> Option<f64> {
+        lock(&self.0.state)
+            .spec
+            .map(|s| if s.desired_scale > 0 { f64::from(s.desired_scale) / 100.0 } else { f64::from(s.scale.max(1)) })
     }
 }
 
@@ -546,6 +558,30 @@ impl InputBackend for FakeInput {
     fn apply(&self, actions: &[InputAction]) {
         lock(&self.0).extend_from_slice(actions);
     }
+
+    /// A US layout's letters, digits, space and a few punctuation marks, plus `é` on AltGr (`KEY_RIGHTALT`) and
+    /// `É` on AltGr+Shift, for tests of text typing.
+    fn text_key(&self, c: char) -> Option<crate::TextKey> {
+        const LETTERS: [u16; 26] =
+            [30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45, 21, 44];
+        const DIGITS: [u16; 10] = [11, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let key = |code, shift| Some(crate::TextKey { code, shift, level3: None });
+        match c {
+            'a'..='z' => key(LETTERS[c as usize - 'a' as usize], false),
+            'A'..='Z' => key(LETTERS[c as usize - 'A' as usize], true),
+            '0'..='9' => key(DIGITS[c as usize - '0' as usize], false),
+            ' ' => key(57, false),
+            '.' => key(52, false),
+            ',' => key(51, false),
+            '\'' => key(40, false),
+            '"' => key(40, true),
+            '!' => key(2, true),
+            '-' => key(12, false),
+            'é' => Some(crate::TextKey { code: 18, shift: false, level3: Some(100) }),
+            'É' => Some(crate::TextKey { code: 18, shift: true, level3: Some(100) }),
+            _ => None,
+        }
+    }
 }
 
 // MARK: Power
@@ -723,6 +759,79 @@ impl Advertiser for FakeAdvertiser {
     }
 }
 
+// MARK: Audio
+
+#[derive(Debug, Default)]
+struct AudioState {
+    /// The running capture's sender and format, if any.
+    running: Option<(mpsc::Sender<AudioChunk>, AudioFormat, u32)>,
+    starts: usize,
+    stops: usize,
+    fail_next: Option<PlatformError>,
+}
+
+/// A sound capture driven by the test: [`push`](Self::push) sends a chunk to the running capture.
+#[derive(Debug, Clone, Default)]
+pub struct FakeAudio(Arc<Mutex<AudioState>>);
+
+/// The fake's capture: dropping it stops the capture.
+#[derive(Debug)]
+pub struct FakeAudioCapture(Arc<Mutex<AudioState>>);
+
+impl Drop for FakeAudioCapture {
+    fn drop(&mut self) {
+        let mut state = lock(&self.0);
+        state.running = None;
+        state.stops += 1;
+    }
+}
+
+impl FakeAudio {
+    /// Sends a chunk to the running capture; false if none is running or its queue is full.
+    pub fn push(&self, chunk: AudioChunk) -> bool {
+        lock(&self.0).running.as_ref().is_some_and(|(tx, _, _)| tx.try_send(chunk).is_ok())
+    }
+
+    /// The running capture's format and chunk length.
+    pub fn running(&self) -> Option<(AudioFormat, u32)> {
+        lock(&self.0).running.as_ref().map(|(_, f, ms)| (*f, *ms))
+    }
+
+    /// How many captures were started.
+    pub fn starts(&self) -> usize {
+        lock(&self.0).starts
+    }
+
+    /// How many captures were stopped (dropped).
+    pub fn stops(&self) -> usize {
+        lock(&self.0).stops
+    }
+
+    /// The next start fails with `error`.
+    pub fn fail_next_start(&self, error: PlatformError) {
+        lock(&self.0).fail_next = Some(error);
+    }
+}
+
+impl AudioBackend for FakeAudio {
+    type Capture = FakeAudioCapture;
+
+    async fn start(
+        &self,
+        format: AudioFormat,
+        chunk_ms: u32,
+    ) -> Result<(FakeAudioCapture, mpsc::Receiver<AudioChunk>)> {
+        let mut state = lock(&self.0);
+        if let Some(e) = state.fail_next.take() {
+            return Err(e);
+        }
+        let (tx, rx) = mpsc::channel(AUDIO_QUEUE_CHUNKS);
+        state.running = Some((tx, format, chunk_ms));
+        state.starts += 1;
+        Ok((FakeAudioCapture(self.0.clone()), rx))
+    }
+}
+
 // MARK: Platform
 
 /// One fake of each contract, sharing one [`FakeClock`]. Fields are handles: clone one to drive it while
@@ -738,6 +847,7 @@ pub struct FakePlatform {
     pub setup: FakeSetup,
     pub secrets: MemorySecretStore,
     pub clock: FakeClock,
+    pub audio: FakeAudio,
 }
 
 impl FakePlatform {
@@ -753,6 +863,7 @@ impl FakePlatform {
             setup: FakeSetup::default(),
             secrets: MemorySecretStore::default(),
             clock,
+            audio: FakeAudio::default(),
         }
     }
 }
@@ -773,6 +884,7 @@ impl Platform for FakePlatform {
     type Setup = FakeSetup;
     type Secrets = MemorySecretStore;
     type Clock = FakeClock;
+    type Audio = FakeAudio;
 
     fn display(&self) -> &FakeDisplay {
         &self.display
@@ -809,13 +921,18 @@ impl Platform for FakePlatform {
     fn clock(&self) -> &FakeClock {
         &self.clock
     }
+
+    fn audio(&self) -> &FakeAudio {
+        &self.audio
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    const SPEC: DisplaySpec = DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, refresh_hz: 120 };
+    const SPEC: DisplaySpec =
+        DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, desired_scale: 0, refresh_hz: 120 };
     const CONFIG: EncodeConfig = EncodeConfig {
         width: 2752,
         height: 2064,

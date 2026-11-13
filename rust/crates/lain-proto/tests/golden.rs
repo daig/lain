@@ -111,7 +111,15 @@ fn every_sample_encodes_to_its_golden_bytes_at_every_version() {
             let want = golden.bytes.get(&v).and_then(|m| m.get(key)).unwrap_or_else(|| panic!("no golden v{v} {key}"));
             let got = MessageCodec::encode(message, 0, 0, None, Some(v));
             assert_eq!(hex::encode(&got), hex::encode(want), "v{v} {key} doesn't encode as recorded");
-            assert!(matches!(MessageCodec::lower(message, v, 0, 0, None), Lowered::Exact(_)), "v{v} {key} exact");
+            // Exact, or with only advisory fields of a newer version dropped (v7's scale fields below v7).
+            match MessageCodec::lower(message, v, 0, 0, None) {
+                Lowered::Exact(_) => {}
+                Lowered::Projected { dropped, .. } => assert!(
+                    dropped.iter().all(|f| ["desiredScale", "displayScale", "displayScales"].contains(f)) && v < 7,
+                    "v{v} {key} dropped {dropped:?}"
+                ),
+                Lowered::Unrepresentable(why) => panic!("v{v} {key}: {why}"),
+            }
         }
     }
 }
@@ -127,7 +135,10 @@ fn every_golden_frame_decodes_to_its_sample_and_encodes_back() {
             assert_eq!(env.header.ty.name(), key, "v{v} {key}");
             assert_eq!(env.header.sequence, 0);
             assert_eq!(env.header.timestamp_ns, 0);
-            assert_eq!(&env.message, sample(key).unwrap_or_else(|| panic!("no sample {key}")), "v{v} {key}");
+            // The sample as that version holds it: advisory fields it lacks read back as their defaults.
+            let sample = sample(key).unwrap_or_else(|| panic!("no sample {key}"));
+            let lifted = MessageCodec::decode(&MessageCodec::encode(sample, 0, 0, None, Some(v))).unwrap().message;
+            assert_eq!(env.message, lifted, "v{v} {key}");
             assert_eq!(&MessageCodec::encode(&env.message, 0, 0, None, Some(v)), bytes, "v{v} {key} re-encoded");
             let newest = env.message.ty().default_version();
             let again = MessageCodec::decode(&MessageCodec::encode(&env.message, 0, 0, None, Some(newest))).unwrap();

@@ -106,7 +106,7 @@ async fn one_close_reason_whatever_the_cause() {
     let mut b = MessageChannel::new(b, "b");
     raw.write_all(&MessageCodec::encode(&ping(1, 0), 0, 0, None, None)).await.unwrap();
     assert_eq!(b.recv().await, Err(TransportError::Closed));
-    assert_eq!(b.closed().await, CloseReason::WrongVersion("a ping frame in v5 on a channel at the handshake".into()));
+    assert_eq!(b.closed().await, CloseReason::WrongVersion("a ping frame in v7 on a channel at the handshake".into()));
     let mut rest = Vec::new();
     assert_eq!(raw.read_to_end(&mut rest).await.unwrap(), 0, "the peer sees the close");
     let (raw, b) = memory_pair();

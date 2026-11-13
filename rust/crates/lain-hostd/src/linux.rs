@@ -5,6 +5,7 @@
 use std::sync::Arc;
 
 use lain_gnome::{Gnome, GnomeCursor, GnomeDisplay, GnomeInput, GnomePower, GnomeSettings, GnomeSetup};
+use lain_linux_audio::PipeWireAudio;
 use lain_linux_system::{Autostart, SystemSecretStore};
 use lain_linux_video::LinuxVideo;
 use lain_platform::{MonotonicClock, Platform};
@@ -25,6 +26,7 @@ pub struct LinuxPlatform {
     /// One store, shared with the Wi-Fi listener.
     pub secrets: Arc<SystemSecretStore>,
     pub clock: MonotonicClock,
+    pub audio: PipeWireAudio,
 }
 
 impl LinuxPlatform {
@@ -39,6 +41,7 @@ impl LinuxPlatform {
             setup: DaemonSetup::new(gnome.setup, autostart),
             secrets,
             clock: MonotonicClock,
+            audio: PipeWireAudio,
         }
     }
 }
@@ -53,6 +56,7 @@ impl Platform for LinuxPlatform {
     type Setup = DaemonSetup<GnomeSetup, Autostart>;
     type Secrets = Arc<SystemSecretStore>;
     type Clock = MonotonicClock;
+    type Audio = PipeWireAudio;
 
     fn display(&self) -> &GnomeDisplay {
         &self.display
@@ -80,6 +84,9 @@ impl Platform for LinuxPlatform {
     }
     fn clock(&self) -> &MonotonicClock {
         &self.clock
+    }
+    fn audio(&self) -> &PipeWireAudio {
+        &self.audio
     }
 }
 
@@ -131,6 +138,12 @@ impl crate::Control for LinuxControl {
     }
     fn set_resume_after_stop(&self, on: bool) {
         crate::Control::set_resume_after_stop(&self.handle, on)
+    }
+    fn sound(&self) -> bool {
+        crate::Control::sound(&self.handle)
+    }
+    fn set_sound(&self, on: bool) {
+        crate::Control::set_sound(&self.handle, on)
     }
     fn scale_setting(&self) -> Option<f64> {
         self.display.scale_setting()

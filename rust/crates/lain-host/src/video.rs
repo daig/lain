@@ -22,18 +22,70 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The display a client's `Hello` asks for: its pixel size, scale and maximum refresh rate (0: 120 Hz).
+/// The display a client's `Hello` asks for: its pixel size (long side first), the scale it chose (v7), and its
+/// maximum refresh rate (0: 120 Hz). Swift: `VirtualDisplay.Spec.sized(pixelWidth:pixelHeight:)` and
+/// `DisplayScaleChoice`.
 ///
-/// Intended difference from Swift, whose Mac host creates a fixed display (the 13" iPad Pro's 2752×2064 at
-/// 2×, 120 Hz, `VirtualDisplay.Spec`): this serves any iPad. A scale of 0 is taken as 2 (an iPad's).
+/// - **The size** is the client's own: the 13-inch iPad Pro's 2752×2064, or another shape (an iPhone Duo asks
+///   for its inner display, 2853×2007). A size that makes no display (nothing, absurd, or portrait) falls back
+///   to the iPad's, as in Swift. An odd side is rounded down to even, since 4:2:0 video needs even sides.
+/// - **The scale** the client chose (`Hello.desired_scale`), brought to the nearest of [`OFFERED_SCALES`] (on a
+///   tie, the larger, as in Swift); none chosen (a v6 client), 2, which the owner's `scale` setting replaces in
+///   `lain-gnome`, as the Mac host's own scale.
+/// - **Intended difference from Swift, from Mutter:** Mutter applies a scale n/d only if it divides both sides
+///   exactly (Mutter 50.1 `for_each_scale`), and lain's video doesn't scale, where the Mac renders at 2× and
+///   capture scales. So a chosen scale makes the display a few pixels smaller where needed: the largest even
+///   size within the client's whose sides that scale divides ([`size_for_scale`]); the Duo at 3× gets
+///   2850×2004. The client fits the stream to its screen.
+/// - Intended difference from Swift, whose Mac host is fixed at 120 Hz: the refresh rate follows the client.
 pub fn display_spec(hello: &Hello) -> DisplaySpec {
+    let (w, h) = (hello.pixel_width, hello.pixel_height);
+    let (w, h) =
+        if (640..=4096).contains(&w) && (480..=4096).contains(&h) && w >= h { (w & !1, h & !1) } else { IPAD_PIXELS };
+    let desired_scale = choose_scale(hello.desired_scale);
+    let (pixel_width, pixel_height) = size_for_scale(w, h, desired_scale);
     DisplaySpec {
-        pixel_width: hello.pixel_width,
-        pixel_height: hello.pixel_height,
-        scale: if hello.scale == 0 { 2 } else { u32::from(hello.scale) },
+        pixel_width,
+        pixel_height,
+        scale: 2,
+        desired_scale,
         refresh_hz: if hello.max_refresh_rate == 0 { 120 } else { u32::from(hello.max_refresh_rate) },
     }
 }
+
+/// The scales a v7 client may choose (`HelloAck.displayScales`), in hundredths: every quarter from 1 to 3, as
+/// far as the Mac host offers (it stops at 1.5 for its 2× backing store; GNOME renders at the panel's pixels and
+/// has no such limit, and the owner's `scale` setting allows 1–3).
+pub const OFFERED_SCALES: [u16; 9] = [100, 125, 150, 175, 200, 225, 250, 275, 300];
+
+/// The offered scale nearest to `requested` (hundredths; on a tie the larger, as Swift's
+/// `DisplayScaleChoice.choose`), or 0 for no request.
+pub fn choose_scale(requested: u16) -> u16 {
+    if requested == 0 {
+        return 0;
+    }
+    OFFERED_SCALES.iter().copied().min_by_key(|&s| (s.abs_diff(requested), std::cmp::Reverse(s))).unwrap_or(0)
+}
+
+/// The largest even size within `w`×`h` whose sides `scale` (hundredths, a quarter) divides exactly, so that
+/// Mutter can apply it: for n/d in lowest terms (d ≤ 4) both sides must be multiples of n. 0: unchanged.
+pub fn size_for_scale(w: u32, h: u32, scale: u16) -> (u32, u32) {
+    if scale == 0 {
+        return (w, h);
+    }
+    let quarters = u32::from(scale) / 25;
+    let numerator = quarters / gcd(quarters, 4);
+    let step = numerator / gcd(numerator, 2) * 2; // lcm(numerator, 2)
+    (w - w % step, h - h % step)
+}
+
+fn gcd(a: u32, b: u32) -> u32 {
+    if b == 0 { a } else { gcd(b, a % b) }
+}
+
+/// The 13-inch iPad Pro's display, the one a size that makes no display falls back to (Swift: the default
+/// `VirtualDisplay.Spec`).
+pub const IPAD_PIXELS: (u32, u32) = (2752, 2064);
 
 /// Why [`SessionVideo::start`] gave no video.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -347,5 +399,77 @@ impl SessionVideo {
 async fn sleep(wait: Option<Duration>) {
     if let Some(wait) = wait {
         tokio::time::sleep(wait).await;
+    }
+}
+
+#[cfg(test)]
+mod spec_tests {
+    use super::*;
+
+    fn hello(w: u32, h: u32, scale: u8) -> Hello {
+        Hello {
+            device_model: "iPhone19,4".into(),
+            pixel_width: w,
+            pixel_height: h,
+            scale,
+            max_refresh_rate: 120,
+            decode_capabilities: lain_proto::DecodeCapabilities::HEVC_MAIN,
+            keyboard_type: lain_proto::KeyboardType::Unknown,
+            desired_scale: 0,
+        }
+    }
+
+    #[test]
+    fn a_clients_request_shapes_its_display() {
+        // An iPhone Duo asks for its inner display at 3×: even sides, at 2× (Swift: `aClientsRequestShapesItsDisplay`).
+        let duo = display_spec(&hello(2853, 2007, 3));
+        assert_eq!((duo.pixel_width, duo.pixel_height, duo.scale, duo.refresh_hz), (2852, 2006, 2, 120));
+        assert_eq!(
+            display_spec(&hello(2752, 2064, 2)),
+            DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, desired_scale: 0, refresh_hz: 120 }
+        );
+        // A size that makes no display: the iPad's.
+        for (w, h) in [(0, 0), (2007, 2853), (100_000, 2000), (639, 480), (640, 479)] {
+            let s = display_spec(&hello(w, h, 2));
+            assert_eq!((s.pixel_width, s.pixel_height), IPAD_PIXELS, "{w}×{h}");
+        }
+        assert_eq!(display_spec(&Hello { max_refresh_rate: 0, ..hello(2752, 2064, 2) }).refresh_hz, 120);
+    }
+
+    #[test]
+    fn a_chosen_scale_shapes_the_display_so_mutter_can_apply_it() {
+        let duo = |scale| display_spec(&Hello { desired_scale: scale, ..hello(2853, 2007, 3) });
+        assert_eq!((duo(300).pixel_width, duo(300).pixel_height, duo(300).desired_scale), (2850, 2004, 300));
+        assert_eq!((duo(200).pixel_width, duo(200).pixel_height), (2852, 2006));
+        assert_eq!((duo(175).pixel_width, duo(175).pixel_height), (2842, 2002));
+        assert_eq!(duo(0).desired_scale, 0, "a v6 client chooses none");
+        // Mutter's rule (meta-monitor.c `for_each_scale`): n/d applies iff both sides times d are multiples of n.
+        for scale in OFFERED_SCALES {
+            for (w, h) in [(2853, 2007), (2752, 2064), (1920, 1080)] {
+                let s = display_spec(&Hello { desired_scale: scale, ..hello(w, h, 2) });
+                let (n, d) = (u32::from(scale) / 25 / gcd(u32::from(scale) / 25, 4), 4 / gcd(u32::from(scale) / 25, 4));
+                assert!(
+                    (s.pixel_width * d).is_multiple_of(n) && (s.pixel_height * d).is_multiple_of(n),
+                    "{w}×{h} at {scale}"
+                );
+                assert!(
+                    s.pixel_width.is_multiple_of(2)
+                        && s.pixel_height.is_multiple_of(2)
+                        && s.pixel_width <= w
+                        && w - s.pixel_width < 22
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn the_nearest_offered_scale_and_on_a_tie_the_larger() {
+        assert_eq!(choose_scale(300), 300);
+        assert_eq!(choose_scale(310), 300);
+        assert_eq!(choose_scale(80), 100);
+        assert_eq!(choose_scale(212), 200);
+        assert_eq!(choose_scale(213), 225, "nearer 225");
+        assert_eq!(choose_scale(0), 0);
+        assert_eq!(choose_scale(1), 100);
     }
 }
