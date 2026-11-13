@@ -53,6 +53,24 @@ import LainTelemetry
 @preconcurrency import ScreenCaptureKit
 import Synchronization
 
+/// The audio handler, set by the session and called from the audio queue with each buffer. The closure is kept
+/// in a struct, never bare in the `Mutex`: a bare function type is reabstracted on its way into `withLock`'s
+/// `inout` and again on the way back, so every read wrapped the stored closure once more (two stack frames per
+/// read, measured). Read with each of ~47 buffers a second, the chain overflowed the audio queue's stack after
+/// about 2¼ minutes, and freeing it at a session's end overflowed too: the host crashed and the client
+/// reconnected every couple of minutes while the Mac's sound played on the iPad (2026-11-12, §13).
+final class AudioHandlerSlot: Sendable {
+    struct Handler: Sendable { let call: @Sendable ([UInt8], UInt64) -> Void }
+    private let slot = Mutex<Handler?>(nil)
+
+    func set(_ handler: (@Sendable ([UInt8], UInt64) -> Void)?) {
+        let new = handler.map(Handler.init(call:))
+        slot.withLock { $0 = new }
+    }
+
+    var current: Handler? { slot.withLock { $0 } }
+}
+
 /// The real source: an `SCStream` on the streamed display, configured per §5.2 and the S2 findings.
 /// SCK `xf44` frames carry a Display P3 `CGColorSpace` but **no YCbCr matrix**, so the stream's
 /// `colorMatrix` is set explicitly to BT.709 (the host tags each buffer to match before encoding).
@@ -65,7 +83,7 @@ public final class ScreenCaptureFrameSource: NSObject, FrameSource, AudioSource,
     /// 24 kHz mono: plenty for alerts and speech, which is what this is for, and a quarter of the data of
     /// 48 kHz stereo, so each 20 ms packet fits one TCP segment and takes less of the radio from the video.
     public let audioFormat = AudioConfig(sampleRate: 24_000, channels: 1, encoding: .pcm16LE)
-    private let audioHandler = Mutex<(@Sendable ([UInt8], UInt64) -> Void)?>(nil)
+    private let audioHandler = AudioHandlerSlot()
     private struct AudioMeter { var since: UInt64 = 0, last: UInt64 = 0, buffers = 0, frames = 0, maxGapMs = 0.0, maxAgeMs = 0.0 }
     private let audioMeter = Mutex(AudioMeter())
     private struct State {
@@ -148,13 +166,13 @@ public final class ScreenCaptureFrameSource: NSObject, FrameSource, AudioSource,
     // MARK: SCStreamOutput (the capture queue: real-time, no awaits, no Swift collection bridging)
 
     public func setAudioHandler(_ handler: (@Sendable ([UInt8], UInt64) -> Void)?) {
-        audioHandler.withLock { $0 = handler }
+        audioHandler.set(handler)
     }
 
     /// One buffer of sound (the audio queue): SCK's 32-bit float samples, planar or interleaved, as interleaved
     /// 16-bit, to the handler.
     private func audio(_ sample: CMSampleBuffer) {
-        guard let handler = audioHandler.withLock({ $0 }), let format = CMSampleBufferGetFormatDescription(sample),
+        guard let handler = audioHandler.current, let format = CMSampleBufferGetFormatDescription(sample),
               let asbd = CMAudioFormatDescriptionGetStreamBasicDescription(format)?.pointee,
               asbd.mFormatID == kAudioFormatLinearPCM, asbd.mFormatFlags & kAudioFormatFlagIsFloat != 0,
               asbd.mBitsPerChannel == 32 else { return }
@@ -199,7 +217,7 @@ public final class ScreenCaptureFrameSource: NSObject, FrameSource, AudioSource,
             return "audio capture: \(m.buffers) buffers of \(m.frames / max(m.buffers, 1)) frames in 5 s, longest wait \(Int(m.maxGapMs)) ms, oldest on delivery \(Int(m.maxAgeMs)) ms"
         }
         if let report { log.debug("\(report, privacy: .public)") }
-        handler(out, ns)
+        handler.call(out, ns)
     }
 
     public func stream(_ stream: SCStream, didOutputSampleBuffer sample: CMSampleBuffer, of type: SCStreamOutputType) {
