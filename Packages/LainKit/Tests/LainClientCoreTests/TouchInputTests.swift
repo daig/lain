@@ -175,4 +175,46 @@ import Testing
         r.pipeline.padTouchEnded(id: 1, at: 600 * ms)
         #expect(r.sent.isEmpty)
     }
+
+    // MARK: Speeds: fixed per control, following the resolution
+
+    /// Slow, even moves (no acceleration): the pointer's travel per unit of the hand's. Each call uses later
+    /// times and its own finger.
+    private func travel(_ r: Recorder, pad: Bool, from start: UInt64 = 0) -> Double {
+        let t0 = start * 1000 * ms
+        if pad {
+            r.pipeline.padTouchBegan(id: Int(start) + 1, x: 0, y: 0, at: t0)
+            r.pipeline.padTouchMoved(id: Int(start) + 1, x: 11, y: 0, at: t0 + 100 * ms)   // past the tap's slop
+            let x0 = r.pipeline.pointer.x
+            for i in 1...20 { r.pipeline.padTouchMoved(id: Int(start) + 1, x: 11 + Double(i), y: 0, at: t0 + 100 * ms + UInt64(i) * 8 * ms) }
+            r.pipeline.padTouchEnded(id: Int(start) + 1, at: t0 + 500 * ms)
+            return (r.pipeline.pointer.x - x0) / 20
+        }
+        let x0 = r.pipeline.pointer.x
+        for i in 1...20 { r.pipeline.mouseMoved(dx: 1, dy: 0, at: t0 + UInt64(i) * 8 * ms) }
+        return (r.pipeline.pointer.x - x0) / 20
+    }
+
+    @Test func theTrackpadAreasAreTwiceAsFastAsTheMagicKeyboards() {
+        let r = Recorder()
+        r.pipeline.curve = ClientInputPipeline.trackpadCurve
+        #expect(abs(travel(r, pad: false) - 0.6) < 1e-9)
+        #expect(abs(travel(r, pad: true, from: 1) - 1.2) < 1e-9)
+    }
+
+    @Test func speedsFollowTheResolution() {
+        let r = Recorder()   // a 1376-point display
+        r.pipeline.curve = ClientInputPipeline.trackpadCurve
+        r.pipeline.referenceWidth = 1376
+        #expect(r.pipeline.resolutionScale == 1)
+        r.pipeline.applyLayout(DisplayLayout(displays: [.init(displayID: 1, x: 0, y: 0, width: 2752, height: 2064, isStreamed: true)]))
+        #expect(r.pipeline.resolutionScale == 2, "twice the points across the same glass")
+        #expect(abs(travel(r, pad: false) - 1.2) < 1e-9 && abs(travel(r, pad: true, from: 1) - 2.4) < 1e-9)
+        r.take()
+        r.pipeline.scrollBegan(at: 5000 * ms)
+        r.pipeline.scrollChanged(dx: 0, dy: 10, at: 5010 * ms)
+        #expect(r.scrolls.last?.dy == 20)
+        r.pipeline.referenceWidth = 0
+        #expect(r.pipeline.resolutionScale == 1, "no reference: as tuned")
+    }
 }

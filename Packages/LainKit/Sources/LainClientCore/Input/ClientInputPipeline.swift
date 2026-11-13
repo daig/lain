@@ -20,6 +20,29 @@ public final class ClientInputPipeline {
     /// Multiplies scroll deltas (trackpad and wheel; the trackpad's momentum follows them). 1: as the iPad
     /// reports them.
     public var scrollScale = 1.0
+
+    // Pointer speed is fixed per control, tuned by hand on a 13-inch iPad Pro at the host's default
+    // resolution, and follows the resolution (`resolutionScale`). `curve` is the hardware trackpad's.
+    /// The Magic Keyboard's trackpad.
+    public static let trackpadCurve = AccelerationCurve(sensitivity: 0.6, acceleration: 1)
+    /// A finger on the screen's trackpad areas, which has less room to travel.
+    public static let touchCurve = AccelerationCurve(sensitivity: 1.2, acceleration: 1)
+    public var touchCurve = ClientInputPipeline.touchCurve
+    /// The streamed display's width, in points, that the speeds were tuned at: the iPad's own (its screen's
+    /// long side). 0: speeds don't follow the resolution.
+    public var referenceWidth = 0.0
+    /// How many times more points the streamed display has across than the reference. The stream always fills
+    /// the same glass, so with more points (a higher resolution, smaller content) the pointer and scrolling
+    /// must cover more of them for the same movement of the hand, and with fewer, fewer.
+    public var resolutionScale: Double {
+        guard referenceWidth > 0, let s = streamedDisplay, s.width > 0 else { return 1 }
+        return s.width / referenceWidth
+    }
+    private func scaled(_ curve: AccelerationCurve) -> AccelerationCurve {
+        var c = curve
+        c.sensitivity *= resolutionScale
+        return c
+    }
     /// D19: pointer input (moves, button-downs, scroll, gestures) flows only while this is set, which the
     /// capture layer ties to the pointer lock. Keyboard input flows regardless. Button-ups for buttons
     /// already down still pass so nothing sticks.
@@ -258,7 +281,7 @@ public final class ClientInputPipeline {
     public func mouseMoved(dx: Double, dy: Double, at timeNs: UInt64) {
         guard pointerEnabled else { return }
         if overlayShown { return onLocalShortcut(.panelPointer(dx: dx, dy: dy)) }
-        guard let move = pointer.move(dx: dx, dy: dy, at: timeNs, buttons: heldButtons.mask) else { return }
+        guard let move = pointer.move(dx: dx, dy: dy, at: timeNs, buttons: heldButtons.mask, using: scaled(curve)) else { return }
         send(.pointerMove(move))
     }
 
@@ -357,8 +380,9 @@ public final class ClientInputPipeline {
                       let move = pointer.moveTo(x: p.x, y: p.y, buttons: heldButtons.mask) else { continue }
                 send(.pointerMove(move))
             case .moveBy(let dx, let dy):
-                // The tracker takes GCMouse deltas (y up) and applies the pointer-speed curve.
-                guard let move = pointer.move(dx: dx, dy: -dy, at: timeNs, buttons: heldButtons.mask) else { continue }
+                // The tracker takes GCMouse deltas (y up); a finger on glass has its own curve.
+                guard let move = pointer.move(dx: dx, dy: -dy, at: timeNs, buttons: heldButtons.mask,
+                                              using: scaled(touchCurve)) else { continue }
                 send(.pointerMove(move))
             case .button(let button, let isDown): mouseButton(button, isDown: isDown, at: timeNs)
             case .scrollBegan: scrollBegan(at: timeNs)
@@ -384,7 +408,7 @@ public final class ClientInputPipeline {
         guard pointerAllowed, !overlayShown else { return }
         if !isScrolling { scrollBegan(at: timeNs) }
         guard dx != 0 || dy != 0 else { return }
-        let k = invertScroll ? -scrollScale : scrollScale
+        let k = (invertScroll ? -scrollScale : scrollScale) * resolutionScale
         let (sx, sy) = (dx * k, dy * k)
         momentum.changed(dx: sx, dy: sy, at: timeNs)
         let phase: GesturePhase = scrollStarted ? .changed : .began
@@ -410,7 +434,7 @@ public final class ClientInputPipeline {
     public func scrollWheel(dx: Double, dy: Double, at timeNs: UInt64) {
         guard pointerAllowed, !overlayShown, dx != 0 || dy != 0 else { return }
         if let stop = momentum.cancel() { send(.scroll(stop)) }
-        let k = invertScroll ? -scrollScale : scrollScale
+        let k = (invertScroll ? -scrollScale : scrollScale) * resolutionScale
         let (sx, sy) = (dx * k, dy * k)
         send(.scroll(Scroll(dx: Float(sx), dy: Float(sy), phase: .none, momentumPhase: .none)))
     }

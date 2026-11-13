@@ -70,8 +70,15 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     private let band = UIView()
     private let trackpad = TrackpadStrip()
     /// Landscape without a hardware keyboard: a small trackpad patch in each bottom corner, under the thumbs.
-    private let cornerPads = [TrackpadStrip(corner: .layerMaxXMinYCorner), TrackpadStrip(corner: .layerMinXMinYCorner)]
+    private static let allCorners: CACornerMask = [.layerMinXMinYCorner, .layerMaxXMinYCorner, .layerMinXMaxYCorner, .layerMaxXMaxYCorner]
+    private let cornerPads = [TrackpadStrip(corner: allCorners), TrackpadStrip(corner: allCorners)]
     private static let cornerPadSize = CGSize(width: 150, height: 120)
+    /// How far the patches sit above the bottom: clear of the host's Dock (about 65 points on a Mac at the
+    /// iPad's own scale), and where the thumbs rest when the iPad is held.
+    private static let cornerPadLift: CGFloat = 104
+    /// How far in from the side edges: with the lift, the patch's centre is about 110 points in and 165 up,
+    /// where a thumb rests when the iPad is held by its lower corners (as a game's on-screen sticks sit).
+    private static let cornerPadInset: CGFloat = 36
     private lazy var extraKeys = ExtraKeys(pasteTarget: self)
     /// Where the transcript sits: at the top of the band in portrait, above the keyboard otherwise.
     private var transcriptInBand: NSLayoutConstraint?
@@ -294,8 +301,10 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             panelView.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, multiplier: 0.92),
             panelView.heightAnchor.constraint(lessThanOrEqualTo: view.heightAnchor, multiplier: 0.92),
         ])
-        input.setCurve(preferences.curve)
-        input.setScrollScale(preferences.scrollScale)
+        // Pointer speeds are fixed per control and follow the host's resolution (`ClientInputPipeline`).
+        input.setCurve(ClientInputPipeline.trackpadCurve)
+        let screen = UIScreen.main.bounds
+        input.setReferenceWidth(max(screen.width, screen.height))
         input.setInvertScroll(preferences.reverseScroll)
         input.setTouchMode(preferences.touchMode)
 
@@ -369,8 +378,6 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         case .setPreferences(let p):
             preferences = p
             p.save()
-            input.setCurve(p.curve)
-            input.setScrollScale(p.scrollScale)
             input.setInvertScroll(p.reverseScroll)
             input.setTouchMode(p.touchMode)
             session?.setNetwork(path: p.wifiPath, radioPriority: p.radioPriority)
@@ -633,7 +640,11 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         }
     }
 
-    private func hardwareKeyboardChanged() { updateInputMode() }
+    /// A keyboard was attached or detached: the trackpad areas and the band are placed in layout.
+    private func hardwareKeyboardChanged() {
+        updateInputMode()
+        view.setNeedsLayout()
+    }
 
     /// One press of a key that isn't a character, with the key row's lit modifiers held around it.
     private func tapKey(_ key: PhysicalKey) {
@@ -710,11 +721,11 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             band.isHidden = !shown
             if !shown { input.padTouchesCancelled() }
         }
-        // Landscape: the corner patches, at the bottom of the stream (above a docked keyboard).
+        // Landscape: the thumb patches, on the side edges a little above the bottom (or a docked keyboard).
         let corners = !isPortrait && GCKeyboard.coalesced == nil
-        let size = Self.cornerPadSize, y = view.bounds.maxY - keyboardInset - size.height
-        cornerPads[0].frame = CGRect(x: 0, y: y, width: size.width, height: size.height)
-        cornerPads[1].frame = CGRect(x: view.bounds.maxX - size.width, y: y, width: size.width, height: size.height)
+        let size = Self.cornerPadSize, y = view.bounds.maxY - keyboardInset - Self.cornerPadLift - size.height
+        cornerPads[0].frame = CGRect(x: Self.cornerPadInset, y: y, width: size.width, height: size.height)
+        cornerPads[1].frame = CGRect(x: view.bounds.maxX - Self.cornerPadInset - size.width, y: y, width: size.width, height: size.height)
         for pad in cornerPads where pad.isHidden == corners {
             pad.isHidden = !corners
             if !corners { input.padTouchesCancelled() }

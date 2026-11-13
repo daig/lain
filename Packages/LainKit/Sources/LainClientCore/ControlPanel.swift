@@ -5,14 +5,6 @@ import LainTransport
 
 /// The iPad's own settings, changed from the panel and kept in its defaults.
 public struct ClientPreferences: Sendable, Equatable {
-    /// 1…5; 3 is the default curve's sensitivity.
-    public var pointerSpeed = 3 {
-        didSet { pointerSpeed = min(max(pointerSpeed, 1), Self.pointerSensitivities.count) }
-    }
-    /// 1…5; 3 scrolls as far as the fingers move.
-    public var scrollSpeed = 3 {
-        didSet { scrollSpeed = min(max(scrollSpeed, 1), Self.scrollScales.count) }
-    }
     /// Reverses the trackpad's scroll direction (off: as the host's natural scrolling).
     public var reverseScroll = false
     /// Whether fingers on the stream drive the pointer (`direct`) or do nothing (`off`). The trackpad areas
@@ -26,26 +18,11 @@ public struct ClientPreferences: Sendable, Equatable {
 
     public init() {}
 
-    /// The curve's `sensitivity` for each speed.
-    public static let pointerSensitivities = [0.45, 0.6, 0.75, 0.95, 1.2]
-    /// The scroll multiplier for each speed.
-    public static let scrollScales = [0.5, 0.75, 1.0, 1.4, 2.0]
-
-    public var scrollScale: Double { Self.scrollScales[scrollSpeed - 1] }
-
-    public var curve: AccelerationCurve {
-        var c = AccelerationCurve()
-        c.sensitivity = Self.pointerSensitivities[pointerSpeed - 1]
-        return c
-    }
-
-    static let speedKey = "lain.pointerSpeed", scrollKey = "lain.reverseScroll", scrollSpeedKey = "lain.scrollSpeed"
+    static let scrollKey = "lain.reverseScroll"
     static let pathKey = "lain.wifiPath", priorityKey = "lain.radioPriority", touchKey = "lain.touchMode"
 
     public static func load(from defaults: UserDefaults = .standard) -> ClientPreferences {
         var p = ClientPreferences()
-        if defaults.object(forKey: speedKey) != nil { p.pointerSpeed = defaults.integer(forKey: speedKey) }
-        if defaults.object(forKey: scrollSpeedKey) != nil { p.scrollSpeed = defaults.integer(forKey: scrollSpeedKey) }
         p.reverseScroll = defaults.bool(forKey: scrollKey)
         if let raw = defaults.string(forKey: touchKey), let mode = TouchMode(rawValue: raw) { p.touchMode = mode == .off ? .off : .direct }
         if let raw = defaults.string(forKey: pathKey), let path = WiFiPath(rawValue: raw) { p.wifiPath = path }
@@ -56,8 +33,6 @@ public struct ClientPreferences: Sendable, Equatable {
     }
 
     public func save(to defaults: UserDefaults = .standard) {
-        defaults.set(pointerSpeed, forKey: Self.speedKey)
-        defaults.set(scrollSpeed, forKey: Self.scrollSpeedKey)
         defaults.set(reverseScroll, forKey: Self.scrollKey)
         defaults.set(touchMode.rawValue, forKey: Self.touchKey)
         defaults.set(wifiPath.rawValue, forKey: Self.pathKey)
@@ -79,8 +54,6 @@ public struct ControlPanel: Sendable, Equatable {
     public enum Row: Sendable, Equatable {
         /// A saved host; nil: automatic (the cable first, then the last connected).
         case host(String?)
-        case pointerSpeed
-        case scrollSpeed
         case scrollDirection
         case touchMode
         case wifiPath
@@ -115,7 +88,7 @@ public struct ControlPanel: Sendable, Equatable {
             rows.append(.host(nil))
             rows += hosts.hosts.map { .host($0.id) }
         }
-        return rows + [.pointerSpeed, .scrollSpeed, .scrollDirection, .touchMode, .wifiPath, .radioPriority]
+        return rows + [.scrollDirection, .touchMode, .wifiPath, .radioPriority]
     }
 
     // MARK: Input
@@ -156,13 +129,6 @@ public struct ControlPanel: Sendable, Equatable {
     private func activate(_ row: Row, preferences: ClientPreferences) -> Action {
         switch row {
         case .host(let id): .selectHost(id)
-        case .pointerSpeed:
-            // Return cycles: up to the fastest, then back to the slowest.
-            change(row, by: preferences.pointerSpeed == ClientPreferences.pointerSensitivities.count
-                       ? 1 - preferences.pointerSpeed : 1, preferences: preferences)
-        case .scrollSpeed:
-            change(row, by: preferences.scrollSpeed == ClientPreferences.scrollScales.count
-                       ? 1 - preferences.scrollSpeed : 1, preferences: preferences)
         case .scrollDirection, .touchMode, .wifiPath, .radioPriority: change(row, by: 1, preferences: preferences)
         }
     }
@@ -171,8 +137,6 @@ public struct ControlPanel: Sendable, Equatable {
         var p = preferences
         switch row {
         case .host: return .none
-        case .pointerSpeed: p.pointerSpeed += step
-        case .scrollSpeed: p.scrollSpeed += step
         case .scrollDirection: p.reverseScroll.toggle()
         case .touchMode: p.touchMode = p.touchMode == .off ? .direct : .off
         case .wifiPath: p.wifiPath = Self.cycle(p.wifiPath, by: step)
@@ -221,11 +185,6 @@ public struct ControlPanel: Sendable, Equatable {
         add("OPTIONS", .heading)
         for (i, row) in rows.enumerated() {
             switch row {
-            case .pointerSpeed:
-                add(Self.pad("Pointer speed") + Self.dots(preferences.pointerSpeed, of: ClientPreferences.pointerSensitivities.count),
-                    row: i)
-            case .scrollSpeed:
-                add(Self.pad("Scroll speed") + Self.dots(preferences.scrollSpeed, of: ClientPreferences.scrollScales.count), row: i)
             case .scrollDirection:
                 add(Self.pad("Scroll direction") + "‹ " + (preferences.reverseScroll ? "Reversed" : "Natural") + " ›", row: i)
             case .touchMode:
@@ -284,10 +243,6 @@ public struct ControlPanel: Sendable, Equatable {
         case .standard: "Standard"
         case .interactiveVideo: "Interactive video"
         }
-    }
-
-    static func dots(_ n: Int, of all: Int) -> String {
-        "‹ " + String(repeating: "●", count: n) + String(repeating: "○", count: all - n) + " ›"
     }
 
     static func pad(_ s: String, to width: Int = 20) -> String {

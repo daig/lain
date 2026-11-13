@@ -137,8 +137,8 @@ final class TrackpadStrip: UIView {
     var onEnded: (Int) -> Void = { _ in }
     var onCancelled: () -> Void = {}
 
-    /// `corner`: a patch over the stream, drawn very faintly and rounded on that one corner (the one pointing
-    /// into the screen); nil: the portrait strip.
+    /// `corner`: a patch over the stream at a side edge, drawn very faintly and rounded on those corners (the
+    /// ones pointing into the screen); nil: the portrait strip.
     init(corner: CACornerMask? = nil) {
         super.init(frame: .zero)
         isMultipleTouchEnabled = true

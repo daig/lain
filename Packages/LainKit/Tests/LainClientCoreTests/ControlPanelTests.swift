@@ -18,7 +18,7 @@ import Testing
     }
 
     @Test func rowsAreTheHostsThenTheOptions() {
-        let options: [ControlPanel.Row] = [.pointerSpeed, .scrollSpeed, .scrollDirection, .touchMode, .wifiPath, .radioPriority]
+        let options: [ControlPanel.Row] = [.scrollDirection, .touchMode, .wifiPath, .radioPriority]
         #expect(ControlPanel.rows(hosts: hosts()) == [.host(nil), .host("A"), .host("B")] + options)
         #expect(ControlPanel.rows(hosts: hosts(onCable: true)) == options, "no switching on the cable")
         #expect(ControlPanel.rows(hosts: ClientSession.HostList()) == options)
@@ -40,17 +40,6 @@ import Testing
     @Test func leftAndRightChangeOptions() {
         var panel = ControlPanel()
         let h = hosts(onCable: true), p = ClientPreferences()
-        var faster = p
-        faster.pointerSpeed = 4
-        #expect(panel.key(Self.right, hosts: h, preferences: p) == .setPreferences(faster))
-        var top = p
-        top.pointerSpeed = 5
-        #expect(panel.key(Self.right, hosts: h, preferences: top) == .none, "already the fastest")
-        _ = panel.key(Self.down, hosts: h, preferences: p)
-        var slowerScroll = p
-        slowerScroll.scrollSpeed = 2
-        #expect(panel.key(Self.left, hosts: h, preferences: p) == .setPreferences(slowerScroll))
-        _ = panel.key(Self.down, hosts: h, preferences: p)
         var reversed = p
         reversed.reverseScroll = true
         #expect(panel.key(Self.left, hosts: h, preferences: p) == .setPreferences(reversed))
@@ -60,7 +49,7 @@ import Testing
     @Test func pathAndPriorityCycle() {
         var panel = ControlPanel()
         let h = hosts(onCable: true), p = ClientPreferences()
-        for _ in 0..<3 { _ = panel.key(Self.down, hosts: h, preferences: p) }   // the touch-screen row
+        _ = panel.key(Self.down, hosts: h, preferences: p)   // the touch-screen row
         var off = p
         off.touchMode = .off
         #expect(panel.key(Self.right, hosts: h, preferences: p) == .setPreferences(off))
@@ -92,20 +81,18 @@ import Testing
         let headings = lines.filter { $0.style == .heading }.map(\.text)
         #expect(headings == ["STREAM", "HOSTS", "OPTIONS", "SHORTCUTS"])
         let rows = lines.filter { $0.row != nil }
-        #expect(rows.count == 9)
+        #expect(rows.count == 7)
         #expect(rows[0].isSelected && rows[0].text.hasPrefix("○ Automatic"))
         #expect(rows[1].text.hasPrefix("◉ Mac mini") && rows[1].text.hasSuffix("connected"))
         #expect(rows[2].text.hasSuffix("in reach"))
-        #expect(rows[3].text.contains("●●●○○"))
-        #expect(rows[4].text.hasPrefix("Scroll speed") && rows[4].text.contains("●●●○○"))
-        #expect(rows[5].text.contains("Natural"))
+        #expect(rows[3].text.contains("Natural"))
 
         let cabled = panel.lines(info: nil, video: VideoStats(), host: nil, hosts: hosts(onCable: true),
                                  preferences: ClientPreferences())
         #expect(cabled.contains { $0.text.hasPrefix("the cable is in") })
-        #expect(cabled.filter { $0.row != nil }.count == 6, "the hosts are listed, not selectable")
-        #expect(rows[6].text.hasPrefix("Touch screen") && rows[6].text.contains("On"))
-        #expect(rows[7].text.contains("Automatic") && rows[8].text.contains("Standard"))
+        #expect(cabled.filter { $0.row != nil }.count == 4, "the hosts are listed, not selectable")
+        #expect(rows[4].text.hasPrefix("Touch screen") && rows[4].text.contains("On"))
+        #expect(rows[5].text.contains("Automatic") && rows[6].text.contains("Standard"))
     }
 
     @Test func theHostLineSaysWhyItHasNoNumbers() {
@@ -122,15 +109,9 @@ import Testing
         let defaults = try #require(UserDefaults(suiteName: "lain.tests.\(UUID().uuidString)"))
         #expect(ClientPreferences.load(from: defaults) == ClientPreferences())
         var p = ClientPreferences()
-        p.pointerSpeed = 9
-        #expect(p.pointerSpeed == 5)
-        p.scrollSpeed = 0
-        #expect(p.scrollSpeed == 1 && p.scrollScale == 0.5)
         p.reverseScroll = true
         p.touchMode = .off
         p.save(to: defaults)
         #expect(ClientPreferences.load(from: defaults) == p)
-        #expect(p.curve.sensitivity == 1.2)
-        #expect(ClientPreferences().curve == AccelerationCurve(), "speed 3 is today's curve")
     }
 }

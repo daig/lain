@@ -159,7 +159,10 @@ public struct PointerTracker: Sendable {
 
     /// Applies one GCMouse delta (y up-positive). Deltas were integers on iPadOS 26.7 and are
     /// fractional on 27 (§13). Returns nil for zero deltas, which iPadOS sends while fingers rest.
-    public mutating func move(dx: Double, dy: Double, at timeNs: UInt64, buttons: UInt8) -> PointerMove? {
+    /// `using`: the curve for this delta when it isn't the tracker's own (another control, or a scaled one).
+    public mutating func move(dx: Double, dy: Double, at timeNs: UInt64, buttons: UInt8,
+                              using other: AccelerationCurve? = nil) -> PointerMove? {
+        let curve = other ?? curve
         guard dx != 0 || dy != 0 else { return nil }
         // GCMouse reports every ~8.3 ms while moving, so after a pause the first delta covers about one
         // frame of motion, not the whole pause.

@@ -23,7 +23,7 @@ your local network. Hosts run on a Mac or on Linux.
 3. **Connect them with the cable** and open lain on the iPad. That first connection pairs the iPad with the
    host. After that, Wi-Fi works too; when the cable is plugged in, lain uses it.
 
-On the iPad, **hold the right Option key** to open lain's panel: settings (pointer and scroll speed, which
+On the iPad, **hold the right Option key** to open lain's panel: settings (scroll direction, touch, which
 computer and network to use) and the keyboard shortcuts. The right Option key also stands in for Command, so
 that shortcuts like ⌘ Tab reach the computer instead of the iPad.
 

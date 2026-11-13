@@ -145,6 +145,8 @@ public final class ClientInput: @unchecked Sendable {
     public func setInvertScroll(_ invert: Bool) { perform { self.pipeline.invertScroll = invert } }
     public func setScrollScale(_ scale: Double) { perform { self.pipeline.scrollScale = scale } }
     public func setCurve(_ curve: AccelerationCurve) { perform { self.pipeline.curve = curve } }
+    /// The streamed display's width (points) the pointer speeds were tuned at; they follow the resolution from it.
+    public func setReferenceWidth(_ width: Double) { perform { self.pipeline.referenceWidth = width } }
     public func setRemapTable(_ table: RemapTable) { perform { self.pipeline.remapTable = table } }
 
     // MARK: Events
