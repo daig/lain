@@ -61,12 +61,10 @@ import Testing
         var panel = ControlPanel()
         let h = hosts(onCable: true), p = ClientPreferences()
         for _ in 0..<3 { _ = panel.key(Self.down, hosts: h, preferences: p) }   // the touch-screen row
-        var trackpad = p
-        trackpad.touchMode = .trackpad
-        #expect(panel.key(Self.right, hosts: h, preferences: p) == .setPreferences(trackpad))
         var off = p
         off.touchMode = .off
-        #expect(panel.key(Self.left, hosts: h, preferences: p) == .setPreferences(off), "wraps around")
+        #expect(panel.key(Self.right, hosts: h, preferences: p) == .setPreferences(off))
+        #expect(panel.key(Self.left, hosts: h, preferences: off) == .setPreferences(p), "on or off")
         _ = panel.key(Self.down, hosts: h, preferences: p)   // the Wi-Fi path row
         var direct = p
         direct.wifiPath = .direct
@@ -106,7 +104,7 @@ import Testing
                                  preferences: ClientPreferences())
         #expect(cabled.contains { $0.text.hasPrefix("the cable is in") })
         #expect(cabled.filter { $0.row != nil }.count == 6, "the hosts are listed, not selectable")
-        #expect(rows[6].text.hasPrefix("Touch screen") && rows[6].text.contains("Pointer follows your finger"))
+        #expect(rows[6].text.hasPrefix("Touch screen") && rows[6].text.contains("On"))
         #expect(rows[7].text.contains("Automatic") && rows[8].text.contains("Standard"))
     }
 
@@ -129,7 +127,7 @@ import Testing
         p.scrollSpeed = 0
         #expect(p.scrollSpeed == 1 && p.scrollScale == 0.5)
         p.reverseScroll = true
-        p.touchMode = .trackpad
+        p.touchMode = .off
         p.save(to: defaults)
         #expect(ClientPreferences.load(from: defaults) == p)
         #expect(p.curve.sensitivity == 1.2)

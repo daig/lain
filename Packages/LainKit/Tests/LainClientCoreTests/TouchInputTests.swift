@@ -143,4 +143,36 @@ import Testing
         r.pipeline.closePanel()
         #expect(shortcuts == [.overlay(true), .overlay(false)])
     }
+
+    // MARK: The trackpad strip
+
+    @Test func theStripIsATrackpadWhateverTheScreensMode() {
+        let r = recorder(.direct)
+        let (x0, y0) = (r.pipeline.pointer.x, r.pipeline.pointer.y)
+        r.pipeline.padTouchBegan(id: 1, x: 20, y: 20, at: 0)
+        #expect(r.sent.isEmpty, "touching the strip moves nothing")
+        r.pipeline.padTouchMoved(id: 1, x: 60, y: 20, at: 100 * ms)
+        r.pipeline.padTouchEnded(id: 1, at: 200 * ms)
+        let x1 = r.pipeline.pointer.x
+        #expect(x1 > x0 && r.pipeline.pointer.y == y0 && r.buttons.isEmpty)
+        r.pipeline.padTouchBegan(id: 2, x: 5, y: 5, at: 1000 * ms)
+        r.pipeline.padTouchEnded(id: 2, at: 1050 * ms)
+        #expect(r.buttons.map(\.isDown) == [true, false] && r.buttons.allSatisfy { $0.x == x1 }, "a tap clicks where the pointer is")
+        // The screen is still direct at the same time.
+        r.take()
+        r.pipeline.touchBegan(id: 9, x: 200, y: 300, at: 5000 * ms)
+        #expect(r.moves.last.map { [$0.x, $0.y] } == [200, 300])
+    }
+
+    @Test func theStripHoldsToDragAndReleaseAllForgetsIt() {
+        let r = recorder(.off)
+        r.pipeline.padTouchBegan(id: 1, x: 20, y: 20, at: 0)
+        r.pipeline.tick(at: 450 * ms)
+        #expect(r.buttons.map(\.isDown) == [true], "works with the screen's touch off")
+        r.pipeline.releaseAll(.focusLost)
+        r.take()
+        r.pipeline.padTouchMoved(id: 1, x: 90, y: 20, at: 500 * ms)
+        r.pipeline.padTouchEnded(id: 1, at: 600 * ms)
+        #expect(r.sent.isEmpty)
+    }
 }

@@ -27,6 +27,8 @@ final class Dictation {
     private var isFailed: Bool { if case .failed = state { true } else { false } }
 
     private var run: Task<Void, Never>?
+    /// Counts the dictations started, so that an earlier one's late ending can't touch the current one.
+    private var generation = 0
     private var engine: AVAudioEngine?
     private var feed: AsyncStream<AnalyzerInput>.Continuation?
     private var analyzer: SpeechAnalyzer?
@@ -43,32 +45,24 @@ final class Dictation {
         lastTyped = nil
         pending = ""
         state = .preparing("Starting dictation…")
+        generation += 1
+        let mine = generation
         run = Task { [weak self] in
             do { try await self?.listen() } catch is CancellationError {} catch {
+                // Stopped, or a later dictation is running: the recognizer's ending isn't a failure.
+                guard let self, self.generation == mine, self.state != .idle else { return }
                 Self.log.error("dictation failed: \(String(describing: error), privacy: .public)")
-                self?.tearDown()
-                self?.state = .failed("Dictation isn't available: \(error.localizedDescription)")
+                self.tearDown()
+                self.state = .failed("Dictation isn't available: \(error.localizedDescription)")
             }
         }
     }
 
-    /// Stops listening; what was said so far is still finished and typed. The recognizer is told the audio has
-    /// ended, which makes the rest final and ends its results; if it hasn't within a few seconds, what it had
-    /// heard is typed as it stood.
+    /// Stops listening. What was heard but not yet made final is typed at once, as it stands: waiting for the
+    /// recognizer to finish it took seconds and seldom changed it.
     func stop() {
         guard isActive else { return }
-        if case .preparing = state { return finish() }
-        engine?.inputNode.removeTap(onBus: 0)
-        engine?.stop()
-        feed?.finish()
-        let analyzer = self.analyzer
-        Task { try? await analyzer?.finalizeAndFinishThroughEndOfInput() }
-        Task { [weak self] in
-            try? await Task.sleep(for: .seconds(3))
-            guard let self, self.isActive, self.engine?.isRunning != true else { return }
-            Self.log.notice("dictation: no final results after stop, typing what was heard")
-            self.finish()
-        }
+        finish()
     }
 
     /// Ends the dictation now: types what was heard but never made final, and lets go of everything.
@@ -77,7 +71,9 @@ final class Dictation {
         if !pending.isEmpty { type(pending) }
         pending = ""
         onPartial("")
+        let analyzer = self.analyzer
         tearDown()
+        Task { await analyzer?.cancelAndFinishNow() }
         state = .idle
     }
 
@@ -105,6 +101,7 @@ final class Dictation {
         let (stream, feed) = AsyncStream<AnalyzerInput>.makeStream()
         let analyzer = SpeechAnalyzer(modules: [transcriber])
         try await analyzer.start(inputSequence: stream)
+        guard !Task.isCancelled else { return await analyzer.cancelAndFinishNow() }   // stopped while getting ready
         engine.inputNode.installTap(onBus: 0, bufferSize: 4096, format: format, block: Self.tap(converter, into: feed))
         engine.prepare()
         try engine.start()

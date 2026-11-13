@@ -15,7 +15,9 @@ public struct ClientPreferences: Sendable, Equatable {
     }
     /// Reverses the trackpad's scroll direction (off: as the host's natural scrolling).
     public var reverseScroll = false
-    /// What fingers on the screen do.
+    /// Whether fingers on the stream drive the pointer (`direct`) or do nothing (`off`). The trackpad areas
+    /// the iPad shows without a hardware keyboard work either way; `trackpad` for the whole screen is no
+    /// longer offered (a saved one loads as `direct`).
     public var touchMode = TouchMode.direct
     /// How the iPad reaches a host over Wi-Fi.
     public var wifiPath = WiFiPath.automatic
@@ -45,7 +47,7 @@ public struct ClientPreferences: Sendable, Equatable {
         if defaults.object(forKey: speedKey) != nil { p.pointerSpeed = defaults.integer(forKey: speedKey) }
         if defaults.object(forKey: scrollSpeedKey) != nil { p.scrollSpeed = defaults.integer(forKey: scrollSpeedKey) }
         p.reverseScroll = defaults.bool(forKey: scrollKey)
-        if let raw = defaults.string(forKey: touchKey), let mode = TouchMode(rawValue: raw) { p.touchMode = mode }
+        if let raw = defaults.string(forKey: touchKey), let mode = TouchMode(rawValue: raw) { p.touchMode = mode == .off ? .off : .direct }
         if let raw = defaults.string(forKey: pathKey), let path = WiFiPath(rawValue: raw) { p.wifiPath = path }
         if let raw = defaults.string(forKey: priorityKey), let priority = NetworkStreamOptions.RadioPriority(rawValue: raw) {
             p.radioPriority = priority
@@ -172,7 +174,7 @@ public struct ControlPanel: Sendable, Equatable {
         case .pointerSpeed: p.pointerSpeed += step
         case .scrollSpeed: p.scrollSpeed += step
         case .scrollDirection: p.reverseScroll.toggle()
-        case .touchMode: p.touchMode = Self.cycle(p.touchMode, by: step)
+        case .touchMode: p.touchMode = p.touchMode == .off ? .direct : .off
         case .wifiPath: p.wifiPath = Self.cycle(p.wifiPath, by: step)
         case .radioPriority: p.radioPriority = Self.cycle(p.radioPriority, by: step)
         }
@@ -252,8 +254,8 @@ public struct ControlPanel: Sendable, Equatable {
         ("right ⌥ hold", "this panel"),
         ("left ⌥", "Option"),
         ("⌃⌥⌘ L", "stats HUD"),
-        ("touch", "press where you touch · Trackpad: move; tap: click; hold still, then move: drag"),
-        ("touch, two fingers", "drag: scroll · tap: right-click"),
+        ("touch the screen", "press where you touch · two fingers: scroll, or tap to right-click"),
+        ("trackpad areas", "move · tap: click · hold still, then move: drag (no keyboard attached)"),
     ]
 
     static func cycle<T: CaseIterable & Equatable>(_ value: T, by step: Int) -> T {
@@ -264,8 +266,7 @@ public struct ControlPanel: Sendable, Equatable {
 
     static func title(_ mode: TouchMode) -> String {
         switch mode {
-        case .direct: "Pointer follows your finger"
-        case .trackpad: "Trackpad"
+        case .direct, .trackpad: "On"
         case .off: "Off"
         }
     }

@@ -185,6 +185,7 @@ public final class ClientInputPipeline {
         closeTapArmed = false
         keyRepeat.cancel()
         apply(touch.cancelled(), at: timeNs)
+        apply(pad.cancelled(), at: timeNs)
         onLocalShortcut(.overlay(true))
     }
 
@@ -318,6 +319,24 @@ public final class ClientInputPipeline {
     /// The system took the touches (an edge gesture, an alert).
     public func touchesCancelled(at timeNs: UInt64) { apply(touch.cancelled(), at: timeNs) }
 
+    // The trackpad strip (portrait, under the stream): its own fingers, always as a trackpad, whatever the
+    // screen's `touchMode`. Positions are in the strip's points; only their travel matters.
+
+    public private(set) var pad = TouchGestures(mode: .trackpad)
+
+    public func padTouchBegan(id: Int, x: Double, y: Double, at timeNs: UInt64) {
+        guard !overlayShown else { return }
+        apply(pad.began(id: id, x: x, y: y, at: timeNs), at: timeNs)
+    }
+
+    public func padTouchMoved(id: Int, x: Double, y: Double, at timeNs: UInt64) {
+        apply(pad.moved(id: id, x: x, y: y, at: timeNs), at: timeNs)
+    }
+
+    public func padTouchEnded(id: Int, at timeNs: UInt64) { apply(pad.ended(id: id, at: timeNs), at: timeNs) }
+
+    public func padTouchesCancelled(at timeNs: UInt64) { apply(pad.cancelled(), at: timeNs) }
+
     /// The host point under a point of the view: the streamed display, aspect-fit and centred in the surface.
     func hostPoint(surfaceX: Double, surfaceY: Double) -> (x: Double, y: Double)? {
         guard let s = streamedDisplay, s.width > 0, s.height > 0, touchSurface.width > 0, touchSurface.height > 0 else { return nil }
@@ -421,6 +440,7 @@ public final class ClientInputPipeline {
         if let scroll = momentum.tick(at: timeNs) { send(.scroll(scroll)) }
         if let repeated = keyRepeat.tick(at: timeNs) { send(.keyEvent(repeated)) }
         apply(touch.tick(at: timeNs), at: timeNs)
+        apply(pad.tick(at: timeNs), at: timeNs)
         if let down = systemKeyDownAtNs, !overlayShown, timeNs &- down >= Self.overlayHoldNs, timeNs >= down {
             systemKeyDownAtNs = nil
             overlayShown = true
@@ -428,6 +448,7 @@ public final class ClientInputPipeline {
             closeTapArmed = false
             keyRepeat.cancel()
             apply(touch.cancelled(), at: timeNs)   // the panel takes the screen too
+            apply(pad.cancelled(), at: timeNs)
             onLocalShortcut(.overlay(true))
         }
     }
@@ -451,6 +472,7 @@ public final class ClientInputPipeline {
         closePanel()
         _ = heldButtons.releaseAll(x: pointer.x, y: pointer.y)
         touch.reset()
+        pad.reset()
         keyRepeat.cancel()
         clicks.reset()
         momentum = MomentumSynthesizer(config: momentum.config)

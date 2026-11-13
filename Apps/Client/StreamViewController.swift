@@ -3,6 +3,7 @@ import LainClientCore
 import os
 import Synchronization
 import UIKit
+import UniformTypeIdentifiers
 
 /// The client's one screen (§6.2, §6.4, §6.6): captures the Magic Keyboard and trackpad under pointer
 /// lock and feeds `ClientInput`; hosts the stream's `CAMetalLayer`, driven by `StreamRenderLoop`
@@ -32,6 +33,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             UIApplication.shared.isIdleTimerDisabled = status.isConnected
             connected.set(status.isConnected)
             render()
+            if isViewLoaded { updateInputMode() }
         }
     }
 
@@ -56,6 +58,24 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     private let menuButton = UIButton(type: .system)
     /// How much of the view's bottom the docked system keyboard covers: the stream is fitted above it.
     private var keyboardInset: CGFloat = 0
+    /// The streamed display's width over its height (0 until known), to place the stream in portrait.
+    private var streamAspect: CGFloat = 0
+    private var isPortrait: Bool { view.bounds.height > view.bounds.width }
+    /// The keyboard is up because the iPad is in portrait (and goes away when it no longer is).
+    private var keyboardIsAutomatic = false
+    /// How many characters each dictated phrase typed, newest last: the transcript's Delete key takes one back.
+    private var dictatedPhrases: [Int] = []
+    private let dictationBar = UIStackView()
+    /// Portrait, between the stream and the keyboard: more keys, and a trackpad strip that takes what is left.
+    private let band = UIView()
+    private let trackpad = TrackpadStrip()
+    /// Landscape without a hardware keyboard: a small trackpad patch in each bottom corner, under the thumbs.
+    private let cornerPads = [TrackpadStrip(corner: .layerMaxXMinYCorner), TrackpadStrip(corner: .layerMinXMinYCorner)]
+    private static let cornerPadSize = CGSize(width: 150, height: 120)
+    private lazy var extraKeys = ExtraKeys(pasteTarget: self)
+    /// Where the transcript sits: at the top of the band in portrait, above the keyboard otherwise.
+    private var transcriptInBand: NSLayoutConstraint?
+    private var transcriptAboveKeyboard: NSLayoutConstraint?
     /// Dictation on the iPad, typed on the host; `dictationPill` shows it and stops it.
     private let dictation = Dictation()
     private let dictationPill = UIButton(type: .system)
@@ -78,7 +98,8 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     override var prefersStatusBarHidden: Bool { true }
     override var prefersHomeIndicatorAutoHidden: Bool { true }
     override var preferredScreenEdgesDeferringSystemGestures: UIRectEdge { .all }
-    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .landscape }
+    /// Landscape is the display; portrait is the handheld layout, with the keyboard below the stream.
+    override var supportedInterfaceOrientations: UIInterfaceOrientationMask { .all }
     override var canBecomeFirstResponder: Bool { true }
 
     // MARK: Lifecycle
@@ -92,6 +113,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         setUpLabels()
         setUpGestures()
         setUpTouchKeyboard()
+        pasteConfiguration = UIPasteConfiguration(acceptableTypeIdentifiers: [UTType.plainText.identifier])
 
         input.setPointerEnabled(false)   // D19: nothing from the trackpad until the pointer is locked
         observe()
@@ -118,9 +140,16 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         guard let layer = renderLoop?.layer else { return }
         // Drawable = the view in pixels: 2752×2064 on the 13" iPad Pro full screen, 1:1 with the stream.
         let scale = traitCollection.displayScale
-        // The stream fills the view, or what the docked system keyboard leaves of it.
+        // The stream fills the view, or what the docked system keyboard leaves of it. In portrait it sits at the
+        // top at its own shape, which leaves a band above the keyboard for the dictation transcript.
         var stream = view.bounds
         stream.size.height = max(stream.height - keyboardInset, 1)
+        if isPortrait, streamAspect > 0 {
+            let width = min(stream.width, stream.height * streamAspect)
+            stream = CGRect(x: ((view.bounds.width - width) / 2).rounded(), y: 0, width: width.rounded(), height: (width / streamAspect).rounded())
+        }
+        updateInputMode()
+        layoutBand(under: stream)
         CATransaction.begin()
         CATransaction.setDisableActions(true)
         layer.frame = stream
@@ -133,13 +162,6 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     override func viewDidAppear(_ animated: Bool) {
         super.viewDidAppear(animated)
         becomeFirstResponder()
-        // A resizable iPadOS 26+ app isn't rotated by supportedInterfaceOrientations alone; ask for landscape.
-        // iPadOS 27 refuses this in windowed modes (verified in the simulator); on the Magic Keyboard the
-        // iPad is landscape anyway.
-        view.window?.windowScene?.requestGeometryUpdate(.iOS(interfaceOrientations: .landscape)) { error in
-            // Expected in windowed modes: "does not allow for programmatic changes to interface orientation".
-            Self.log.notice("landscape request refused: \(error.localizedDescription, privacy: .public)")
-        }
         setNeedsUpdateOfPrefersPointerLocked()
         pointerLockChanged()
     }
@@ -151,6 +173,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         diag("scene active")
         view.window?.makeKey()
         becomeFirstResponder()
+        updateInputMode()
         setNeedsUpdateOfPrefersPointerLocked()
         pointerLockChanged()
         for delay in [0.25, 1.0] {
@@ -283,6 +306,12 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     }
 
     private func refreshVideoState() {
+        let cursor = input.cursor
+        let aspect = cursor.displayPointHeight > 0 ? CGFloat(cursor.displayPointWidth / cursor.displayPointHeight) : 0
+        if aspect != streamAspect {
+            streamAspect = aspect
+            view.setNeedsLayout()
+        }
         let hasVideo = video.hasVideo
         if hasVideo != self.hasVideo {
             self.hasVideo = hasVideo
@@ -300,6 +329,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     /// Opened by holding Right Option alone; the host's stats are asked for while it shows.
     private func setPanel(_ shown: Bool) {
         panelView.isHidden = !shown
+        if shown { setTouchKeyboard(false) } else { updateInputMode() }
         session?.setHostStatsInterval(ms: shown ? ControlPanel.hostStatsIntervalMs : 0)
         if shown {
             renderPanel(video.stats())
@@ -516,8 +546,18 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
 
     // MARK: Keyboard without a keyboard
 
-    /// A small button at the right edge, shown while no hardware keyboard is attached: its menu opens the
-    /// system keyboard (typing goes to the host as text, v6) and the panel.
+    // Input follows the configuration (no hardware keyboard in the first two):
+    // - landscape: dictation. The edge button is a microphone: a tap starts and stops dictating; holding it
+    //   opens a menu with the system keyboard (for what can't be dictated) and the panel.
+    // - portrait: the system keyboard is always up below the stream, and its key row has the microphone and
+    //   the panel; no button floats over the stream.
+    // - hardware keyboard: nothing on screen; Globe twice dictates, Right Option held opens the panel.
+
+    private var hostTypes: Bool {
+        if case .session(let info) = status { return ProtocolFeature.textInput.isSupported(at: info.protocolVersion) }
+        return false
+    }
+
     private func setUpTouchKeyboard() {
         keyCapture.frame = .zero
         view.addSubview(keyCapture)
@@ -529,118 +569,71 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         keyCapture.keyRow.onKey = { [weak self] key in self?.tapKey(key) }
         keyCapture.keyRow.onHide = { [weak self] in self?.setTouchKeyboard(false) }
         keyCapture.keyRow.onDictate = { [weak self] in self?.toggleDictation() }
+        keyCapture.keyRow.onSettings = { [weak self] in self?.input.openPanel() }
+        setUpBand()
         setUpDictation()
 
-        menuButton.setImage(UIImage(systemName: "keyboard"), for: .normal)
+        menuButton.setImage(UIImage(systemName: "mic"), for: .normal)
         menuButton.tintColor = .white
         menuButton.backgroundColor = UIColor(white: 0.1, alpha: 0.55)
-        menuButton.layer.cornerRadius = 22
+        menuButton.layer.cornerRadius = 24
         menuButton.layer.borderWidth = 1
         menuButton.layer.borderColor = UIColor(white: 1, alpha: 0.2).cgColor
-        menuButton.accessibilityLabel = "lain menu"
-        menuButton.showsMenuAsPrimaryAction = true
+        menuButton.accessibilityLabel = "Dictate"
+        menuButton.accessibilityHint = "Touch and hold for the keyboard and settings"
+        menuButton.addAction(UIAction { [weak self] _ in self?.toggleDictation() }, for: .touchUpInside)
         menuButton.menu = UIMenu(children: [UIDeferredMenuElement.uncached { [weak self] done in
             done(self?.touchMenu() ?? [])
         }])
         menuButton.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(menuButton)
         NSLayoutConstraint.activate([
-            menuButton.widthAnchor.constraint(equalToConstant: 44),
-            menuButton.heightAnchor.constraint(equalToConstant: 44),
+            menuButton.widthAnchor.constraint(equalToConstant: 48),
+            menuButton.heightAnchor.constraint(equalToConstant: 48),
             menuButton.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -10),
             menuButton.centerYAnchor.constraint(equalTo: view.centerYAnchor),
         ])
-        hardwareKeyboardChanged()
+        updateInputMode()
     }
 
+    /// The edge button's menu (touch and hold).
     private func touchMenu() -> [UIMenuElement] {
-        var hostTypes = false
-        if case .session(let info) = status { hostTypes = ProtocolFeature.textInput.isSupported(at: info.protocolVersion) }
         let showing = keyCapture.isFirstResponder
         let keyboard = UIAction(title: showing ? "Hide Keyboard" : "Keyboard",
                                 subtitle: hostTypes ? nil : (status.isConnected ? "Update lain on the host first" : "Not connected"),
                                 image: UIImage(systemName: showing ? "keyboard.chevron.compact.down" : "keyboard"),
                                 attributes: hostTypes ? [] : .disabled) { [weak self] _ in self?.setTouchKeyboard(!showing) }
-        let dictate = UIAction(title: dictation.isActive ? "Stop Dictating" : "Dictate",
-                               subtitle: hostTypes ? nil : (status.isConnected ? "Update lain on the host first" : "Not connected"),
-                               image: UIImage(systemName: dictation.isActive ? "mic.slash" : "mic"),
-                               attributes: hostTypes || dictation.isActive ? [] : .disabled) { [weak self] _ in self?.toggleDictation() }
         let settings = UIAction(title: "Settings", image: UIImage(systemName: "slider.horizontal.3")) { [weak self] _ in
-            self?.setTouchKeyboard(false)
             self?.input.openPanel()
         }
-        return [keyboard, dictate, settings]
+        return [keyboard, settings]
     }
 
     private func setTouchKeyboard(_ shown: Bool) {
         if shown { keyCapture.becomeFirstResponder() } else if keyCapture.isFirstResponder { becomeFirstResponder() }
+        if !shown { keyboardIsAutomatic = false }
     }
 
-    // MARK: Dictation
-
-    /// A pill at the bottom shows what is being heard; final text is typed on the host. Started from the touch
-    /// menu, the key row's microphone, or a double-tap of Globe on a hardware keyboard; a tap on the pill stops it.
-    private func setUpDictation() {
-        var config = UIButton.Configuration.filled()
-        config.baseBackgroundColor = UIColor(white: 0.08, alpha: 0.9)
-        config.baseForegroundColor = .white
-        config.image = UIImage(systemName: "mic.fill")
-        config.imagePadding = 8
-        config.cornerStyle = .capsule
-        config.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16)
-        config.titleLineBreakMode = .byTruncatingHead
-        dictationPill.configuration = config
-        dictationPill.isHidden = true
-        dictationPill.addAction(UIAction { [weak self] _ in self?.dictation.stop() }, for: .touchUpInside)
-        dictationPill.translatesAutoresizingMaskIntoConstraints = false
-        view.addSubview(dictationPill)
-        NSLayoutConstraint.activate([
-            dictationPill.centerXAnchor.constraint(equalTo: view.centerXAnchor),
-            dictationPill.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -14),
-            dictationPill.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, multiplier: 0.8),
-        ])
-        dictation.onState = { [weak self] state in self?.renderDictation(state, partial: "") }
-        dictation.onPartial = { [weak self] text in
-            guard let self else { return }
-            self.renderDictation(self.dictation.state, partial: text)
-        }
-        dictation.onFinal = { [weak self] text in self?.input.typeText(text) }
-    }
-
-    private func toggleDictation() {
-        var hostTypes = false
-        if case .session(let info) = status { hostTypes = ProtocolFeature.textInput.isSupported(at: info.protocolVersion) }
-        guard hostTypes || dictation.isActive else { return }
-        dictation.toggle()
-    }
-
-    private func renderDictation(_ state: Dictation.State, partial: String) {
-        let title: String?
-        switch state {
-        case .idle: title = nil
-        case .preparing(let what): title = what
-        case .listening: title = partial.isEmpty ? "Listening… tap to stop" : partial
-        case .failed(let why): title = why
-        }
-        dictationPill.isHidden = title == nil
-        dictationPill.configuration?.title = title
-        dictationPill.configuration?.baseBackgroundColor = state == .listening ? UIColor.systemRed.withAlphaComponent(0.85) : UIColor(white: 0.08, alpha: 0.9)
-        keyCapture.keyRow.setDictating(dictation.isActive)
-        if case .failed = state {
-            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
-                guard let self, self.dictation.state == state else { return }
-                self.dictationPill.isHidden = true
-            }
-        }
-    }
-
-    /// With a hardware keyboard the button goes away, and so does the system keyboard: the view that takes
-    /// its typing would take the hardware keys' too, which GameController already sends.
-    private func hardwareKeyboardChanged() {
+    /// Applies the configuration: which controls show, and whether the keyboard is up on its own.
+    private func updateInputMode() {
         let hasKeyboard = GCKeyboard.coalesced != nil
-        menuButton.isHidden = hasKeyboard
-        if hasKeyboard { setTouchKeyboard(false) }
+        let portrait = isPortrait
+        menuButton.isHidden = hasKeyboard || portrait
+        keyCapture.keyRow.setCanHide(!portrait)
+        if hasKeyboard {
+            // The view that takes the system keyboard's typing would take the hardware keys' too, which
+            // GameController already sends.
+            setTouchKeyboard(false)
+        } else if portrait {
+            if hostTypes, panelView.isHidden, !keyCapture.isFirstResponder, view.window != nil {
+                keyboardIsAutomatic = keyCapture.becomeFirstResponder()
+            }
+        } else if keyboardIsAutomatic {
+            setTouchKeyboard(false)   // back in landscape: dictation only, the keyboard on request
+        }
     }
+
+    private func hardwareKeyboardChanged() { updateInputMode() }
 
     /// One press of a key that isn't a character, with the key row's lit modifiers held around it.
     private func tapKey(_ key: PhysicalKey) {
@@ -656,13 +649,195 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     /// The docked keyboard covers the bottom of the view; a floating one (or none) covers nothing to make room for.
     private func keyboardFrameChanged(hidden: Bool = false) {
         var inset: CGFloat = 0
-        if !hidden, keyCapture.isFirstResponder, let guide = Optional(view.keyboardLayoutGuide) {
-            let frame = guide.layoutFrame
+        if !hidden, keyCapture.isFirstResponder {
+            let frame = view.keyboardLayoutGuide.layoutFrame
             if frame.width >= view.bounds.width - 1, frame.maxY >= view.bounds.maxY - 1 { inset = max(view.bounds.maxY - frame.minY, 0) }
         }
         guard inset != keyboardInset else { return }
         keyboardInset = inset
         view.setNeedsLayout()
+    }
+
+    // MARK: The band (portrait)
+
+    /// Under the stream in portrait there is room the stream's shape leaves: a row of the keys the keyboard's
+    /// row lacks, and below it a trackpad strip, so the pointer has a precise mode under the thumbs while the
+    /// (smaller) stream stays direct.
+    private func setUpBand() {
+        band.isHidden = true
+        view.addSubview(band)
+        extraKeys.onKey = { [weak self] key in self?.tapKey(key) }
+        let input = self.input, cursor = video.cursor
+        // Every trackpad area feeds the one pad: a thumb on each corner is its two fingers. A finger's travel is
+        // all that matters, so each area reporting in its own coordinates is fine.
+        for pad in [trackpad] + cornerPads {
+            pad.onBegan = { id, p in
+                cursor.pointerMoved()
+                input.padTouchBegan(id: id, x: p.x, y: p.y)
+            }
+            pad.onMoved = { id, p in input.padTouchMoved(id: id, x: p.x, y: p.y) }
+            pad.onEnded = { id in input.padTouchEnded(id: id) }
+            pad.onCancelled = { input.padTouchesCancelled() }
+        }
+        for pad in cornerPads {
+            pad.isHidden = true
+            view.insertSubview(pad, belowSubview: band)
+        }
+        for v in [extraKeys, trackpad] as [UIView] {
+            v.translatesAutoresizingMaskIntoConstraints = false
+            band.addSubview(v)
+        }
+        NSLayoutConstraint.activate([
+            extraKeys.topAnchor.constraint(equalTo: band.topAnchor),
+            extraKeys.leadingAnchor.constraint(equalTo: band.leadingAnchor),
+            extraKeys.trailingAnchor.constraint(equalTo: band.trailingAnchor),
+            extraKeys.heightAnchor.constraint(equalToConstant: 38),
+            trackpad.topAnchor.constraint(equalTo: extraKeys.bottomAnchor, constant: 8),
+            trackpad.leadingAnchor.constraint(equalTo: band.leadingAnchor),
+            trackpad.trailingAnchor.constraint(equalTo: band.trailingAnchor),
+            trackpad.bottomAnchor.constraint(equalTo: band.bottomAnchor),
+        ])
+    }
+
+    /// The band fills what is between the stream and the keyboard (or the bottom of the screen), in portrait
+    /// without a hardware keyboard, when that is enough for the keys and a usable strip.
+    private func layoutBand(under stream: CGRect) {
+        let bottom = view.bounds.maxY - max(keyboardInset, view.safeAreaInsets.bottom)
+        let frame = CGRect(x: 8, y: stream.maxY + 8, width: view.bounds.width - 16, height: bottom - stream.maxY - 16)
+        let shown = isPortrait && streamAspect > 0 && GCKeyboard.coalesced == nil && frame.height >= 110
+        if shown { band.frame = frame }
+        if band.isHidden == shown {
+            band.isHidden = !shown
+            if !shown { input.padTouchesCancelled() }
+        }
+        // Landscape: the corner patches, at the bottom of the stream (above a docked keyboard).
+        let corners = !isPortrait && GCKeyboard.coalesced == nil
+        let size = Self.cornerPadSize, y = view.bounds.maxY - keyboardInset - size.height
+        cornerPads[0].frame = CGRect(x: 0, y: y, width: size.width, height: size.height)
+        cornerPads[1].frame = CGRect(x: view.bounds.maxX - size.width, y: y, width: size.width, height: size.height)
+        for pad in cornerPads where pad.isHidden == corners {
+            pad.isHidden = !corners
+            if !corners { input.padTouchesCancelled() }
+        }
+        // The transcript: at the top of the band when there is one.
+        if shown {
+            transcriptAboveKeyboard?.isActive = false
+            transcriptInBand?.isActive = true
+        } else {
+            transcriptInBand?.isActive = false
+            transcriptAboveKeyboard?.isActive = true
+        }
+    }
+
+    /// The band's Paste button (the system's paste control, which reads the clipboard without a prompt): the
+    /// iPad's clipboard text is typed on the host.
+    override func paste(itemProviders: [NSItemProvider]) {
+        guard hostTypes, let provider = itemProviders.first(where: { $0.canLoadObject(ofClass: String.self) }) else { return }
+        _ = provider.loadObject(ofClass: String.self) { text, _ in
+            guard let text, !text.isEmpty else { return }
+            Task { @MainActor [weak self] in self?.input.typeText(text) }
+        }
+    }
+
+    // MARK: Dictation
+
+    /// What is being heard shows in a pill above the keyboard (in portrait, in the band under the stream), with
+    /// two keys voice can't press: Delete (takes back the last phrase typed, then single characters) and
+    /// Return. Final phrases are typed on the host as they come. Started with the edge button, the key row's
+    /// microphone, or Globe twice on a hardware keyboard; stopped the same way or by a tap on the pill.
+    private func setUpDictation() {
+        var config = UIButton.Configuration.filled()
+        config.baseBackgroundColor = UIColor(white: 0.08, alpha: 0.9)
+        config.baseForegroundColor = .white
+        config.image = UIImage(systemName: "mic.fill")
+        config.imagePadding = 8
+        config.cornerStyle = .large
+        config.contentInsets = NSDirectionalEdgeInsets(top: 10, leading: 16, bottom: 10, trailing: 16)
+        config.titleLineBreakMode = .byTruncatingHead
+        dictationPill.configuration = config
+        dictationPill.titleLabel?.numberOfLines = 3
+        dictationPill.addAction(UIAction { [weak self] _ in self?.dictation.stop() }, for: .touchUpInside)
+        dictationPill.accessibilityHint = "Stops dictating"
+
+        func key(_ symbol: String, _ label: String, _ action: @escaping () -> Void) -> UIButton {
+            var c = UIButton.Configuration.filled()
+            c.baseBackgroundColor = UIColor(white: 0.08, alpha: 0.9)
+            c.baseForegroundColor = .white
+            c.image = UIImage(systemName: symbol)
+            c.cornerStyle = .large
+            c.contentInsets = NSDirectionalEdgeInsets(top: 12, leading: 14, bottom: 12, trailing: 14)
+            let b = UIButton(configuration: c, primaryAction: UIAction { _ in action() })
+            b.accessibilityLabel = label
+            b.setContentCompressionResistancePriority(.required, for: .horizontal)
+            return b
+        }
+        dictationBar.axis = .horizontal
+        dictationBar.spacing = 8
+        dictationBar.alignment = .bottom
+        dictationBar.addArrangedSubview(dictationPill)
+        dictationBar.addArrangedSubview(key("delete.left", "Delete the last phrase") { [weak self] in self?.deleteDictated() })
+        dictationBar.addArrangedSubview(key("return", "Return") { [weak self] in
+            self?.dictatedPhrases.removeAll()
+            self?.tapKey(.return)
+        })
+        dictationBar.isHidden = true
+        dictationBar.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(dictationBar)
+        NSLayoutConstraint.activate([
+            dictationBar.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            dictationBar.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, multiplier: 0.7),   // clear of the corner patches
+        ])
+        transcriptAboveKeyboard = dictationBar.bottomAnchor.constraint(equalTo: view.keyboardLayoutGuide.topAnchor, constant: -14)
+        transcriptInBand = dictationBar.topAnchor.constraint(equalTo: band.topAnchor)
+        transcriptAboveKeyboard?.isActive = true
+        dictation.onState = { [weak self] state in self?.renderDictation(state, partial: "") }
+        dictation.onPartial = { [weak self] text in
+            guard let self else { return }
+            self.renderDictation(self.dictation.state, partial: text)
+        }
+        dictation.onFinal = { [weak self] text in
+            self?.dictatedPhrases.append(text.count)
+            self?.input.typeText(text)
+        }
+    }
+
+    private func toggleDictation() {
+        if dictation.isActive { return dictation.stop() }
+        guard hostTypes else {
+            return renderDictation(.failed(status.isConnected ? "Update lain on the host to dictate" : "Not connected"), partial: "")
+        }
+        dictatedPhrases.removeAll()
+        dictation.start()
+    }
+
+    /// Takes back the last phrase dictated (as many Deletes as it had characters); with none left, one character.
+    private func deleteDictated() {
+        for _ in 0..<(dictatedPhrases.popLast() ?? 1) { tapKey(.key(0x2A)) }
+    }
+
+    private func renderDictation(_ state: Dictation.State, partial: String) {
+        let title: String?
+        switch state {
+        case .idle: title = nil
+        case .preparing(let what): title = what
+        case .listening: title = partial.isEmpty ? "Listening… tap to stop" : partial
+        case .failed(let why): title = why
+        }
+        dictationBar.isHidden = title == nil
+        extraKeys.alpha = title == nil ? 1 : 0   // in portrait the transcript takes their place
+        for key in dictationBar.arrangedSubviews.dropFirst() { key.isHidden = state != .listening }
+        dictationPill.configuration?.title = title
+        dictationPill.configuration?.baseBackgroundColor = state == .listening ? UIColor.systemRed.withAlphaComponent(0.85) : UIColor(white: 0.08, alpha: 0.9)
+        keyCapture.keyRow.setDictating(dictation.isActive)
+        menuButton.setImage(UIImage(systemName: dictation.isActive ? "mic.fill" : "mic"), for: .normal)
+        menuButton.backgroundColor = dictation.isActive ? UIColor.systemRed.withAlphaComponent(0.85) : UIColor(white: 0.1, alpha: 0.55)
+        if case .failed = state {
+            DispatchQueue.main.asyncAfter(deadline: .now() + 4) { [weak self] in
+                guard let self, self.dictationPill.configuration?.title == title, !self.dictation.isActive else { return }
+                self.dictationBar.isHidden = true
+                self.extraKeys.alpha = 1
+            }
+        }
     }
 
     // MARK: Touch screen

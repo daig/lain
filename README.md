@@ -27,20 +27,28 @@ On the iPad, **hold the right Option key** to open lain's panel: settings (point
 computer and network to use) and the keyboard shortcuts. The right Option key also stands in for Command, so
 that shortcuts like ⌘ Tab reach the computer instead of the iPad.
 
-### Touch screen
+### Without a Magic Keyboard
 
-You can also drive the computer with your fingers on the iPad's screen. Choose how under **Touch screen** in
-lain's panel:
+lain also works with the iPad on its own: touch, an on-screen keyboard and dictation.
 
-- **Pointer follows your finger** (the default). Touching presses the mouse button at that spot and holds it
-  until you lift: tap to click, tap twice to double-click, move to drag.
-- **Trackpad.** The whole screen works like a trackpad, for finer control:
-  - move a finger to move the pointer;
-  - tap to click where the pointer is;
-  - to drag, hold a finger still for a moment, then move. Lift to let go.
-- **Off.** Touches do nothing, so only the keyboard and trackpad control the computer.
+- **Touch.** Touching the picture presses the mouse button at that spot and holds it until you lift: tap to
+  click, tap twice to double-click, move to drag. Drag with two fingers to scroll, and tap with two fingers to
+  right-click. (**Touch screen** in lain's panel turns this off.)
+- **Trackpad areas**, for finer control. A finger that starts on one moves the pointer like a trackpad: tap to
+  click; to drag, hold still for a moment, then move.
+  - Landscape: a faint patch in each bottom corner, under your thumbs.
+  - Portrait: the strip between the picture and the keyboard.
+- **Dictation.** In landscape, tap the microphone button at the right edge and speak; each phrase is typed on
+  the computer when you pause. Tap again to stop. Keys beside the transcript delete the last phrase and
+  press Return. Dictation runs on the iPad.
+- **Keyboard.** Turn the iPad to portrait and the keyboard comes up under the picture. The rows above it add
+  Esc, Tab, arrows and more; ⌃ ⌥ ⌘ apply to the next key (⌃ then C is Control-C). In landscape, touch and
+  hold the microphone button and choose **Keyboard**.
+- **Settings.** The slider key above the keyboard, or touch and hold the microphone button.
 
-In both modes, drag with two fingers to scroll, and tap with two fingers to right-click.
+With a Magic Keyboard attached, none of this shows; press Globe twice to dictate.
+
+Typing and dictation need a host from this version or later.
 
 ## Install a host
 

@@ -230,6 +230,31 @@ public final class ClientInput: @unchecked Sendable {
         perform { self.pipeline.touchesCancelled(at: t) }
     }
 
+    // The trackpad strip: fingers on it move the pointer as a trackpad does, whatever the screen's touch mode.
+
+    public func padTouchBegan(id: Int, x: Double, y: Double) {
+        let t = MonotonicClock.now()
+        perform { self.pipeline.padTouchBegan(id: id, x: x, y: y, at: t) }
+    }
+
+    public func padTouchMoved(id: Int, x: Double, y: Double) {
+        let t = MonotonicClock.now()
+        perform {
+            self.pipeline.padTouchMoved(id: id, x: x, y: y, at: t)
+            self.publishCursor()
+        }
+    }
+
+    public func padTouchEnded(id: Int) {
+        let t = MonotonicClock.now()
+        perform { self.pipeline.padTouchEnded(id: id, at: t) }
+    }
+
+    public func padTouchesCancelled() {
+        let t = MonotonicClock.now()
+        perform { self.pipeline.padTouchesCancelled(at: t) }
+    }
+
     public func mouseButton(_ button: MouseButton, isDown: Bool) {
         let t = MonotonicClock.now()
         perform { self.pipeline.mouseButton(button, isDown: isDown, at: t) }
