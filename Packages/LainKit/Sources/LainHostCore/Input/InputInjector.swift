@@ -163,11 +163,12 @@ public final class InputInjector: InputSink, @unchecked Sendable {
     public func scroll(_ s: Scroll) {
         guard let ev = CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 2,
                                wheel1: Int32(s.dy.rounded()), wheel2: Int32(s.dx.rounded()), wheel3: 0) else { return }
+        let deltas = Self.scrollDeltas(dx: Double(s.dx), dy: Double(s.dy), pixelsPerLine: source?.pixelsPerLine ?? 10)
         ev.setIntegerValueField(.scrollWheelEventIsContinuous, value: 1)
-        ev.setDoubleValueField(.scrollWheelEventPointDeltaAxis1, value: Double(s.dy))
-        ev.setDoubleValueField(.scrollWheelEventPointDeltaAxis2, value: Double(s.dx))
-        ev.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: Double(s.dy))
-        ev.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: Double(s.dx))
+        ev.setDoubleValueField(.scrollWheelEventPointDeltaAxis1, value: deltas.pointY)
+        ev.setDoubleValueField(.scrollWheelEventPointDeltaAxis2, value: deltas.pointX)
+        ev.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1, value: deltas.linesY)
+        ev.setDoubleValueField(.scrollWheelEventFixedPtDeltaAxis2, value: deltas.linesX)
         ev.setIntegerValueField(.scrollWheelEventScrollPhase, value: Self.scrollPhase(s.phase))
         ev.setIntegerValueField(.scrollWheelEventMomentumPhase, value: Self.momentumPhase(s.momentumPhase))
         ev.flags = Self.cgFlags(state.withLock { $0.modifiers })
@@ -240,6 +241,17 @@ public final class InputInjector: InputSink, @unchecked Sendable {
     }
 
     /// kCGScrollPhase* values.
+    /// A scroll's deltas as a trackpad's event carries them: pixels in the point fields (AppKit's
+    /// `scrollingDeltaY`, what browsers read) and **lines** in the fixed-point fields (`deltaY`, what Terminal
+    /// and other line-scrolling apps read), pixels ÷ `pixelsPerLine` (10), the conversion Core Graphics itself
+    /// applies to a pixel scroll event. Lines once got the pixels too, so such apps scrolled ten times too far,
+    /// in jumps (2026-11-13; the integer line field follows the fixed one).
+    static func scrollDeltas(dx: Double, dy: Double, pixelsPerLine: Double)
+        -> (pointX: Double, pointY: Double, linesX: Double, linesY: Double) {
+        let perLine = pixelsPerLine > 0 ? pixelsPerLine : 10
+        return (dx, dy, dx / perLine, dy / perLine)
+    }
+
     static func scrollPhase(_ p: GesturePhase) -> Int64 {
         switch p {
         case .none: 0

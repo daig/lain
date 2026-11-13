@@ -237,3 +237,27 @@ import Testing
         #expect(ack.macInputSource == "com.apple.keylayout.Colemak")
     }
 }
+
+#if os(macOS)
+/// A scroll as a trackpad's event carries it: pixels for `scrollingDeltaY` (browsers), lines for `deltaY`
+/// (Terminal). Lines once got the pixels, and Terminal scrolled ten times too far, in jumps.
+@Suite struct ScrollEventFieldTests {
+    @Test func pixelsInThePointFieldsAndLinesInTheFixedOnes() {
+        let d = InputInjector.scrollDeltas(dx: -3, dy: 23, pixelsPerLine: 10)
+        #expect(d.pointY == 23 && d.pointX == -3)
+        #expect(d.linesY == 2.3 && d.linesX == -0.3, "Core Graphics' own conversion for a pixel event")
+    }
+
+    @Test func aSourceWithoutAScaleUsesTen() {
+        #expect(InputInjector.scrollDeltas(dx: 0, dy: 10, pixelsPerLine: 0).linesY == 1)
+    }
+
+    @Test func coreGraphicsAgrees() throws {
+        // What CG derives for a pixel scroll event it builds itself: the reference the fields follow.
+        let source = CGEventSource(stateID: .hidSystemState)
+        let event = try #require(CGEvent(scrollWheelEvent2Source: source, units: .pixel, wheelCount: 1, wheel1: 44, wheel2: 0, wheel3: 0))
+        let lines = InputInjector.scrollDeltas(dx: 0, dy: 44, pixelsPerLine: source?.pixelsPerLine ?? 10).linesY
+        #expect(abs(event.getDoubleValueField(.scrollWheelEventFixedPtDeltaAxis1) - lines) < 0.001)
+    }
+}
+#endif

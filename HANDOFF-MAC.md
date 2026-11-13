@@ -3,6 +3,28 @@
 Continue on the Mac, where the Mac host can be built, run and measured. Delete this file once both issues
 are settled and recorded (ARCHITECTURE.md §11/§13, STATUS.md).
 
+## Outcome on the Mac (2026-11-13)
+
+- **Issue 1, fixed in Mac host 1.1.1.** Measured with the probe below: lain's events carried lines equal to
+  pixels (`fixed`/`point` median 1.03 over 156 events). Core Graphics' own conversion for a pixel scroll event is
+  lines = pixels ÷ `CGEventSource.pixelsPerLine` (10; a 23 px event is 2.3 lines, its integer field at least 1).
+  `InputInjector.scrollDeltas` now applies it; `ScrollEventFieldTests` pins it against CG. The owner confirmed
+  Terminal scrolls smoothly. Not compared with a real trackpad's events (this Mac has none).
+- **Issue 2, very likely the network.** This Mac's host was on **Wi-Fi** (`en1`; Ethernet `en0` inactive), the
+  Linux host on Ethernet: two wireless hops per frame, or AWDL (33 of the Duo's 121 Wi-Fi sessions in 30 h).
+  The host's per-second stats during busy seconds (≥ 20 frames captured), last 30 h:
+
+  | Path | sent / captured | held back for the link /s | Mb/s | ack max, 90th pct |
+  |---|---|---|---|---|
+  | USB | 0.70 | 0.3 | 17.0 | 13 ms |
+  | Duo, LAN (Mac on Wi-Fi) | 0.54 | 21.9 | 4.4 | 421 ms |
+  | Duo, AWDL | 0.45 | 24.7 | 4.3 | 330 ms |
+  | iPad, LAN (Mac on Wi-Fi) | 0.56 | 33.1 | 3.2 | 233 ms |
+
+  Both hosts gate at 2 unacknowledged frames, so ack stalls cost the same on either. To settle it: the Mac on
+  Ethernet, the Duo over Wi-Fi with Wi-Fi path "Through the network", scrolling and a YouTube video, against
+  the Linux numbers. Then record in ARCHITECTURE.md §13 / STATUS.md and delete this file.
+
 ## Where things stand
 
 - `main` has the Linux host at parity with v1. On the iPhone Duo over USB and the LAN it is verified for:
