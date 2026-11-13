@@ -14,6 +14,11 @@ use lain_platform::{InputSettings, SettingsSource};
 use zbus::{Connection, MatchRule, MessageStream};
 
 use crate::bus;
+use crate::text_keys::TextKeys;
+
+/// The current layout's [`TextKeys`], shared with [`GnomeInput`](crate::GnomeInput) and replaced whenever the
+/// input sources change.
+pub type SharedTextKeys = Arc<RwLock<Arc<TextKeys>>>;
 
 /// GNOME's schema defaults, used when gsettings can't be read.
 pub const DEFAULTS: InputSettings = InputSettings {
@@ -114,6 +119,39 @@ async fn gsettings_get(schema: &str, key: &str) -> Option<String> {
     String::from_utf8(out.stdout).ok()
 }
 
+/// An `as` as `gsettings get` prints it: `['caps:backspace', 'compose:ralt']`, `@as []`.
+pub fn parse_strings(text: &str) -> Option<Vec<String>> {
+    let t = text.trim();
+    let t = t.strip_prefix("@as").unwrap_or(t).trim();
+    let mut rest = t.strip_prefix('[')?.trim_start();
+    let mut out = Vec::new();
+    loop {
+        if let Some(r) = rest.strip_prefix(']') {
+            return r.trim().is_empty().then_some(out);
+        }
+        let (s, r) = string_literal(rest)?;
+        out.push(s);
+        rest = r.trim_start();
+        rest = rest.strip_prefix(',').unwrap_or(rest).trim_start();
+    }
+}
+
+/// The XKB layout id of the current input source (`us+colemak`), or `None` for a source that isn't XKB.
+pub fn current_xkb(sources: &[(String, String)], mru: &[(String, String)]) -> Option<String> {
+    input_source(sources, mru).strip_prefix("xkb:").map(str::to_owned)
+}
+
+/// The key table for the current input source and `xkb-options`, read now.
+pub async fn read_text_keys() -> TextKeys {
+    let pairs =
+        |key| async move { gsettings_get(SOURCES, key).await.as_deref().and_then(parse_pairs).unwrap_or_default() };
+    let (sources, mru) = (pairs("sources").await, pairs("mru-sources").await);
+    let options = gsettings_get(SOURCES, "xkb-options").await.as_deref().and_then(parse_strings).unwrap_or_default();
+    let keys = TextKeys::build(current_xkb(&sources, &mru).as_deref(), &options);
+    tracing::info!(layout = keys.source, characters = keys.len(), "typed text: the keyboard layout");
+    keys
+}
+
 /// Reads the settings now; each key that can't be read keeps GNOME's default.
 pub async fn read() -> InputSettings {
     let uint = |schema, key, default| async move {
@@ -135,6 +173,7 @@ pub async fn read() -> InputSettings {
 #[derive(Debug, Clone)]
 pub struct GnomeSettings {
     current: Arc<RwLock<InputSettings>>,
+    text_keys: SharedTextKeys,
 }
 
 impl SettingsSource for GnomeSettings {
@@ -147,6 +186,7 @@ impl GnomeSettings {
     /// Reads the settings, then keeps them current from dconf's change notifications.
     pub async fn start(conn: &Connection) -> Self {
         let current = Arc::new(RwLock::new(read().await));
+        let text_keys = Arc::new(RwLock::new(Arc::new(read_text_keys().await)));
         tracing::debug!(settings = ?*current.read().unwrap_or_else(|e| e.into_inner()), "input settings");
         let rule = MatchRule::builder()
             .msg_type(zbus::message::Type::Signal)
@@ -159,20 +199,25 @@ impl GnomeSettings {
         };
         match stream {
             Ok(stream) => {
-                tokio::spawn(watch(stream, current.clone()));
+                tokio::spawn(watch(stream, current.clone(), text_keys.clone()));
             }
             Err(e) => tracing::warn!("can't watch dconf; input settings are read once: {e}"),
         }
-        Self { current }
+        Self { current, text_keys }
+    }
+
+    /// The current layout's key table, kept current: for [`GnomeInput`](crate::GnomeInput).
+    pub fn text_keys(&self) -> SharedTextKeys {
+        self.text_keys.clone()
     }
 
     /// Fixed settings, for tests of code that takes a `GnomeSettings`.
     pub fn fixed(settings: InputSettings) -> Self {
-        Self { current: Arc::new(RwLock::new(settings)) }
+        Self { current: Arc::new(RwLock::new(settings)), text_keys: SharedTextKeys::default() }
     }
 }
 
-async fn watch(mut stream: MessageStream, current: Arc<RwLock<InputSettings>>) {
+async fn watch(mut stream: MessageStream, current: Arc<RwLock<InputSettings>>, text_keys: SharedTextKeys) {
     while let Some(msg) = stream.next().await {
         let Ok(msg) = msg else { continue };
         let Ok((prefix, changes, _tag)) = msg.body().deserialize::<(String, Vec<String>, String)>() else { continue };
@@ -182,12 +227,26 @@ async fn watch(mut stream: MessageStream, current: Arc<RwLock<InputSettings>>) {
         let settings = read().await;
         tracing::debug!(?settings, "input settings changed");
         *current.write().unwrap_or_else(|e| e.into_inner()) = settings;
+        let keys = Arc::new(read_text_keys().await);
+        *text_keys.write().unwrap_or_else(|e| e.into_inner()) = keys;
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn parses_string_lists_and_the_xkb_source() {
+        assert_eq!(
+            parse_strings("['caps:backspace', 'compose:ralt']\n"),
+            Some(vec!["caps:backspace".into(), "compose:ralt".into()])
+        );
+        assert_eq!(parse_strings("@as []"), Some(vec![]));
+        let s = |a: &str, b: &str| (a.to_owned(), b.to_owned());
+        assert_eq!(current_xkb(&[s("xkb", "us+colemak")], &[]).as_deref(), Some("us+colemak"));
+        assert_eq!(current_xkb(&[s("ibus", "mozc-jp")], &[]), None);
+    }
 
     #[test]
     fn parses_gsettings_numbers() {

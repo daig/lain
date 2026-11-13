@@ -57,6 +57,8 @@ const STOP_TIMEOUT: Duration = Duration::from_secs(2);
 #[derive(Debug, Clone)]
 pub struct GnomeInput {
     tx: mpsc::UnboundedSender<Vec<InputAction>>,
+    /// The current layout's keys, for typed text (v6 `TextInput`); empty until [`with_text_keys`](Self::with_text_keys).
+    text_keys: crate::settings::SharedTextKeys,
 }
 
 impl InputBackend for GnomeInput {
@@ -64,6 +66,10 @@ impl InputBackend for GnomeInput {
         if !actions.is_empty() && self.tx.send(actions.to_vec()).is_err() {
             tracing::debug!("input task gone; dropping {} actions", actions.len());
         }
+    }
+
+    fn text_key(&self, c: char) -> Option<lain_platform::TextKey> {
+        self.text_keys.read().unwrap_or_else(|e| e.into_inner()).get(c)
     }
 }
 
@@ -79,7 +85,13 @@ impl GnomeInput {
         let (tx, rx) = mpsc::unbounded_channel();
         let task = Task { conn, desktop, cursor, mapper: Mapper::new(barrier), session: None, stale: false };
         tokio::spawn(task.run(rx));
-        Self { tx }
+        Self { tx, text_keys: Default::default() }
+    }
+
+    /// Types text with `keys`, the settings' table ([`GnomeSettings::text_keys`](crate::GnomeSettings::text_keys)).
+    pub fn with_text_keys(mut self, keys: crate::settings::SharedTextKeys) -> Self {
+        self.text_keys = keys;
+        self
     }
 }
 

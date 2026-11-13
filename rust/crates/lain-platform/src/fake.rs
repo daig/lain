@@ -558,6 +558,30 @@ impl InputBackend for FakeInput {
     fn apply(&self, actions: &[InputAction]) {
         lock(&self.0).extend_from_slice(actions);
     }
+
+    /// A US layout's letters, digits, space and a few punctuation marks, plus `é` on AltGr (`KEY_RIGHTALT`) and
+    /// `É` on AltGr+Shift, for tests of text typing.
+    fn text_key(&self, c: char) -> Option<crate::TextKey> {
+        const LETTERS: [u16; 26] =
+            [30, 48, 46, 32, 18, 33, 34, 35, 23, 36, 37, 38, 50, 49, 24, 25, 16, 19, 31, 20, 22, 47, 17, 45, 21, 44];
+        const DIGITS: [u16; 10] = [11, 2, 3, 4, 5, 6, 7, 8, 9, 10];
+        let key = |code, shift| Some(crate::TextKey { code, shift, level3: None });
+        match c {
+            'a'..='z' => key(LETTERS[c as usize - 'a' as usize], false),
+            'A'..='Z' => key(LETTERS[c as usize - 'A' as usize], true),
+            '0'..='9' => key(DIGITS[c as usize - '0' as usize], false),
+            ' ' => key(57, false),
+            '.' => key(52, false),
+            ',' => key(51, false),
+            '\'' => key(40, false),
+            '"' => key(40, true),
+            '!' => key(2, true),
+            '-' => key(12, false),
+            'é' => Some(crate::TextKey { code: 18, shift: false, level3: Some(100) }),
+            'É' => Some(crate::TextKey { code: 18, shift: true, level3: Some(100) }),
+            _ => None,
+        }
+    }
 }
 
 // MARK: Power

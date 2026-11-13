@@ -65,6 +65,10 @@ impl<T: InputBackend + ?Sized> InputBackend for Arc<T> {
     fn apply(&self, actions: &[InputAction]) {
         (**self).apply(actions)
     }
+
+    fn text_key(&self, c: char) -> Option<crate::TextKey> {
+        (**self).text_key(c)
+    }
 }
 
 impl<T: PowerBackend + ?Sized> PowerBackend for Arc<T> {

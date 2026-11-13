@@ -324,7 +324,18 @@ impl<P: Platform> HostConnection<P> {
             }
             let Realtime { router, actions, warp, .. } = &mut *s;
             actions.clear();
-            let outcome = router.handle_at(message, now, actions);
+            let outcome = match message {
+                // v6: typed as the keys of the desktop's layout (lain-input's `text`).
+                Message::TextInput(t) => {
+                    let input = self.platform.input();
+                    let (outcome, skipped) = router.text(t, |c| input.text_key(c), actions);
+                    if skipped > 0 {
+                        info!(skipped, "typed text: characters the keyboard layout doesn't have were left out");
+                    }
+                    outcome
+                }
+                _ => router.handle_at(message, now, actions),
+            };
             if !actions.is_empty() {
                 self.platform.input().apply(actions);
             }

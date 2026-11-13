@@ -23,6 +23,7 @@ mod modifiers;
 mod pinch;
 mod router;
 pub mod scroll;
+pub mod text;
 
 pub use modifiers::{CommandShortcut, LinuxModifier, ModifierMap, ModifierSet};
 pub use pinch::PinchZoomMapper;

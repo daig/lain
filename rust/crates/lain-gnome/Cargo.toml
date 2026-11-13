@@ -8,6 +8,7 @@ publish.workspace = true
 license.workspace = true
 
 [dependencies]
+xkbcommon.workspace = true
 lain-platform.workspace = true
 futures.workspace = true
 # The short-lived consumer that fixes the virtual monitor's mode (L8). Its main loop runs on its own thread.

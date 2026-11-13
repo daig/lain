@@ -43,7 +43,7 @@ pub use display::{DisplayBackend, DisplaySpec, Monitor, StreamedDisplay};
 pub use error::{PlatformError, Result};
 pub use geometry::{PointF, RectF};
 pub use identity::HostIdentity;
-pub use input::{InputAction, InputBackend, ScrollSource};
+pub use input::{InputAction, InputBackend, ScrollSource, TextKey};
 pub use power::PowerBackend;
 pub use secrets::SecretStore;
 pub use settings::{InputSettings, SettingsSource};
