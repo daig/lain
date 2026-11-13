@@ -403,28 +403,28 @@ fn run(cfg: InputConfig, kt: KeyboardType, ops: &[Op]) -> Result<(), TestCaseErr
         if phased != ScrollSource::Wheel {
             prop_assert_eq!(d.open, r.scroll_open(), "scroll open {}", ctx());
         }
-        // The client's momentum: only in client mode, never after a stop.
-        if let Op::Msg(Message::Scroll(s)) = op {
-            let is_momentum = s.phase == GesturePhase::None && s.momentum_phase != MomentumPhase::None;
-            for a in &out {
-                match a {
-                    InputAction::Scroll { source, .. } if is_momentum && *source != ScrollSource::Wheel => {
-                        prop_assert!(client_momentum, "momentum in desktop mode {}", ctx());
-                        prop_assert!(!flung, "momentum after a stop {}", ctx());
-                    }
-                    InputAction::Scroll { source, .. }
-                        if *source != ScrollSource::Wheel || phased == ScrollSource::Wheel =>
-                    {
-                        if matches!(s.phase, GesturePhase::Began | GesturePhase::Changed | GesturePhase::Ended) {
-                            flung = false;
-                        }
-                    }
-                    _ => {}
+        // The client's momentum: only in client mode, never after a stop. The actions are walked in order: one
+        // message may end a sequence (a held-back stop come due) and then start a new one, which momentum then
+        // continues (an `Ended` with a delta after the stop: proptest's case of 2026-11-01).
+        let scroll = if let Op::Msg(Message::Scroll(s)) = op { Some(s) } else { None };
+        let is_momentum =
+            scroll.is_some_and(|s| s.phase == GesturePhase::None && s.momentum_phase != MomentumPhase::None);
+        let is_phase = scroll
+            .is_some_and(|s| matches!(s.phase, GesturePhase::Began | GesturePhase::Changed | GesturePhase::Ended));
+        for a in &out {
+            match a {
+                InputAction::ScrollStop { .. } => flung = true,
+                InputAction::Scroll { source, .. } if is_momentum && *source != ScrollSource::Wheel => {
+                    prop_assert!(client_momentum, "momentum in desktop mode {}", ctx());
+                    prop_assert!(!flung, "momentum after a stop {}", ctx());
                 }
+                InputAction::Scroll { source, .. }
+                    if is_phase && (*source != ScrollSource::Wheel || phased == ScrollSource::Wheel) =>
+                {
+                    flung = false;
+                }
+                _ => {}
             }
-        }
-        if out.iter().any(|a| matches!(a, InputAction::ScrollStop { .. })) {
-            flung = true;
         }
     }
     out.clear();
