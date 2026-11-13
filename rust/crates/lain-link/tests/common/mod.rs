@@ -49,6 +49,7 @@ pub fn sample_hello() -> Hello {
         max_refresh_rate: 120,
         decode_capabilities: DecodeCapabilities::HEVC_MAIN | DecodeCapabilities::HEVC_MAIN_444_10_HARDWARE,
         keyboard_type: KeyboardType::Ansi,
+        desired_scale: 0,
     }
 }
 
@@ -71,6 +72,8 @@ pub fn sample_hello_ack() -> HelloAck {
         mac_input_source: "com.apple.keylayout.Colemak".into(),
         host_id: String::new(),
         host_name: String::new(),
+        display_scale: 0,
+        display_scales: vec![],
     }
 }
 

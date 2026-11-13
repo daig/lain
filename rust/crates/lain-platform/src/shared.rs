@@ -55,6 +55,10 @@ impl<T: DisplayBackend> DisplayBackend for Arc<T> {
     fn cursor_location(&self) -> Option<PointF> {
         (**self).cursor_location()
     }
+
+    fn applied_scale(&self) -> Option<f64> {
+        (**self).applied_scale()
+    }
 }
 
 impl<T: InputBackend + ?Sized> InputBackend for Arc<T> {

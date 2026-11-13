@@ -1235,7 +1235,9 @@ impl<P: Platform> Inner<P> {
     /// the encoder says otherwise (L3; Swift defaults to 4:4:4 10-bit), the display mode extend, the
     /// configured bitrate (60 Mbps), the refresh rate of the display (Swift: 120 always), audio 48 kHz / 2 /
     /// PCM16LE as Swift states, the platform's input settings and the host's id and name. The point size is
-    /// the streamed display's, else the primary monitor's.
+    /// the streamed display's, else the primary monitor's. v7: the display's scale now, and the scales the
+    /// client may choose ([`OFFERED_SCALES`](crate::video::OFFERED_SCALES)) if the platform scales its display;
+    /// both dropped for an older client.
     fn hello_ack(&self, connection: &HostConnection<P>, hello: &Hello, streaming: Option<Streaming>) -> HelloAck {
         let settings = self.platform.settings().input_settings();
         let (width, height) =
@@ -1247,6 +1249,9 @@ impl<P: Platform> Inner<P> {
         };
         let refresh = streaming.map(|s| s.display.refresh_hz).unwrap_or_else(|| display_spec(hello).refresh_hz);
         let identity = self.config.identity.as_ref();
+        let applied = streaming.and_then(|_| lain_platform::DisplayBackend::applied_scale(self.platform.display()));
+        let display_scale = applied.map_or(0, |s| (s * 100.0).round().clamp(0.0, f64::from(u16::MAX)) as u16);
+        let display_scales = if applied.is_some() { crate::video::OFFERED_SCALES.to_vec() } else { Vec::new() };
         HelloAck {
             codec: VideoCodec::Hevc,
             chroma,
@@ -1265,6 +1270,8 @@ impl<P: Platform> Inner<P> {
             mac_input_source: settings.input_source,
             host_id: identity.map(|i| i.id.clone()).unwrap_or_default(),
             host_name: identity.map(|i| i.name.clone()).unwrap_or_default(),
+            display_scale,
+            display_scales,
         }
     }
 

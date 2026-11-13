@@ -15,11 +15,15 @@ pub enum ProtocolFeature {
     TextInput,
     /// v6: the host sends its sound (`AudioConfig`, `AudioPacket`) and the iPad plays it.
     Audio,
+    /// v7: the client asks for its display's scale (`Hello.desiredScale`) and the host says which it applied and
+    /// which it can (`HelloAck.displayScale`, `displayScales`).
+    DisplayScale,
 }
 
 impl ProtocolFeature {
     /// Every feature (Swift: `allCases`).
-    pub const ALL: &'static [Self] = &[Self::HostSetup, Self::HostStats, Self::TextInput, Self::Audio];
+    pub const ALL: &'static [Self] =
+        &[Self::HostSetup, Self::HostStats, Self::TextInput, Self::Audio, Self::DisplayScale];
 
     /// The first version with the feature.
     pub const fn since(self) -> u8 {
@@ -27,13 +31,14 @@ impl ProtocolFeature {
             Self::HostSetup => 4,
             Self::HostStats => 5,
             Self::TextInput | Self::Audio => 6,
+            Self::DisplayScale => 7,
         }
     }
 
     /// The first version without it, when a newer behaviour replaced it; `None` while current.
     pub const fn until(self) -> Option<u8> {
         match self {
-            Self::HostSetup | Self::HostStats | Self::TextInput | Self::Audio => None,
+            Self::HostSetup | Self::HostStats | Self::TextInput | Self::Audio | Self::DisplayScale => None,
         }
     }
 
@@ -52,6 +57,7 @@ impl ProtocolFeature {
             Self::HostStats => "the host's video stats on the iPad",
             Self::TextInput => "dictation and the on-screen keyboard",
             Self::Audio => "the computer's sound on the iPad",
+            Self::DisplayScale => "choosing the display's scale on the iPad",
         }
     }
 

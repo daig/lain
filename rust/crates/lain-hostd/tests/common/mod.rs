@@ -41,6 +41,7 @@ pub fn hello() -> Hello {
         max_refresh_rate: 120,
         decode_capabilities: DecodeCapabilities::HEVC_MAIN | DecodeCapabilities::HEVC_MAIN_444_10_HARDWARE,
         keyboard_type: KeyboardType::Ansi,
+        desired_scale: 0,
     }
 }
 

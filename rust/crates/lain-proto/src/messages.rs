@@ -5,7 +5,7 @@
 //! Swift's nested types are flattened: `DisplayLayout.Display` is [`LayoutDisplay`], `HostSetup.Item` is
 //! [`SetupItem`], `ErrorMessage.Code` is [`ErrorCode`], and so on; each says which it mirrors.
 
-use crate::io::{ByteReader, ByteWriter};
+use crate::io::{ByteReader, ByteWriter, Lowering};
 use crate::{HANDSHAKE_VERSION, MessageType, ProtocolError, Result, VersionList};
 
 /// One message payload. Swift: `WireMessage`.
@@ -179,6 +179,10 @@ pub struct Hello {
     pub max_refresh_rate: u16,
     pub decode_capabilities: DecodeCapabilities,
     pub keyboard_type: KeyboardType,
+    /// v7: the pixels per point the client wants the host's display at, in hundredths (200: 2×); 0: no
+    /// preference, the host's own. The host applies the nearest scale it supports and says which in
+    /// [`HelloAck::display_scale`]. Advisory: dropped for an older peer.
+    pub desired_scale: u16,
 }
 
 impl WireMessage for Hello {
@@ -191,6 +195,7 @@ impl WireMessage for Hello {
         w.u16(self.max_refresh_rate);
         w.u32(self.decode_capabilities.0);
         w.u8(self.keyboard_type.raw());
+        w.since(7, "desiredScale", &self.desired_scale, &0, Lowering::Drop, |w, v| w.u16(*v));
     }
     fn decode(r: &mut ByteReader<'_>) -> Result<Self> {
         Ok(Self {
@@ -201,6 +206,7 @@ impl WireMessage for Hello {
             max_refresh_rate: r.u16()?,
             decode_capabilities: DecodeCapabilities(r.u32()?),
             keyboard_type: r.enum_value()?,
+            desired_scale: r.since(7, 0, |r| r.u16())?,
         })
     }
 }
@@ -231,6 +237,17 @@ pub struct HelloAck {
     pub host_id: String,
     /// The host's name, for the client's status.
     pub host_name: String,
+    /// v7: the display's pixels per point, in hundredths (200: 2×); 0: not said (an older host).
+    pub display_scale: u16,
+    /// v7: every scale the host can make this client's display at, in hundredths, ascending: what the client
+    /// may ask for in [`Hello::desired_scale`] on its next connection. Empty: the host decides alone. At most
+    /// [`HelloAck::MAX_DISPLAY_SCALES`] are written.
+    pub display_scales: Vec<u16>,
+}
+
+impl HelloAck {
+    /// At most this many scales (a longer list is malformed). Swift: `HelloAck.maxDisplayScales`.
+    pub const MAX_DISPLAY_SCALES: usize = 32;
 }
 
 impl WireMessage for HelloAck {
@@ -253,6 +270,14 @@ impl WireMessage for HelloAck {
         w.string(&self.mac_input_source);
         w.string(&self.host_id);
         w.string(&self.host_name);
+        w.since(7, "displayScale", &self.display_scale, &0, Lowering::Drop, |w, v| w.u16(*v));
+        w.since(7, "displayScales", &self.display_scales, &Vec::new(), Lowering::Drop, |w, scales| {
+            let kept = &scales[..scales.len().min(Self::MAX_DISPLAY_SCALES)];
+            w.u8(kept.len() as u8);
+            for s in kept {
+                w.u16(*s);
+            }
+        });
     }
     fn decode(r: &mut ByteReader<'_>) -> Result<Self> {
         Ok(Self {
@@ -273,6 +298,14 @@ impl WireMessage for HelloAck {
             mac_input_source: r.string()?,
             host_id: r.string()?,
             host_name: r.string()?,
+            display_scale: r.since(7, 0, |r| r.u16())?,
+            display_scales: r.since(7, Vec::new(), |r| {
+                let count = usize::from(r.u8()?);
+                if count > Self::MAX_DISPLAY_SCALES {
+                    return Err(ProtocolError::Malformed(format!("{count} display scales")));
+                }
+                (0..count).map(|_| r.u16()).collect()
+            })?,
         })
     }
 }

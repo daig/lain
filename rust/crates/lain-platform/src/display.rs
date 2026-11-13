@@ -14,15 +14,21 @@ use crate::{PointF, RectF, Result};
 pub struct DisplaySpec {
     pub pixel_width: u32,
     pub pixel_height: u32,
-    /// Device pixels per logical pixel (2 on an iPad).
+    /// Device pixels per logical pixel when the client asks for no scale: 2, the host's own (the owner's
+    /// scale setting, where the platform has one, replaces it).
     pub scale: u32,
+    /// The scale the client chose (v7 `Hello.desiredScale`), in hundredths, exactly as the display must be
+    /// made (the core sizes the display so the desktop can apply it); 0: none, `scale` (or the owner's setting)
+    /// applies. Part of the spec, so a display kept for one scale isn't reused for another.
+    pub desired_scale: u16,
     pub refresh_hz: u32,
 }
 
 impl DisplaySpec {
     /// The size in logical pixels: the client's cursor space for this display.
     pub fn logical_size(&self) -> (f64, f64) {
-        let scale = f64::from(self.scale.max(1));
+        let scale =
+            if self.desired_scale > 0 { f64::from(self.desired_scale) / 100.0 } else { f64::from(self.scale.max(1)) };
         (f64::from(self.pixel_width) / scale, f64::from(self.pixel_height) / scale)
     }
 }
@@ -83,6 +89,12 @@ pub trait DisplayBackend: Send + Sync + 'static {
     /// blocks. GNOME can tell only while the pointer is on lain's display, from the stream's cursor
     /// metadata, so warps elsewhere go undetected there: a documented difference from the Mac host.
     fn cursor_location(&self) -> Option<PointF>;
+
+    /// lain's display's scale now (device pixels per logical pixel), if it exists and the platform scales it
+    /// (v7 `HelloAck.displayScale`). `None` by default: the platform makes its display at the spec's scale only.
+    fn applied_scale(&self) -> Option<f64> {
+        None
+    }
 }
 
 #[cfg(test)]
@@ -91,9 +103,11 @@ mod tests {
 
     #[test]
     fn logical_size() {
-        let spec = DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, refresh_hz: 120 };
+        let spec = DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, desired_scale: 0, refresh_hz: 120 };
         assert_eq!(spec.logical_size(), (1376.0, 1032.0));
         let unscaled = DisplaySpec { scale: 0, ..spec };
         assert_eq!(unscaled.logical_size(), (2752.0, 2064.0));
+        let chosen = DisplaySpec { pixel_width: 2850, pixel_height: 2004, desired_scale: 300, ..spec };
+        assert_eq!(chosen.logical_size(), (950.0, 668.0));
     }
 }

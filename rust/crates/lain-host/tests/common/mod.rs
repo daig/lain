@@ -46,6 +46,7 @@ pub fn hello() -> Hello {
         max_refresh_rate: 120,
         decode_capabilities: DecodeCapabilities::HEVC_MAIN | DecodeCapabilities::HEVC_MAIN_444_10_HARDWARE,
         keyboard_type: KeyboardType::Iso,
+        desired_scale: 0,
     }
 }
 
@@ -200,6 +201,10 @@ impl DisplayBackend for TestDisplay {
 
     fn cursor_location(&self) -> Option<PointF> {
         self.fake.cursor_location()
+    }
+
+    fn applied_scale(&self) -> Option<f64> {
+        self.fake.applied_scale()
     }
 }
 

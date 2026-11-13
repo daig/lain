@@ -54,6 +54,7 @@ fn build() -> Vec<Message> {
             max_refresh_rate: 120,
             decode_capabilities: DecodeCapabilities::HEVC_MAIN | DecodeCapabilities::HEVC_MAIN_444_10_HARDWARE,
             keyboard_type: KeyboardType::Iso,
+            desired_scale: 175,
         }),
         Message::HelloAck(HelloAck {
             codec: VideoCodec::Hevc,
@@ -73,6 +74,8 @@ fn build() -> Vec<Message> {
             mac_input_source: "com.apple.keylayout.Colemak".into(),
             host_id: host_id.clone(),
             host_name: "Mac mini ✓".into(),
+            display_scale: 175,
+            display_scales: vec![150, 175, 200, 225, 250, 275, 300],
         }),
         Message::Ping(Ping { id: 7, sent_at_ns: 123_456_789_012 }),
         Message::Pong(Pong { id: 7, ping_sent_at_ns: 1, received_at_ns: u64::MAX - 1, sent_at_ns: u64::MAX }),

@@ -27,8 +27,8 @@ fn magic_is_la_in_little_endian() {
 
 #[test]
 fn versions_and_bonjour_service() {
-    assert_eq!(SUPPORTED_VERSIONS, [4, 5, 6]);
-    assert_eq!(NEWEST_VERSION, 6);
+    assert_eq!(SUPPORTED_VERSIONS, [4, 5, 6, 7]);
+    assert_eq!(NEWEST_VERSION, 7);
     assert_eq!(HANDSHAKE_VERSION, 0xFF);
     assert!(*LEGACY_VERSIONS.end() < SUPPORTED_VERSIONS[0]);
     assert_eq!(BONJOUR_SERVICE_TYPE, "_lain._tcp");

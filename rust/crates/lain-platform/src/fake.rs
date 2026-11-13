@@ -66,6 +66,8 @@ pub struct FakeSource {
 struct DisplayState {
     physical: Vec<Monitor>,
     created: Option<(StreamedDisplay, Monitor)>,
+    /// The spec the live display was made for.
+    spec: Option<DisplaySpec>,
     next_id: u32,
     fail_next_create: Option<PlatformError>,
     creates: usize,
@@ -100,6 +102,7 @@ impl FakeDisplay {
             state: Mutex::new(DisplayState {
                 physical,
                 created: None,
+                spec: None,
                 next_id: 100,
                 fail_next_create: None,
                 creates: 0,
@@ -188,6 +191,7 @@ impl DisplayBackend for FakeDisplay {
         };
         let monitor = Monitor { id, bounds: RectF::new(x, 0.0, width, height), primary: false, lain: true };
         s.created = Some((display, monitor));
+        s.spec = Some(spec);
         self.publish(&s);
         Ok((display, FakeSource { display_id: id }))
     }
@@ -195,6 +199,7 @@ impl DisplayBackend for FakeDisplay {
     async fn destroy(&self) {
         let mut s = lock(&self.0.state);
         if s.created.take().is_some() {
+            s.spec = None;
             s.destroys += 1;
             self.publish(&s);
         }
@@ -206,6 +211,13 @@ impl DisplayBackend for FakeDisplay {
 
     fn cursor_location(&self) -> Option<PointF> {
         lock(&self.0.state).cursor
+    }
+
+    /// The live display's scale: the client's choice, else the spec's own.
+    fn applied_scale(&self) -> Option<f64> {
+        lock(&self.0.state)
+            .spec
+            .map(|s| if s.desired_scale > 0 { f64::from(s.desired_scale) / 100.0 } else { f64::from(s.scale.max(1)) })
     }
 }
 
@@ -895,7 +907,8 @@ impl Platform for FakePlatform {
 mod tests {
     use super::*;
 
-    const SPEC: DisplaySpec = DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, refresh_hz: 120 };
+    const SPEC: DisplaySpec =
+        DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, desired_scale: 0, refresh_hz: 120 };
     const CONFIG: EncodeConfig = EncodeConfig {
         width: 2752,
         height: 2064,

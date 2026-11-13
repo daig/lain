@@ -54,14 +54,15 @@ pub struct Mode {
     pub supported_scales: Vec<f64>,
 }
 
-/// The supported scale closest to `wanted` (the first of two equally close); `wanted` itself if Mutter listed
+/// The supported scale closest to `wanted` (the later, larger of two equally close); `wanted` itself if Mutter listed
 /// none.
 pub fn nearest_scale(supported: &[f64], wanted: f64) -> f64 {
     supported
         .iter()
         .copied()
         .fold(None, |best: Option<f64>, s| match best {
-            Some(b) if (b - wanted).abs() <= (s - wanted).abs() => Some(b),
+            // On a tie the later, larger one (the list is ascending), as Swift's `DisplayScaleChoice.choose`.
+            Some(b) if (b - wanted).abs() < (s - wanted).abs() => Some(b),
             _ => Some(s),
         })
         .unwrap_or(wanted)
@@ -384,7 +385,7 @@ pub(crate) mod tests {
         assert_eq!(nearest_scale(&fractional, 2.0), 2.0);
         assert_eq!(nearest_scale(&fractional, 1.6), 1.4997);
         // Fractional scaling off: integers only, the closest one.
-        assert_eq!(nearest_scale(&[1.0, 2.0, 3.0], 1.5), 1.0, "ties go to the first listed");
+        assert_eq!(nearest_scale(&[1.0, 2.0, 3.0], 1.5), 2.0, "ties go to the larger, as Swift's");
         assert_eq!(nearest_scale(&[1.0, 2.0, 3.0], 1.75), 2.0);
         assert_eq!(nearest_scale(&[], 1.75), 1.75, "nothing listed: as asked");
     }
