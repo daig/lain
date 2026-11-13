@@ -885,6 +885,49 @@ impl WireMessage for CursorWarp {
     }
 }
 
+// MARK: - Audio (H→C, the audio channel)
+
+/// v6: the format of the [`AudioPacket`]s that follow, sent before the first and again if it changes. Only to
+/// peers with [`ProtocolFeature::Audio`](crate::ProtocolFeature). Swift: `AudioConfig`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct AudioConfig {
+    pub sample_rate: u32,
+    pub channels: u8,
+    pub encoding: AudioEncoding,
+}
+
+impl WireMessage for AudioConfig {
+    const TYPE: MessageType = MessageType::AudioConfig;
+    fn encode(&self, w: &mut ByteWriter) {
+        w.u32(self.sample_rate);
+        w.u8(self.channels);
+        w.u8(self.encoding.raw());
+    }
+    fn decode(r: &mut ByteReader<'_>) -> Result<Self> {
+        Ok(Self { sample_rate: r.u32()?, channels: r.u8()?, encoding: r.enum_value()? })
+    }
+}
+
+/// v6: a few milliseconds of the host's sound in the last [`AudioConfig`]'s format (interleaved), sent as it is
+/// captured. Uncompressed: no codec delay, and small next to the video. Swift: `AudioPacket`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct AudioPacket {
+    /// When the host captured the first sample (its monotonic clock, ns; Swift: `CLOCK_UPTIME_RAW`).
+    pub capture_time_ns: u64,
+    pub samples: Vec<u8>,
+}
+
+impl WireMessage for AudioPacket {
+    const TYPE: MessageType = MessageType::AudioPacket;
+    fn encode(&self, w: &mut ByteWriter) {
+        w.u64(self.capture_time_ns);
+        w.blob(&self.samples);
+    }
+    fn decode(r: &mut ByteReader<'_>) -> Result<Self> {
+        Ok(Self { capture_time_ns: r.u64()?, samples: r.blob()? })
+    }
+}
+
 // MARK: - Input (C→H)
 
 /// A physical key (D18): HID usage page + usage. Swift: `KeyEvent`.
@@ -1049,5 +1092,33 @@ impl WireMessage for ReleaseAll {
     }
     fn decode(r: &mut ByteReader<'_>) -> Result<Self> {
         Ok(Self { reason: r.enum_value()? })
+    }
+}
+
+/// v6: text for the host to type as if on its keyboard, whatever its layout: what was dictated, or typed on the
+/// iPad's on-screen keyboard. A line feed is Return and a tab is Tab. With `modifiers`, each character is instead
+/// the key that types it in the host's layout, pressed with those modifiers held (Control-C). Only from peers
+/// with [`ProtocolFeature::TextInput`](crate::ProtocolFeature); long text comes in several messages
+/// ([`TextInput::MAX_LENGTH`] characters each). Swift: `TextInput`.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct TextInput {
+    pub text: String,
+    /// Held while the text is typed; empty for plain text.
+    pub modifiers: ModifierFlags,
+}
+
+impl TextInput {
+    /// The most characters (Swift `Character`s: grapheme clusters) one message carries; the sender splits.
+    pub const MAX_LENGTH: usize = 1_000;
+}
+
+impl WireMessage for TextInput {
+    const TYPE: MessageType = MessageType::TextInput;
+    fn encode(&self, w: &mut ByteWriter) {
+        w.string(&self.text);
+        w.u32(self.modifiers.0);
+    }
+    fn decode(r: &mut ByteReader<'_>) -> Result<Self> {
+        Ok(Self { text: r.string()?, modifiers: ModifierFlags(r.u32()?) })
     }
 }

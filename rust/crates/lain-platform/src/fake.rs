@@ -10,10 +10,10 @@ use std::sync::{Arc, Mutex, MutexGuard};
 use tokio::sync::{mpsc, watch};
 
 use crate::{
-    Advertiser, Chroma, Clock, ColorTags, CursorImage, CursorSource, DisplayBackend, DisplaySpec, EncodeConfig,
-    EncodeRequest, EncodedFrame, InputAction, InputBackend, InputSettings, Monitor, Platform, PlatformError, PointF,
-    PowerBackend, RectF, Result, SecretStore, ServiceAd, SettingsSource, SetupReport, SetupSource, StreamInfo,
-    StreamedDisplay, VideoBackend, VideoEvent, VideoSession,
+    AUDIO_QUEUE_CHUNKS, Advertiser, AudioBackend, AudioChunk, AudioFormat, Chroma, Clock, ColorTags, CursorImage,
+    CursorSource, DisplayBackend, DisplaySpec, EncodeConfig, EncodeRequest, EncodedFrame, InputAction, InputBackend,
+    InputSettings, Monitor, Platform, PlatformError, PointF, PowerBackend, RectF, Result, SecretStore, ServiceAd,
+    SettingsSource, SetupReport, SetupSource, StreamInfo, StreamedDisplay, VideoBackend, VideoEvent, VideoSession,
 };
 
 /// A poisoned fake is still inspectable: a failed assertion elsewhere shouldn't hide the state.
@@ -723,6 +723,71 @@ impl Advertiser for FakeAdvertiser {
     }
 }
 
+// MARK: Audio
+
+#[derive(Debug, Default)]
+struct AudioState {
+    /// The running capture's sender and format, if any.
+    running: Option<(mpsc::Sender<AudioChunk>, AudioFormat, u32)>,
+    starts: usize,
+    fail_next: Option<PlatformError>,
+}
+
+/// A sound capture driven by the test: [`push`](Self::push) sends a chunk to the running capture.
+#[derive(Debug, Clone, Default)]
+pub struct FakeAudio(Arc<Mutex<AudioState>>);
+
+/// The fake's capture: dropping it stops the capture.
+#[derive(Debug)]
+pub struct FakeAudioCapture(Arc<Mutex<AudioState>>);
+
+impl Drop for FakeAudioCapture {
+    fn drop(&mut self) {
+        lock(&self.0).running = None;
+    }
+}
+
+impl FakeAudio {
+    /// Sends a chunk to the running capture; false if none is running or its queue is full.
+    pub fn push(&self, chunk: AudioChunk) -> bool {
+        lock(&self.0).running.as_ref().is_some_and(|(tx, _, _)| tx.try_send(chunk).is_ok())
+    }
+
+    /// The running capture's format and chunk length.
+    pub fn running(&self) -> Option<(AudioFormat, u32)> {
+        lock(&self.0).running.as_ref().map(|(_, f, ms)| (*f, *ms))
+    }
+
+    /// How many captures were started.
+    pub fn starts(&self) -> usize {
+        lock(&self.0).starts
+    }
+
+    /// The next start fails with `error`.
+    pub fn fail_next_start(&self, error: PlatformError) {
+        lock(&self.0).fail_next = Some(error);
+    }
+}
+
+impl AudioBackend for FakeAudio {
+    type Capture = FakeAudioCapture;
+
+    async fn start(
+        &self,
+        format: AudioFormat,
+        chunk_ms: u32,
+    ) -> Result<(FakeAudioCapture, mpsc::Receiver<AudioChunk>)> {
+        let mut state = lock(&self.0);
+        if let Some(e) = state.fail_next.take() {
+            return Err(e);
+        }
+        let (tx, rx) = mpsc::channel(AUDIO_QUEUE_CHUNKS);
+        state.running = Some((tx, format, chunk_ms));
+        state.starts += 1;
+        Ok((FakeAudioCapture(self.0.clone()), rx))
+    }
+}
+
 // MARK: Platform
 
 /// One fake of each contract, sharing one [`FakeClock`]. Fields are handles: clone one to drive it while
@@ -738,6 +803,7 @@ pub struct FakePlatform {
     pub setup: FakeSetup,
     pub secrets: MemorySecretStore,
     pub clock: FakeClock,
+    pub audio: FakeAudio,
 }
 
 impl FakePlatform {
@@ -753,6 +819,7 @@ impl FakePlatform {
             setup: FakeSetup::default(),
             secrets: MemorySecretStore::default(),
             clock,
+            audio: FakeAudio::default(),
         }
     }
 }
@@ -773,6 +840,7 @@ impl Platform for FakePlatform {
     type Setup = FakeSetup;
     type Secrets = MemorySecretStore;
     type Clock = FakeClock;
+    type Audio = FakeAudio;
 
     fn display(&self) -> &FakeDisplay {
         &self.display
@@ -808,6 +876,10 @@ impl Platform for FakePlatform {
 
     fn clock(&self) -> &FakeClock {
         &self.clock
+    }
+
+    fn audio(&self) -> &FakeAudio {
+        &self.audio
     }
 }
 

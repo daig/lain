@@ -62,6 +62,8 @@ messages! {
     VideoConfig(VideoConfig),
     VideoFrame(VideoFrame),
     FrameAck(FrameAck),
+    AudioConfig(AudioConfig),
+    AudioPacket(AudioPacket),
     CursorShape(CursorShape),
     CursorSelect(CursorSelect),
     CursorWarp(CursorWarp),
@@ -71,6 +73,7 @@ messages! {
     Scroll(Scroll),
     Gesture(Gesture),
     ReleaseAll(ReleaseAll),
+    TextInput(TextInput),
 }
 
 impl Message {
@@ -100,6 +103,8 @@ impl Message {
         64 + match self {
             Self::VideoFrame(f) => f.data.len(),
             Self::CursorShape(c) => c.pixels.len(),
+            Self::AudioPacket(p) => p.samples.len(),
+            Self::TextInput(t) => t.text.len(),
             Self::VideoConfig(c) => c.parameter_sets.iter().map(|p| p.len() + 4).sum(),
             _ => 0,
         }

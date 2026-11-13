@@ -17,6 +17,7 @@
 //!   the platform's implementation instead of wrapping it.
 
 pub mod advertise;
+pub mod audio;
 pub mod clock;
 pub mod cursor;
 pub mod display;
@@ -35,6 +36,7 @@ pub mod video;
 pub mod fake;
 
 pub use advertise::{Advertiser, ServiceAd};
+pub use audio::{AUDIO_QUEUE_CHUNKS, AudioBackend, AudioChunk, AudioFormat};
 pub use clock::{Clock, MonotonicClock};
 pub use cursor::{CursorImage, CursorSource};
 pub use display::{DisplayBackend, DisplaySpec, Monitor, StreamedDisplay};
@@ -67,6 +69,8 @@ pub trait Platform: Send + Sync + 'static {
     type Setup: SetupSource + Clone;
     type Secrets: SecretStore + Clone;
     type Clock: Clock + Clone;
+    /// The desktop's sound, for the client (v6).
+    type Audio: AudioBackend + Clone;
 
     fn display(&self) -> &Self::Display;
     fn video(&self) -> &Self::Video;
@@ -77,4 +81,5 @@ pub trait Platform: Send + Sync + 'static {
     fn setup(&self) -> &Self::Setup;
     fn secrets(&self) -> &Self::Secrets;
     fn clock(&self) -> &Self::Clock;
+    fn audio(&self) -> &Self::Audio;
 }

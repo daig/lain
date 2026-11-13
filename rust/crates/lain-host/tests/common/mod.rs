@@ -15,8 +15,8 @@ use lain_link::{
     PairingAccounts, StreamDialer, TransportError, memory_pair,
 };
 use lain_platform::fake::{
-    FakeClock, FakeCursor, FakeDisplay, FakeInput, FakePlatform, FakePower, FakeSettings, FakeSetup, FakeSource,
-    FakeVideo, MemorySecretStore,
+    FakeAudio, FakeClock, FakeCursor, FakeDisplay, FakeInput, FakePlatform, FakePower, FakeSettings, FakeSetup,
+    FakeSource, FakeVideo, MemorySecretStore,
 };
 use lain_platform::{
     Clock, DisplayBackend, DisplaySpec, InputAction, InputSettings, Monitor, Platform, PointF, Result as PResult,
@@ -243,6 +243,7 @@ impl Platform for TestPlatform {
     type Setup = FakeSetup;
     type Secrets = MemorySecretStore;
     type Clock = TokioClock;
+    type Audio = FakeAudio;
 
     fn display(&self) -> &TestDisplay {
         &self.display
@@ -270,6 +271,9 @@ impl Platform for TestPlatform {
     }
     fn clock(&self) -> &TokioClock {
         &self.clock
+    }
+    fn audio(&self) -> &FakeAudio {
+        &self.fake.audio
     }
 }
 

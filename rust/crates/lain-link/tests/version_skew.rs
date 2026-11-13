@@ -22,9 +22,9 @@ fn only(version: u8) -> VersionList {
     VersionList::new(supported().entries().iter().copied().filter(|e| e.version == version))
 }
 
-/// A future v6, as a newer build would offer it.
-fn v6() -> VersionEntry {
-    VersionEntry { version: 6, digest: [0x66; 8] }
+/// A future v7, as a newer build would offer it.
+fn v7() -> VersionEntry {
+    VersionEntry { version: 7, digest: [0x77; 8] }
 }
 
 /// v5 under another build's digest.
@@ -58,17 +58,19 @@ async fn negotiate(dialing: &VersionList, accepting: &VersionList) -> Outcome {
 #[tokio::test(start_paused = true)]
 async fn the_version_skew_matrix() {
     let both = supported();
-    assert_eq!(both.versions(), [4, 5], "this build's window; update the matrix when it moves");
-    let five_six = VersionList::new(only(5).entries().iter().copied().chain([v6()]));
-    let six = VersionList::new([v6()]);
+    assert_eq!(both.versions(), [4, 5, 6], "this build's window; update the matrix when it moves");
+    let six_seven = VersionList::new(only(6).entries().iter().copied().chain([v7()]));
+    let seven = VersionList::new([v7()]);
+    let v6_features = vec![ProtocolFeature::TextInput, ProtocolFeature::Audio];
     let none = |gap: VersionGap| Some(gap);
 
-    // [4,5] against each peer, in both roles. (peer list, version, what the [4,5] side's link misses).
-    let cases: [(&VersionList, Option<u8>, Vec<ProtocolFeature>); 4] = [
-        (&only(5), Some(5), vec![]),
-        (&only(4), Some(4), vec![ProtocolFeature::HostStats]),
-        (&five_six, Some(5), vec![]),
-        (&six, None, vec![]),
+    // [4,5,6] against each peer, in both roles. (peer list, version, what the [4,5,6] side's link misses).
+    let cases: [(&VersionList, Option<u8>, Vec<ProtocolFeature>); 5] = [
+        (&only(6), Some(6), vec![]),
+        (&only(5), Some(5), v6_features.clone()),
+        (&only(4), Some(4), [vec![ProtocolFeature::HostStats], v6_features.clone()].concat()),
+        (&six_seven, Some(6), vec![]),
+        (&seven, None, vec![]),
     ];
     for (peer, version, misses) in cases {
         for this_side_dials in [true, false] {
@@ -78,11 +80,11 @@ async fn the_version_skew_matrix() {
             } else {
                 (outcome.acceptor, outcome.dialer.map(|(v, m, _)| (v, m)))
             };
-            let context = format!("[4,5] {} {peer}", if this_side_dials { "dials" } else { "accepts" });
+            let context = format!("[4,5,6] {} {peer}", if this_side_dials { "dials" } else { "accepts" });
             match version {
                 Some(v) => {
                     assert_eq!(ours, Ok((v, misses.clone())), "{context}");
-                    // The peer's newest is at most v+1 here and adds nothing past v5: it misses nothing.
+                    // The peer's newest is v, or a v7 that adds nothing known here: it misses nothing.
                     assert_eq!(theirs, Ok((v, vec![])), "{context}");
                 }
                 None => {
@@ -90,12 +92,12 @@ async fn the_version_skew_matrix() {
                     let theirs = theirs.unwrap_err();
                     assert_eq!(
                         VersionGap::from_error(&ours, &both),
-                        none(VersionGap::PeerNewer { peer: "protocol v6".into() }),
+                        none(VersionGap::PeerNewer { peer: "protocol v7".into() }),
                         "{context}"
                     );
                     assert_eq!(
                         VersionGap::from_error(&theirs, peer),
-                        none(VersionGap::PeerOlder { peer: "protocol v4–v5".into() }),
+                        none(VersionGap::PeerOlder { peer: "protocol v4–v6".into() }),
                         "{context}"
                     );
                 }
@@ -110,14 +112,20 @@ async fn feature_support_follows_the_negotiated_version() {
     assert_eq!(outcome.dialer.map(|(v, _, stats)| (v, stats)), Ok((4, false)));
     let outcome = negotiate(&supported(), &only(5)).await;
     assert_eq!(outcome.dialer.map(|(v, _, stats)| (v, stats)), Ok((5, true)));
+    let outcome = negotiate(&supported(), &only(6)).await;
+    assert_eq!(outcome.dialer.map(|(v, _, stats)| (v, stats)), Ok((6, true)));
 }
 
 #[tokio::test(start_paused = true)]
 async fn a_digest_mismatch_is_not_a_common_version() {
-    // Another build of v5 beside a shared v4: v4.
-    let mixed = VersionList::new(only(4).entries().iter().copied().chain(other_v5().entries().iter().copied()));
+    // Other builds of v5 and v6 beside a shared v4: v4.
+    let other_v6 = VersionEntry { version: 6, digest: [0x66; 8] };
+    let mixed = VersionList::new(
+        only(4).entries().iter().copied().chain(other_v5().entries().iter().copied()).chain([other_v6]),
+    );
     let outcome = negotiate(&supported(), &mixed).await;
-    assert_eq!(outcome.dialer.map(|(v, m, _)| (v, m)), Ok((4, vec![ProtocolFeature::HostStats])));
+    let v4_misses = vec![ProtocolFeature::HostStats, ProtocolFeature::TextInput, ProtocolFeature::Audio];
+    assert_eq!(outcome.dialer.map(|(v, m, _)| (v, m)), Ok((4, v4_misses)));
     // Only v5, under different digests: nothing in common, and the gap says "different builds".
     let outcome = negotiate(&only(5), &other_v5()).await;
     let error = outcome.dialer.unwrap_err();

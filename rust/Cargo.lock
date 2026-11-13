@@ -938,6 +938,7 @@ dependencies = [
  "lain-host",
  "lain-input",
  "lain-link",
+ "lain-linux-audio",
  "lain-linux-system",
  "lain-linux-video",
  "lain-media",
@@ -980,6 +981,15 @@ dependencies = [
  "sha2 0.11.1",
  "socket2",
  "thiserror",
+ "tokio",
+ "tracing",
+]
+
+[[package]]
+name = "lain-linux-audio"
+version = "0.1.0"
+dependencies = [
+ "lain-platform",
  "tokio",
  "tracing",
 ]

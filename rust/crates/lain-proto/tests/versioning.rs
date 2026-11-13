@@ -226,6 +226,11 @@ fn features_follow_their_versions() {
     assert!(!ProtocolFeature::HostStats.is_supported(4));
     assert!(ProtocolFeature::HostStats.is_supported(5));
     assert_eq!(ProtocolFeature::missing(4, Some(5)), [ProtocolFeature::HostStats]);
+    assert_eq!(
+        ProtocolFeature::missing(4, Some(6)),
+        [ProtocolFeature::HostStats, ProtocolFeature::TextInput, ProtocolFeature::Audio]
+    );
+    assert_eq!(ProtocolFeature::missing(5, Some(6)), [ProtocolFeature::TextInput, ProtocolFeature::Audio]);
     assert!(ProtocolFeature::missing(NEWEST_VERSION, Some(NEWEST_VERSION)).is_empty());
     assert!(ProtocolFeature::missing(4, Some(4)).is_empty());
     // Without a newest, the offered list's newest (a LAIN_PROTOCOL_MAX cap lowers it).
@@ -241,4 +246,18 @@ fn no_feature_outlives_the_floor() {
             assert!(until > SUPPORTED_VERSIONS[0], "{f:?} is dead: delete it");
         }
     }
+}
+
+#[test]
+fn text_input_and_audio_are_version_six_messages() {
+    for ty in [MessageType::TextInput, MessageType::AudioConfig, MessageType::AudioPacket] {
+        let sample = ProtocolSamples::all().iter().find(|m| m.ty() == ty).unwrap();
+        assert_eq!(
+            MessageCodec::lower(sample, 5, 0, 0, None),
+            Lowered::Unrepresentable(format!("{ty} doesn't exist in v5"))
+        );
+        assert!(MessageCodec::lower(sample, 6, 0, 0, None).bytes().is_some());
+    }
+    assert!(!ProtocolFeature::TextInput.is_supported(5) && ProtocolFeature::TextInput.is_supported(6));
+    assert!(!ProtocolFeature::Audio.is_supported(5) && ProtocolFeature::Audio.is_supported(6));
 }

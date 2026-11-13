@@ -11,24 +11,29 @@ pub enum ProtocolFeature {
     HostSetup,
     /// v5: the iPad asks for `HostStats` (`StatsRequest`) and the host sends them.
     HostStats,
+    /// v6: the iPad sends text for the host to type (`TextInput`): dictation and the on-screen keyboard.
+    TextInput,
+    /// v6: the host sends its sound (`AudioConfig`, `AudioPacket`) and the iPad plays it.
+    Audio,
 }
 
 impl ProtocolFeature {
     /// Every feature (Swift: `allCases`).
-    pub const ALL: &'static [Self] = &[Self::HostSetup, Self::HostStats];
+    pub const ALL: &'static [Self] = &[Self::HostSetup, Self::HostStats, Self::TextInput, Self::Audio];
 
     /// The first version with the feature.
     pub const fn since(self) -> u8 {
         match self {
             Self::HostSetup => 4,
             Self::HostStats => 5,
+            Self::TextInput | Self::Audio => 6,
         }
     }
 
     /// The first version without it, when a newer behaviour replaced it; `None` while current.
     pub const fn until(self) -> Option<u8> {
         match self {
-            Self::HostSetup | Self::HostStats => None,
+            Self::HostSetup | Self::HostStats | Self::TextInput | Self::Audio => None,
         }
     }
 
@@ -45,6 +50,8 @@ impl ProtocolFeature {
         match self {
             Self::HostSetup => "setup status on the iPad",
             Self::HostStats => "the host's video stats on the iPad",
+            Self::TextInput => "dictation and the on-screen keyboard",
+            Self::Audio => "the computer's sound on the iPad",
         }
     }
 

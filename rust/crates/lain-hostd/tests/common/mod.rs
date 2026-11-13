@@ -14,8 +14,8 @@ use lain_hostd::{Config, Daemon, DaemonHandle, DaemonOptions, DaemonSetup, Login
 use lain_input::{InputConfig, InputRouter};
 use lain_link::{ChannelSender, ClientLinkListener, Link, LinkDialer, LinkTransport, PairingAccounts, TransportError};
 use lain_platform::fake::{
-    FakeAdvertiser, FakeClock, FakeCursor, FakeDisplay, FakeInput, FakePlatform, FakePower, FakeSettings, FakeSetup,
-    FakeVideo, MemorySecretStore,
+    FakeAdvertiser, FakeAudio, FakeClock, FakeCursor, FakeDisplay, FakeInput, FakePlatform, FakePower, FakeSettings,
+    FakeSetup, FakeVideo, MemorySecretStore,
 };
 use lain_platform::{HostIdentity, InputAction, InputSettings, Platform, RequirementState, SecretStore, ServiceAd};
 use lain_proto::*;
@@ -196,6 +196,7 @@ impl<S: SecretStore + Clone> Platform for TestPlatform<S> {
     type Setup = DaemonSetup<FakeSetup, FakeLogin>;
     type Secrets = S;
     type Clock = FakeClock;
+    type Audio = FakeAudio;
 
     fn display(&self) -> &FakeDisplay {
         &self.fake.display
@@ -223,6 +224,9 @@ impl<S: SecretStore + Clone> Platform for TestPlatform<S> {
     }
     fn clock(&self) -> &FakeClock {
         &self.fake.clock
+    }
+    fn audio(&self) -> &FakeAudio {
+        &self.fake.audio
     }
 }
 

@@ -1,0 +1,16 @@
+[package]
+name = "lain-linux-audio"
+description = "The desktop's sound for the client (protocol v6): a PipeWire capture of the default output's monitor."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+lain-platform.workspace = true
+tokio = { workspace = true, features = ["sync"] }
+tracing.workspace = true
+
+[lints]
+workspace = true

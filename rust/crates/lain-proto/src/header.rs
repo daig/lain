@@ -6,8 +6,8 @@ use crate::{HANDSHAKE_VERSION, HEADER_SIZE, MAGIC, NEWEST_VERSION, ProtocolError
 /// Message types (§7.5). Two layers (PROTOCOL-VERSIONING §3): the frozen handshake (`ChannelHello`,
 /// `ChannelAccept`, `Pair`, and `Error` before a version is agreed), framed in header version 0xFF; and the
 /// session messages, framed in the negotiated version. Reserved, never reuse: 0x03 `Start`, 0x04 `Stop`, 0x08
-/// `Stats`, 0x09 `ConfigUpdate`, 0x0A `DisplayChanged`, 0x22 `VideoFragment`, 0x23 `VideoNack`, 0x30
-/// `AudioConfig`, 0x31 `AudioPacket`, 0x60 `ProbeRequest`, 0x61 `ProbeAck`. Swift: `MessageType`.
+/// `Stats`, 0x09 `ConfigUpdate`, 0x0A `DisplayChanged`, 0x22 `VideoFragment`, 0x23 `VideoNack`, 0x60
+/// `ProbeRequest`, 0x61 `ProbeAck`. Swift: `MessageType`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, PartialOrd, Ord)]
 #[repr(u8)]
 pub enum MessageType {
@@ -30,6 +30,10 @@ pub enum MessageType {
     VideoConfig = 0x20,
     VideoFrame = 0x21,
     FrameAck = 0x24,
+    /// v6: the host's sound format, on the audio channel.
+    AudioConfig = 0x30,
+    /// v6: a few milliseconds of the host's sound.
+    AudioPacket = 0x31,
     CursorShape = 0x40,
     CursorSelect = 0x41,
     CursorWarp = 0x42,
@@ -39,6 +43,8 @@ pub enum MessageType {
     Scroll = 0x53,
     Gesture = 0x54,
     ReleaseAll = 0x55,
+    /// v6: text for the host to type (dictation, the on-screen keyboard).
+    TextInput = 0x56,
 }
 
 impl MessageType {
@@ -60,6 +66,8 @@ impl MessageType {
         Self::VideoConfig,
         Self::VideoFrame,
         Self::FrameAck,
+        Self::AudioConfig,
+        Self::AudioPacket,
         Self::CursorShape,
         Self::CursorSelect,
         Self::CursorWarp,
@@ -69,6 +77,7 @@ impl MessageType {
         Self::Scroll,
         Self::Gesture,
         Self::ReleaseAll,
+        Self::TextInput,
     ];
 
     pub const fn raw(self) -> u8 {
@@ -98,6 +107,8 @@ impl MessageType {
             Self::VideoConfig => "videoConfig",
             Self::VideoFrame => "videoFrame",
             Self::FrameAck => "frameAck",
+            Self::AudioConfig => "audioConfig",
+            Self::AudioPacket => "audioPacket",
             Self::CursorShape => "cursorShape",
             Self::CursorSelect => "cursorSelect",
             Self::CursorWarp => "cursorWarp",
@@ -107,6 +118,7 @@ impl MessageType {
             Self::Scroll => "scroll",
             Self::Gesture => "gesture",
             Self::ReleaseAll => "releaseAll",
+            Self::TextInput => "textInput",
         }
     }
 
@@ -126,6 +138,7 @@ impl MessageType {
         match self {
             Self::HostSetup => 4,
             Self::StatsRequest | Self::HostStats => 5,
+            Self::TextInput | Self::AudioConfig | Self::AudioPacket => 6,
             _ => 3,
         }
     }

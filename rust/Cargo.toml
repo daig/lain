@@ -24,6 +24,7 @@ lain-host = { path = "crates/lain-host" }
 lain-gnome = { path = "crates/lain-gnome" }
 lain-linux-video = { path = "crates/lain-linux-video" }
 lain-linux-system = { path = "crates/lain-linux-system" }
+lain-linux-audio = { path = "crates/lain-linux-audio" }
 
 # External dependencies: one version each across the workspace. Crates add the features they need.
 anyhow = "1.0.104"

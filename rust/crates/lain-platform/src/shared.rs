@@ -165,3 +165,15 @@ mod tests {
         video(&Arc::new(FakeVideo::new(FakeClock::new(0))));
     }
 }
+
+impl<T: crate::AudioBackend> crate::AudioBackend for Arc<T> {
+    type Capture = T::Capture;
+
+    fn start(
+        &self,
+        format: crate::AudioFormat,
+        chunk_ms: u32,
+    ) -> impl Future<Output = Result<(Self::Capture, mpsc::Receiver<crate::AudioChunk>)>> + Send {
+        (**self).start(format, chunk_ms)
+    }
+}

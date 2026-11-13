@@ -170,5 +170,14 @@ fn build() -> Vec<Message> {
         }),
         Message::Gesture(Gesture { kind: GestureKind::Rotate, phase: GesturePhase::Changed, value: 0.125 }),
         Message::ReleaseAll(ReleaseAll { reason: ReleaseReason::PointerLockLost }),
+        Message::AudioConfig(AudioConfig { sample_rate: 48_000, channels: 2, encoding: AudioEncoding::Pcm16Le }),
+        Message::AudioPacket(AudioPacket {
+            capture_time_ns: 123_456_789,
+            samples: vec![0x01, 0x80, 0xFF, 0x7F, 0x00, 0x00, 0x34, 0x12],
+        }),
+        Message::TextInput(TextInput {
+            text: "naïve café ✓\n\t{x}".into(),
+            modifiers: ModifierFlags::CONTROL | ModifierFlags::OPTION,
+        }),
     ]
 }

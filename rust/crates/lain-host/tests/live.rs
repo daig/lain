@@ -224,7 +224,7 @@ async fn both_newest_the_ipad_hears_the_setup_and_its_changes() {
     let mut rig = Rig::new(skew(both(), both())).await;
     rig.platform.fake.setup.set(mac_setup(RequirementState::Missing));
     let mut link = rig.usb.next_link(T).await.expect("a USB link");
-    assert_eq!(link.version, 5);
+    assert_eq!(link.version, NEWEST_VERSION);
     assert!(link.hello_ack().await.is_some());
     let Some(Message::HostSetup(setup)) = link.first(T, |m| matches!(m, Message::HostSetup(_))).await else {
         panic!("no HostSetup")

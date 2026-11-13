@@ -22,18 +22,31 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The display a client's `Hello` asks for: its pixel size, scale and maximum refresh rate (0: 120 Hz).
+/// The display a client's `Hello` asks for: its pixel size (long side first) at 2×, and its maximum refresh rate
+/// (0: 120 Hz). Swift: `VirtualDisplay.Spec.sized(pixelWidth:pixelHeight:)`.
 ///
-/// Intended difference from Swift, whose Mac host creates a fixed display (the 13" iPad Pro's 2752×2064 at
-/// 2×, 120 Hz, `VirtualDisplay.Spec`): this serves any iPad. A scale of 0 is taken as 2 (an iPad's).
+/// - **The size** is the client's own: the 13-inch iPad Pro's 2752×2064, or another shape (an iPhone Duo asks
+///   for its inner display, 2853×2007). A size that makes no display (nothing, absurd, or portrait) falls back
+///   to the iPad's, as in Swift. An odd side is rounded down to even, since 4:2:0 video needs even sides (the
+///   Mac's stream size is even for the same reason); the client fits the stream to its screen either way.
+/// - **The scale** is 2, whatever the client's own (the Duo's is 3), as in Swift: the owner's `scale` setting
+///   replaces it in `lain-gnome`.
+/// - Intended difference from Swift, whose Mac host is fixed at 120 Hz: the refresh rate follows the client.
 pub fn display_spec(hello: &Hello) -> DisplaySpec {
+    let (w, h) = (hello.pixel_width, hello.pixel_height);
+    let (pixel_width, pixel_height) =
+        if (640..=4096).contains(&w) && (480..=4096).contains(&h) && w >= h { (w & !1, h & !1) } else { IPAD_PIXELS };
     DisplaySpec {
-        pixel_width: hello.pixel_width,
-        pixel_height: hello.pixel_height,
-        scale: if hello.scale == 0 { 2 } else { u32::from(hello.scale) },
+        pixel_width,
+        pixel_height,
+        scale: 2,
         refresh_hz: if hello.max_refresh_rate == 0 { 120 } else { u32::from(hello.max_refresh_rate) },
     }
 }
+
+/// The 13-inch iPad Pro's display, the one a size that makes no display falls back to (Swift: the default
+/// `VirtualDisplay.Spec`).
+pub const IPAD_PIXELS: (u32, u32) = (2752, 2064);
 
 /// Why [`SessionVideo::start`] gave no video.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -347,5 +360,39 @@ impl SessionVideo {
 async fn sleep(wait: Option<Duration>) {
     if let Some(wait) = wait {
         tokio::time::sleep(wait).await;
+    }
+}
+
+#[cfg(test)]
+mod spec_tests {
+    use super::*;
+
+    fn hello(w: u32, h: u32, scale: u8) -> Hello {
+        Hello {
+            device_model: "iPhone19,4".into(),
+            pixel_width: w,
+            pixel_height: h,
+            scale,
+            max_refresh_rate: 120,
+            decode_capabilities: lain_proto::DecodeCapabilities::HEVC_MAIN,
+            keyboard_type: lain_proto::KeyboardType::Unknown,
+        }
+    }
+
+    #[test]
+    fn a_clients_request_shapes_its_display() {
+        // An iPhone Duo asks for its inner display at 3×: even sides, at 2× (Swift: `aClientsRequestShapesItsDisplay`).
+        let duo = display_spec(&hello(2853, 2007, 3));
+        assert_eq!((duo.pixel_width, duo.pixel_height, duo.scale, duo.refresh_hz), (2852, 2006, 2, 120));
+        assert_eq!(
+            display_spec(&hello(2752, 2064, 2)),
+            DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, refresh_hz: 120 }
+        );
+        // A size that makes no display: the iPad's.
+        for (w, h) in [(0, 0), (2007, 2853), (100_000, 2000), (639, 480), (640, 479)] {
+            let s = display_spec(&hello(w, h, 2));
+            assert_eq!((s.pixel_width, s.pixel_height), IPAD_PIXELS, "{w}×{h}");
+        }
+        assert_eq!(display_spec(&Hello { max_refresh_rate: 0, ..hello(2752, 2064, 2) }).refresh_hz, 120);
     }
 }
