@@ -84,6 +84,8 @@ case $1 in
   kickstart)   # like launchd: a plain kickstart leaves a running lain alone, even one still quitting; -k kills it
     [[ -e $FAKE/state/agent-loaded ]] || exit 113
     ! fails kickstart-fails || exit 1
+    # spawn-fails: launchd takes the request, kills the running lain, and the new one never starts.
+    if [[ $2 == -k ]] && fails spawn-fails; then rm -f $FAKE/state/lain-running; exit 0; fi
     [[ ! -e $FAKE/state/lain-running || $2 == -k ]] || exit 0
     [[ ! -e $FAKE/state/lain-running ]] || log "launchd: killed the running lain"
     print "agent $$" >$FAKE/state/lain-running ;;
@@ -162,12 +164,24 @@ esac
 EOF
 fake xcodebuild <<'EOF'
 log xcodebuild "$@"
-scheme= config=Debug
+scheme= config=Debug export= export_path= archive_path=
 while (( $# )); do
-  case $1 in -scheme) scheme=$2; shift ;; -configuration) config=$2; shift ;; esac
+  case $1 in
+    -scheme) scheme=$2; shift ;; -configuration) config=$2; shift ;;
+    -exportArchive) export=1 ;; -exportPath) export_path=$2; shift ;; -archivePath) archive_path=$2; shift ;;
+  esac
   shift
 done
+if [[ -n $export ]]; then   # the Developer ID export of an archive (install-host.sh)
+  if [[ -e $FAKE/state/export-fails ]]; then print "error: fake export failure"; exit 70; fi
+  [[ -d $archive_path ]] || { print "error: no archive at $archive_path"; exit 66; }
+  mkdir -p $export_path/LainHost.app/Contents/MacOS
+  print "new Release build" >$export_path/LainHost.app/Contents/MacOS/LainHost
+  print "** EXPORT SUCCEEDED **"
+  exit 0
+fi
 if [[ -e $FAKE/state/fail-$scheme ]]; then print "error: fake $scheme build failure"; exit 65; fi
+[[ -z $archive_path ]] || mkdir -p $archive_path
 case $scheme in
   LainHost) mkdir -p build/DerivedData/Build/Products/$config/LainHost.app/Contents/MacOS
             print "new $config build" >build/DerivedData/Build/Products/$config/LainHost.app/Contents/MacOS/LainHost ;;
@@ -188,8 +202,19 @@ log ditto "$@"
 if fails ditto-fails; then mkdir -p "$2/Contents"; print "ditto: $2: No space left on device" >&2; exit 1; fi
 cp -R "$1" "$2"
 EOF
+# Who signed an app: state/installed-signer for the one in Applications, state/export-signer for a build's
+# export, else Developer ID (what a release and install-host.sh's export both are).
 fake codesign <<'EOF'
 log codesign "$@"
+if [[ $1 == -dvv ]]; then
+  who="Developer ID Application: Fake Owner (FAKETEAM)"
+  case $2 in
+    */Applications/LainHost.app) [[ -e $FAKE/state/installed-signer ]] && who=$(<$FAKE/state/installed-signer) ;;
+    */export/LainHost.app) [[ -e $FAKE/state/export-signer ]] && who=$(<$FAKE/state/export-signer) ;;
+  esac
+  print -u2 "Identifier=sub.dev.lain.host"; print -u2 "Authority=$who"; print -u2 "TeamIdentifier=FAKETEAM"
+  exit 0
+fi
 ! fails codesign-fails
 EOF
 fake swift <<'EOF'
@@ -341,8 +366,8 @@ staged() { [[ "$(cat $T/Applications/.LainHost.app.new/Contents/MacOS/LainHost 2
 no_leftovers() { [[ ! -e $T/Applications/.LainHost.app.new && ! -e $T/Applications/.LainHost.app.old ]]; }
 t_host_build_only() {
   reset; run --fast install-host.sh --build-only
-  (( rc == 0 )) && called 'xcodebuild .*-scheme LainHost -configuration Release' && has "not installed" &&
-    ! called '^(ditto|launchctl|pkill|open)' && ! installed
+  (( rc == 0 )) && in_order 'xcodebuild .*-scheme LainHost -configuration Release .* archive$' 'xcodebuild -exportArchive .*ExportOptions-DeveloperID.plist' &&
+    has "not installed" && ! called '^(ditto|launchctl|pkill|open)' && ! installed
 }
 t_host_default() {
   reset; run --fast install-host.sh
@@ -409,6 +434,30 @@ t_host_uninstall() {
   (( rc == 0 )) && called '^bench --unregister-agent' && called 'launchctl bootout' && [[ ! -e $T/Applications/LainHost.app ]] &&
     no_leftovers
 }
+t_host_other_signature() {   # the installed host is signed differently (a release vs. an old development build)
+  reset; print "Apple Development: Fake Owner (FAKEDEV)" >$T/state/installed-signer; run --fast install-host.sh
+  (( rc == 1 )) && has "not the same signature" && has "The installed app is unchanged" && ! installed && no_leftovers &&
+    [[ -e $T/state/lain-running ]] && ! called '^(ditto|launchctl kickstart|pkill|open)'
+}
+t_host_export_not_developer_id() {
+  reset; print "Apple Development: Fake Owner (FAKEDEV)" >$T/state/export-signer; run --fast install-host.sh
+  (( rc == 1 )) && has "isn't a valid Developer ID build" && ! installed && [[ ! -e $T/repo/build/dev-host/export ]] &&
+    ! called '^(ditto|launchctl kickstart|pkill|open)'
+}
+t_host_export_fails() {
+  reset; touch $T/state/export-fails; run --fast install-host.sh
+  (( rc == 1 )) && has "export failed" && ! installed && ! called '^(ditto|launchctl kickstart|pkill|open)'
+}
+t_host_rolls_back() {   # the new build's agent never starts: the app that ran comes back and runs again
+  reset; set_state spawn-fails 1; run --fast install-host.sh
+  (( rc == 1 )) && has "didn't start" && has "The previous host is running again" && ! installed && no_leftovers &&
+    [[ "$(<$T/Applications/LainHost.app/Contents/MacOS/LainHost)" == "$(<$T/fakes/LainHost)" ]] &&
+    [[ "$(lain_instance)" == agent* ]] && [[ $(grep -c 'launchctl kickstart -k' $T/calls.log) == 2 ]]
+}
+t_host_no_second_copy() {   # nothing with the installed app's signature is left in the build folder
+  reset; run --fast install-host.sh
+  (( rc == 0 )) && installed && [[ ! -e $T/repo/build/dev-host/export && ! -e $T/repo/build/dev-host/LainHost.xcarchive ]]
+}
 t_host_usage() {
   reset; run install-host.sh --bogus; (( rc == 2 )) || return 1
   run install-host.sh --build-only --no-build; (( rc == 2 )) || return 1
@@ -430,6 +479,11 @@ check "install-host --stage: a failed copy or signature check leaves nothing sta
 check "install-host --swap-staged: renames and restarts, no build or copy" t_host_swap_staged
 check "install-host --swap-staged: refuses with nothing staged" t_host_swap_unstaged
 check "install-host: a failed cleanup of the old app still restarts the agent" t_host_old_cleanup_fails
+check "install-host: refuses to replace a host signed differently" t_host_other_signature
+check "install-host: refuses an export that isn't Developer ID" t_host_export_not_developer_id
+check "install-host: a failed export installs nothing" t_host_export_fails
+check "install-host: puts the old app back when the new agent doesn't start" t_host_rolls_back
+check "install-host: leaves no second copy of the app" t_host_no_second_copy
 check "install-host --uninstall" t_host_uninstall
 check "install-host: usage errors" t_host_usage
 

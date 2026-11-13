@@ -63,6 +63,23 @@ background drawn by `Scripts/release/dmg-background.swift`; its volume icon is t
 Verified (2026-11-12, `mac-host-v0.1.0`): the Developer ID export succeeds with the Keychain entitlement
 (`keychain-access-groups`) and the hardened runtime, and Apple notarizes the app and the disk image.
 
+### Development builds on this Mac
+
+`Scripts/install-host.sh` installs the working tree's host on this Mac for testing: nothing committed is
+required, and nothing is notarized, put in a disk image or uploaded. It builds as a release does (a Release
+archive exported with Developer ID) because macOS ties the login agent's registration and the Screen Recording
+and Accessibility grants to the app's signature: a host installed from a release's disk image must only ever be
+replaced by one signed the same way. Replaced by a build signed with Apple Development (what the script made
+before releases existed), the agent failed to start (launchd: "spawn failed", `EX_CONFIG`) and the Screen
+Recording grant had to be removed and added again.
+
+The script therefore refuses to install over a host signed differently, removes its export and archive once the
+copy is staged (a second copy with the same signature can also keep launchd from resolving the agent), and keeps
+the old app until the new agent runs, putting it back if it doesn't. The build number is
+`<commits>.<yymmdd>.<hhmm>`, so a development build is told from a release at a glance (lain's menu, or
+`plutil -p /Applications/LainHost.app/Contents/Info.plist`). `Scripts/test-scripts.sh` checks all of this
+against fakes; to go back to a release, install its disk image from `build/release/`.
+
 ## Artwork
 
 `Scripts/assets/generate.swift` draws the app icons' layers (`Apps/Host/AppIcon.icon`, `Apps/Client/AppIcon.icon`),
