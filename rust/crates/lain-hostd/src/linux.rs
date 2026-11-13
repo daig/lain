@@ -41,7 +41,7 @@ impl LinuxPlatform {
             setup: DaemonSetup::new(gnome.setup, autostart),
             secrets,
             clock: MonotonicClock,
-            audio: PipeWireAudio::default(),
+            audio: PipeWireAudio,
         }
     }
 }

@@ -9,8 +9,13 @@ license.workspace = true
 
 [dependencies]
 lain-platform.workspace = true
+pipewire.workspace = true
 tokio = { workspace = true, features = ["sync"] }
 tracing.workspace = true
+
+[dev-dependencies]
+# The live capture test (tests/live.rs) drives start() on a runtime.
+tokio = { workspace = true, features = ["sync", "rt", "macros", "time"] }
 
 [lints]
 workspace = true

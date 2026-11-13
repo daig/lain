@@ -990,6 +990,7 @@ name = "lain-linux-audio"
 version = "0.1.0"
 dependencies = [
  "lain-platform",
+ "pipewire",
  "tokio",
  "tracing",
 ]
