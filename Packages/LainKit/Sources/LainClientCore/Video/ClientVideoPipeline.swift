@@ -117,6 +117,8 @@ public final class ClientVideoPipeline: Sendable {
     /// Require a hardware decoder for 4:4:4 streams (the host only sends 4:4:4 when `Hello` said so).
     public let requireHardware444: Bool
     public let cursor = CursorOverlay()
+    /// Whether the shown part is changing (the deck's alert); off until turned on.
+    public let activity = ActivityWatch()
     /// The newest decoded frame; the renderer `take()`s it.
     public let latest = LatestSlot<DecodedFrame>()
 
@@ -414,7 +416,10 @@ public final class ClientVideoPipeline: Sendable {
             return (DecodedFrame(frameId: out.frameId, image: image, format: format, captureTimeNs: timing.captureNs,
                                  receivedNs: timing.receivedNs, decodeDoneNs: out.decodeDoneNs), nil)
         }
-        if let frame { latest.put(frame) }
+        if let frame {
+            latest.put(frame)
+            activity.offer(frame.image)   // after the renderer has it; measured at most four times a second
+        }
         request?()
     }
 }

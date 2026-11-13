@@ -27,13 +27,17 @@ public final class VideoRenderer {
         public var cursorPoint: SIMD2<Double>?
         /// nil hides the cursor (typing, or the Mac hid it).
         public var cursorSprite: CursorSprite?
+        /// The part of the frame to draw, as fractions of it (x, y, width, height; top-left origin). The whole
+        /// frame by default; a part is aspect-fit in the target as the whole would be (small screens magnify).
+        public var viewport = SIMD4<Double>(0, 0, 1, 1)
 
         public init(frame: DecodedFrame? = nil, displayPointSize: SIMD2<Double>? = nil, cursorPoint: SIMD2<Double>? = nil,
-                    cursorSprite: CursorSprite? = nil) {
+                    cursorSprite: CursorSprite? = nil, viewport: SIMD4<Double> = SIMD4(0, 0, 1, 1)) {
             self.frame = frame
             self.displayPointSize = displayPointSize
             self.cursorPoint = cursorPoint
             self.cursorSprite = cursorSprite
+            self.viewport = viewport
         }
     }
 
@@ -121,16 +125,24 @@ public final class VideoRenderer {
         } else if let points = scene.displayPointSize {
             contentPixels = points * 2
         }
+        // A part of the frame is laid out as a frame of that part's size.
+        let view = scene.viewport
+        let whole = view == SIMD4(0, 0, 1, 1)
+        let viewOrigin = SIMD2(view.x, view.y), viewSize = SIMD2(view.z, view.w)
+        contentPixels *= viewSize
         let rect = Self.contentRect(content: contentPixels, target: targetSize)
+        var fullUV = SIMD4<Float>(0, 0, 1, 1)
 
         var keepAlive: [CVMetalTexture] = []
         if let frame = scene.frame, let planes = planeTextures(frame) {
             keepAlive = [planes.0, planes.1]
             if let y = CVMetalTextureGetTexture(planes.0), let c = CVMetalTextureGetTexture(planes.1) {
-                let oneToOne = rect.size == contentPixels
+                let oneToOne = whole && rect.size == contentPixels
                 encoder.setRenderPipelineState(videoState)
                 var quad = Self.ndc(origin: rect.origin, size: rect.size, target: targetSize)
                 encoder.setVertexBytes(&quad, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
+                var uv = SIMD4<Float>(Float(view.x), Float(view.y), Float(view.x + view.z), Float(view.y + view.w))
+                encoder.setVertexBytes(&uv, length: MemoryLayout<SIMD4<Float>>.stride, index: 1)
                 var params = Self.conversion(frame.format)
                 encoder.setFragmentBytes(&params, length: MemoryLayout<ConversionParams>.stride, index: 0)
                 encoder.setFragmentTexture(y, index: 0)
@@ -142,16 +154,24 @@ public final class VideoRenderer {
         }
 
         if let point = scene.cursorPoint, let sprite = scene.cursorSprite, let texture = cursorTexture(sprite) {
-            let points = scene.displayPointSize ?? contentPixels / 2
-            if points.x > 0, points.y > 0 {
-                let pixelsPerPoint = rect.size / points
+            // The whole display's points (`contentPixels` is the shown part's).
+            let points = scene.displayPointSize ?? contentPixels / viewSize / 2
+            if points.x > 0, points.y > 0, viewSize.x > 0, viewSize.y > 0 {
+                let pixelsPerPoint = rect.size / (points * viewSize)
                 let hotspot = SIMD2(sprite.hotspotX, sprite.hotspotY)
                 let spriteSize = SIMD2(Double(sprite.pixelWidth), Double(sprite.pixelHeight)) / sprite.scale * pixelsPerPoint
                 // Pixel-aligned so a 2× sprite on a 2× display maps texel to pixel.
-                let origin = (rect.origin + (point - hotspot) * pixelsPerPoint).rounded(.down)
+                let origin = (rect.origin + (point - hotspot - points * viewOrigin) * pixelsPerPoint).rounded(.down)
                 encoder.setRenderPipelineState(cursorState)
+                if !whole {
+                    // The pointer at the shown part's edge: its sprite doesn't spill over the letterbox.
+                    let x0 = Int(max(rect.origin.x, 0)), y0 = Int(max(rect.origin.y, 0))
+                    let x1 = Int(min(rect.origin.x + rect.size.x, targetSize.x)), y1 = Int(min(rect.origin.y + rect.size.y, targetSize.y))
+                    if x1 > x0, y1 > y0 { encoder.setScissorRect(MTLScissorRect(x: x0, y: y0, width: x1 - x0, height: y1 - y0)) }
+                }
                 var quad = Self.ndc(origin: origin, size: spriteSize, target: targetSize)
                 encoder.setVertexBytes(&quad, length: MemoryLayout<SIMD4<Float>>.stride, index: 0)
+                encoder.setVertexBytes(&fullUV, length: MemoryLayout<SIMD4<Float>>.stride, index: 1)
                 encoder.setFragmentTexture(texture, index: 0)
                 encoder.setFragmentSamplerState(spriteSize == SIMD2(Double(sprite.pixelWidth), Double(sprite.pixelHeight))
                     ? nearest : linear, index: 0)
@@ -280,12 +300,13 @@ public final class VideoRenderer {
 
     struct QuadOut { float4 position [[position]]; float2 uv; };
 
-    // A triangle-strip quad over rect = (left, top, right, bottom) in NDC; uv (0,0) is the top-left.
-    vertex QuadOut lain_quad(uint vid [[vertex_id]], constant float4 &rect [[buffer(0)]]) {
+    // A triangle-strip quad over rect = (left, top, right, bottom) in NDC, showing the texture's
+    // part = (left, top, right, bottom) in uv, where (0,0) is the top-left.
+    vertex QuadOut lain_quad(uint vid [[vertex_id]], constant float4 &rect [[buffer(0)]], constant float4 &part [[buffer(1)]]) {
         float2 uv = float2(float(vid & 1), float(vid >> 1));
         QuadOut o;
         o.position = float4(mix(rect.x, rect.z, uv.x), mix(rect.y, rect.w, uv.y), 0, 1);
-        o.uv = uv;
+        o.uv = float2(mix(part.x, part.z, uv.x), mix(part.y, part.w, uv.y));
         return o;
     }
 

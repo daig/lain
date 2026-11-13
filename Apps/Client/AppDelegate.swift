@@ -36,13 +36,33 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
-        let stream = StreamViewController(input: input, video: video)
+        // The display asked of the host: the screen's own, or the device's home display (the Duo's inner one,
+        // whichever of its two screens the app opened on).
+        let screen = windowScene.screen
+        let model = ClientStatus.hardwareModel()
+        let native = screen.nativeBounds.size
+        var display = (pixelWidth: Int(max(native.width, native.height)), pixelHeight: Int(min(native.width, native.height)),
+                       scale: Int(screen.nativeScale))
+        if let home = ClientStatus.homeDisplay(model: model) { display = home }
+        let stream = StreamViewController(input: input, video: video,
+                                          referenceWidth: Double(display.pixelWidth) / Double(max(display.scale, 1)))
         let window = UIWindow(windowScene: windowScene)
         window.rootViewController = stream
         window.makeKeyAndVisible()
         self.window = window
         guard !AppDelegate.isTestHost else { return }
-        startSession(screen: windowScene.screen, view: stream)
+        let hello = Hello(deviceModel: model, pixelWidth: UInt32(display.pixelWidth), pixelHeight: UInt32(display.pixelHeight),
+                          scale: UInt8(display.scale), maxRefreshRate: UInt16(screen.maximumFramesPerSecond),
+                          // S3c: HEVC Main 4:4:4 10 only if the embedded vector decodes in hardware here.
+                          decodeCapabilities: ClientVideoPipeline.probeDecodeCapabilities(),
+                          keyboardType: .unknown)
+        startSession(hello: hello, view: stream)
+    }
+
+    /// The window moved or changed size (a turn, a fold, Split View, or its two apps swapping sides, which
+    /// changes nothing else): lay out again, since the controls follow the side of the screen it is on.
+    func windowScene(_ windowScene: UIWindowScene, didUpdateEffectiveGeometry previousEffectiveGeometry: UIWindowScene.Geometry) {
+        window?.rootViewController?.view.setNeedsLayout()
     }
 
     // Invariant 4: anything that takes focus away releases everything on the Mac.
@@ -66,14 +86,7 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// The loopback listener the Mac dials through usbmuxd (§7.2), and the Wi-Fi loop that finds paired
     /// Macs over Bonjour and dials them when no cable is connected (§7.7). Both work only while the app
     /// is in the foreground; iPadOS suspends them otherwise.
-    private func startSession(screen: UIScreen, view: StreamViewController) {
-        let native = screen.nativeBounds.size
-        let hello = Hello(deviceModel: Self.modelIdentifier(), pixelWidth: UInt32(max(native.width, native.height)),
-                          pixelHeight: UInt32(min(native.width, native.height)), scale: UInt8(screen.nativeScale),
-                          maxRefreshRate: UInt16(screen.maximumFramesPerSecond),
-                          // S3c: HEVC Main 4:4:4 10 only if the embedded vector decodes in hardware here.
-                          decodeCapabilities: ClientVideoPipeline.probeDecodeCapabilities(),
-                          keyboardType: .unknown)
+    private func startSession(hello: Hello, view: StreamViewController) {
         let wifi = ClientWiFiConfig(discovery: { BonjourHostDiscovery(serviceType: LainProtocol.bonjourServiceType) },
                                     lastHost: .userDefaults())
         do {
@@ -90,9 +103,4 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         }
     }
 
-    private static func modelIdentifier() -> String {
-        var info = utsname()
-        uname(&info)
-        return withUnsafeBytes(of: info.machine) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
-    }
 }

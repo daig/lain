@@ -217,4 +217,129 @@ import Testing
         r.pipeline.referenceWidth = 0
         #expect(r.pipeline.resolutionScale == 1, "no reference: as tuned")
     }
+
+    // MARK: Pinch to zoom
+
+    /// Two fingers pinching apart on the picture, `to` times as far from each other, about (`x`, `y`).
+    private func pinch(_ r: Recorder, x: Double, y: Double, to factor: Double) {
+        r.pipeline.touchBegan(id: 1, x: x - 40, y: y, at: 0)
+        r.pipeline.touchBegan(id: 2, x: x + 40, y: y, at: 10 * ms)
+        r.pipeline.touchMoved(id: 1, x: x - 40 * factor, y: y, at: 30 * ms)
+        r.pipeline.touchMoved(id: 2, x: x + 40 * factor, y: y, at: 40 * ms)
+        r.pipeline.touchEnded(id: 1, at: 60 * ms)
+        r.pipeline.touchEnded(id: 2, at: 70 * ms)
+    }
+
+    /// The Duo closed: a 382 × 269 view of the 1376 × 1032 display.
+    @Test func aPinchZoomsAboutTheFingersAndSendsTheHostNoScroll() {
+        let r = recorder(.direct, surface: (382, 287))
+        #expect(r.pipeline.viewport == .full && r.pipeline.zoom == 1)
+        // What is under the fingers' midpoint before...
+        let before = r.pipeline.hostPoint(surfaceX: 100, surfaceY: 80)!
+        pinch(r, x: 100, y: 80, to: 2)
+        #expect(abs(r.pipeline.zoom - 2) < 1e-9)
+        let v = r.pipeline.viewport
+        #expect(abs(v.width - 0.5) < 1e-9 && abs(v.height - 0.5) < 0.01)
+        // ...is still under it after.
+        let after = r.pipeline.hostPoint(surfaceX: 100, surfaceY: 80)!
+        #expect(abs(after.x - before.x) < 1e-6 && abs(after.y - before.y) < 1e-6)
+        #expect(r.scrolls.isEmpty && r.buttons.isEmpty, "a pinch is the view's own: no scroll, no right-click")
+        // Pinching back out past the whole display stops at it.
+        pinch(r, x: 200, y: 100, to: 0.2)
+        #expect(r.pipeline.zoom == 1 && r.pipeline.viewport == .full)
+    }
+
+    @Test func zoomStopsWhereADisplayPointIsTwoOfTheViews() {
+        let r = recorder(.direct, surface: (382, 287))   // fits at 382 / 1376
+        pinch(r, x: 191, y: 140, to: 4)
+        pinch(r, x: 191, y: 140, to: 4)
+        #expect(abs(r.pipeline.zoom - ClientInputPipeline.maxViewScale / (382.0 / 1376)) < 1e-9)
+        #expect(abs(r.pipeline.viewport.width * 1376 - 191) < 1e-6)
+    }
+
+    @Test func twoFingersMovingTogetherStillScroll() {
+        let r = recorder(.direct, surface: (382, 287))
+        r.pipeline.touchBegan(id: 1, x: 100, y: 100, at: 0)
+        r.pipeline.touchBegan(id: 2, x: 180, y: 100, at: 10 * ms)
+        r.pipeline.touchMoved(id: 1, x: 100, y: 140, at: 30 * ms)
+        r.pipeline.touchMoved(id: 2, x: 180, y: 140, at: 40 * ms)
+        #expect(!r.scrolls.isEmpty && r.pipeline.zoom == 1)
+    }
+
+    @Test func zoomedInTheViewFollowsAPointerThatMovesAndStopsAtTheEdges() {
+        let r = recorder(.direct, surface: (382, 287))
+        pinch(r, x: 191, y: 143, to: 2)
+        let before = r.pipeline.viewport
+        // The pointer far to the right: the part follows, keeping it a margin inside its edge.
+        r.pipeline.warp(x: 1200, y: 516)
+        r.pipeline.updateViewport()
+        let v = r.pipeline.viewport
+        let margin = v.width * 1376 * ClientInputPipeline.viewportMargin
+        #expect(v != before && abs((v.x + v.width) * 1376 - margin - 1200) < 1e-6)
+        // The corner: it stops at the display's edge.
+        r.pipeline.warp(x: 1375, y: 1031)
+        r.pipeline.updateViewport()
+        #expect(abs(r.pipeline.viewport.x + r.pipeline.viewport.width - 1) < 1e-9)
+        // A pinch elsewhere moves the view without the pointer pulling it back.
+        pinch(r, x: 60, y: 60, to: 0.5)
+        let pinched = r.pipeline.viewport
+        r.pipeline.updateViewport()
+        #expect(r.pipeline.viewport == pinched)
+    }
+
+    @Test func aPortraitWindowStartsFilledWithTheDisplaysHeight() {
+        // Half of the Duo's inner display: a 469 × 522 view of the 1376 × 1032 display.
+        let r = recorder(.direct, surface: (469, 522))
+        r.pipeline.fillsView = true
+        var v = r.pipeline.viewport
+        #expect(abs(v.height - 1) < 1e-9, "the display's whole height")
+        #expect(abs(v.width * 1376 - 469 / (522.0 / 1032)) < 1e-6, "and as much of its width as fits")
+        // Around the pointer, which is in the display's middle.
+        #expect(v.x * 1376 < 688 && 688 < (v.x + v.width) * 1376)
+        // A pinch out shows all of it; turning the fill off and on starts again.
+        pinch(r, x: 234, y: 260, to: 0.2)
+        #expect(r.pipeline.viewport == .full)
+        r.pipeline.fillsView = false
+        r.pipeline.fillsView = true
+        v = r.pipeline.viewport
+        #expect(abs(v.height - 1) < 1e-9 && v.width < 1)
+        r.pipeline.fillsView = false
+        #expect(r.pipeline.viewport == .full)
+    }
+
+    /// The deck (the Duo folded like a laptop): a pinch on the trackpad zooms the picture above it, about the
+    /// pointer, which stays where it shows; off the deck, a pinch on the strip zooms nothing.
+    @Test func aPinchOnTheDecksTrackpadZoomsThePictureAboutThePointer() {
+        let r = recorder(.direct, surface: (669, 455))
+        func padPinch(to factor: Double) {
+            r.pipeline.padTouchBegan(id: 1, x: 200, y: 150, at: 0)
+            r.pipeline.padTouchBegan(id: 2, x: 280, y: 150, at: 10 * ms)
+            r.pipeline.padTouchMoved(id: 1, x: 240 - 40 * factor, y: 150, at: 30 * ms)
+            r.pipeline.padTouchMoved(id: 2, x: 240 + 40 * factor, y: 150, at: 40 * ms)
+            r.pipeline.padTouchEnded(id: 1, at: 60 * ms)
+            r.pipeline.padTouchEnded(id: 2, at: 70 * ms)
+        }
+        r.pipeline.warp(x: 1000, y: 300)
+        r.pipeline.updateViewport()
+        padPinch(to: 2)
+        #expect(r.pipeline.zoom == 1, "the strip's pinch zooms only on the deck")
+        r.pipeline.padPinchZooms = true
+        let fit = min(669 / 1376.0, 455 / 1032.0)
+        let x = 1000 * fit + (669 - 1376 * fit) / 2, y = 300 * fit + (455 - 1032 * fit) / 2
+        let scrolls = r.scrolls.count
+        padPinch(to: 2)
+        #expect(abs(r.pipeline.zoom - 2) < 1e-9)
+        let under = r.pipeline.hostPoint(surfaceX: x, surfaceY: y)!
+        #expect(abs(under.x - 1000) < 1e-6 && abs(under.y - 300) < 1e-6, "the pointer stays where it shows")
+        #expect(r.scrolls.count == scrolls && r.buttons.isEmpty)
+    }
+
+    @Test func theScrollRibbonScrollsWithoutAPointerLock() {
+        let r = recorder(.direct)
+        r.pipeline.glassScroll(.scrollBegan, at: 0)
+        r.pipeline.glassScroll(.scroll(dx: 0, dy: 12), at: 10 * ms)
+        r.pipeline.glassScroll(.button(.left, isDown: true), at: 15 * ms)   // not a scroll: ignored
+        r.pipeline.glassScroll(.scrollEnded, at: 20 * ms)
+        #expect(!r.scrolls.isEmpty && r.buttons.isEmpty)
+    }
 }

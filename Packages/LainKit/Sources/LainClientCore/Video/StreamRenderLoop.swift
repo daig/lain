@@ -13,6 +13,7 @@ import Synchronization
 public final class StreamRenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unchecked Sendable {
     public typealias CursorPosition = @Sendable () -> (x: Double, y: Double)?
     public typealias DisplayPointSize = @Sendable () -> (width: Double, height: Double)?
+    public typealias ShownPart = @Sendable () -> Viewport
 
     public let layer: CAMetalLayer
     public let video: ClientVideoPipeline
@@ -20,6 +21,7 @@ public final class StreamRenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unch
     private let renderer: VideoRenderer
     private let cursorPosition: CursorPosition
     private let displayPointSize: DisplayPointSize
+    private let viewport: ShownPart
     private let tick: @Sendable () -> Void
     private var link: CAMetalDisplayLink?
     private var current: DecodedFrame?
@@ -33,6 +35,7 @@ public final class StreamRenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unch
         var cursor: SIMD2<Double>?
         var spriteKey: UInt64?
         var points: SIMD2<Double>?
+        var viewport = SIMD4<Double>(0, 0, 1, 1)
         var width = 0
         var height = 0
     }
@@ -40,13 +43,16 @@ public final class StreamRenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unch
     /// - Parameters:
     ///   - cursorPosition: the cursor in streamed-display points, nil when it's on another display.
     ///   - displayPointSize: the streamed display's size in points (cursor space), nil when unknown.
+    ///   - viewport: the part of the streamed display to draw (the whole of it by default).
     ///   - tick: called first on every display-link tick (the input pipeline's tick).
     public init(video: ClientVideoPipeline, cursorPosition: @escaping CursorPosition,
-                displayPointSize: @escaping DisplayPointSize, tick: @escaping @Sendable () -> Void) throws {
+                displayPointSize: @escaping DisplayPointSize, viewport: @escaping ShownPart = { .full },
+                tick: @escaping @Sendable () -> Void) throws {
         renderer = try VideoRenderer(pixelFormat: .bgr10a2Unorm)
         self.video = video
         self.cursorPosition = cursorPosition
         self.displayPointSize = displayPointSize
+        self.viewport = viewport
         self.tick = tick
         layer = CAMetalLayer()
         layer.device = renderer.device
@@ -104,15 +110,17 @@ public final class StreamRenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unch
         let point = showCursor ? cursorPosition().map { SIMD2($0.x, $0.y) } : nil
         let points = displayPointSize().flatMap { $0.width > 0 && $0.height > 0 ? SIMD2($0.width, $0.height) : nil }
 
+        let part = viewport()
+        let view = SIMD4(part.x, part.y, part.width, part.height)
         let texture = update.drawable.texture
         let now = LastDrawn(frameId: current?.frameId, cursor: point, spriteKey: point == nil ? nil : sprite?.sprite.key,
-                            points: points, width: texture.width, height: texture.height)
+                            points: points, viewport: view, width: texture.width, height: texture.height)
         guard now != last else { return }   // nothing changed: present nothing
         last = now
 
         guard let commandBuffer = renderer.commandQueue.makeCommandBuffer() else { return }
         let scene = VideoRenderer.Scene(frame: current, displayPointSize: points, cursorPoint: point,
-                                        cursorSprite: point == nil ? nil : sprite?.sprite)
+                                        cursorSprite: point == nil ? nil : sprite?.sprite, viewport: view)
         renderer.encode(scene, into: commandBuffer, target: texture)
         commandBuffer.present(update.drawable)
         commandBuffer.commit()

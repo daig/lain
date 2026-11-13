@@ -38,9 +38,12 @@ lain also works with the iPad on its own: touch, an on-screen keyboard and dicta
   click; to drag, hold still for a moment, then move.
   - Landscape: a faint patch in each bottom corner, under your thumbs.
   - Portrait: the strip between the picture and the keyboard.
-- **Dictation.** In landscape, tap the microphone button at the right edge and speak; each phrase is typed on
-  the computer when you pause. Tap again to stop. Keys beside the transcript delete the last phrase and
-  press Return. Dictation runs on the iPad.
+- **Dictation.** Tap a microphone button (in landscape, the one at the right edge) and speak; each phrase is
+  typed on the computer when you pause, and tapping the microphone again stops. While you speak, the words
+  still being heard show in the trackpad (in landscape, low between the thumb patches), and ⌫ and ⏎ keys
+  appear (in landscape, above and below the microphone): ⌫ takes back the last phrase, ⏎ presses Return
+  and stops dictating. Any Return, the on-screen keyboard's or a hardware keyboard's, also stops it, after
+  the last words are typed. Dictation runs on the iPad.
 - **Keyboard.** Turn the iPad to portrait and the keyboard comes up under the picture. The rows above it add
   Esc, Tab, arrows and more; ⌃ ⌥ ⌘ apply to the next key (⌃ then C is Control-C). In landscape, touch and
   hold the microphone button and choose **Keyboard**.
@@ -49,6 +52,27 @@ lain also works with the iPad on its own: touch, an on-screen keyboard and dicta
 With a Magic Keyboard attached, none of this shows; press Globe twice to dictate.
 
 Typing and dictation need Mac host 0.2 or later; the Linux host doesn't have them yet.
+
+### On an iPhone Duo
+
+The same app runs on an iPhone Duo; it has no trackpad or mouse, so it works as an iPad does without a Magic
+Keyboard. The computer's display is the size of the Duo's inner display, open or closed.
+
+- **Open**, it is the iPad's layout: landscape for the display with the thumb trackpad areas and the
+  microphone button, portrait for the picture over the keyboard.
+- **Half folded like a laptop** and set down, it is for watching something long-running, such as a coding
+  agent at work. The picture fills the half above the fold; below it there is no keyboard, but a row of keys
+  that answer a prompt (esc, ⌃C, ⇧⇥, ↑, ↓, 1, 2, 3, Return), a large trackpad that works like a Magic
+  Trackpad (two fingers scroll, a pinch zooms the picture above) and a large microphone. The trackpad's
+  colour says what the picture is doing: grey when nothing is happening, green while it keeps changing, and
+  orange, with a chime and a tap, when it has stopped changing (likely waiting for you). Your own touches,
+  and the connection dropping, don't count as stopping.
+- **Closed** and upright, it is a remote: the display over a large trackpad. The buttons beside the camera
+  dictate, bring up the keyboard and open the settings; slide a thumb along the ribbon under them to scroll.
+- **Closed** and turned on its side, the display fills the screen, with the thumb trackpad areas and the
+  microphone button (touch and hold it for the keyboard and the settings).
+- **Pinch** the picture with two fingers to zoom in on part of the display, on either screen (and on an iPad);
+  zoomed in, the view follows the pointer. Pinch back out for the whole display.
 
 ### Sound
 
@@ -102,8 +126,9 @@ You need a Mac with Xcode 27 and an Apple ID. A free Apple ID works, but the app
 
 ## Build a host from source
 
-- **Mac:** the **LainHost** scheme in the same project. `Scripts/install-host.sh` builds it, installs it in
-  `/Applications` and starts it.
+- **Mac:** the **LainHost** scheme in the same project. `Scripts/install-host.sh` builds the working tree,
+  installs it in `/Applications` and starts it. It signs with Developer ID, as a release is signed, so it needs
+  the team's Developer ID certificate (see `RELEASING.md`).
 - **Linux:** the Rust workspace in `rust/`. `rust/dist/install.sh` installs from source, and
   `rust/dist/build-deb.sh` builds the `.deb`.
 

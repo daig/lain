@@ -346,6 +346,20 @@ final class FakeVideoRig: @unchecked Sendable {
         #expect(stride(from: 0, to: hidden.count, by: 4).allSatisfy { hidden[$0 + 2] == 0 })
     }
 
+    @Test func cursorFollowsTheShownPart() throws {
+        let renderer = try VideoRenderer(pixelFormat: .bgra8Unorm)
+        let red = CursorSprite(key: 98, pixelWidth: 4, pixelHeight: 4, scale: 2, hotspotX: 0, hotspotY: 0,
+                               pixels: (0..<16).flatMap { _ in [0, 0, 255, 255] as [UInt8] })
+        // The right half of a 100 × 75 pt display, in a target of that half's shape: 4 px a point.
+        let scene = VideoRenderer.Scene(displayPointSize: [100, 75], cursorPoint: [60, 20], cursorSprite: red,
+                                        viewport: [0.5, 0, 0.5, 1])
+        let drawn = VideoRenderer.readBGRA8(try #require(renderer.renderOffscreen(scene, width: 200, height: 300)))
+        func px(_ x: Int, _ y: Int) -> [UInt8] { let o = (y * 200 + x) * 4; return Array(drawn[o..<o + 4]) }
+        // 10 points into the shown part, 20 down: (40, 80), 8 × 8 pixels.
+        for y in 80..<88 { for x in 40..<48 { #expect(px(x, y) == [0, 0, 255, 255]) } }
+        #expect(px(39, 80) == [0, 0, 0, 255] && px(48, 84) == [0, 0, 0, 255] && px(44, 88) == [0, 0, 0, 255])
+    }
+
     /// The colour path end to end: a Display P3 BGRA frame → `xf44` (BT.709 full range, as SCK
     /// delivers with lain's explicit colorMatrix) → real HEVC 4:4:4 encode → the client pipeline's real
     /// decoder → Metal YCbCr→RGB → compared with the ORIGINAL BGRA. A wrong matrix, range or transfer

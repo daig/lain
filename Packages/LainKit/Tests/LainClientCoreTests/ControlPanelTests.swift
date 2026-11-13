@@ -95,6 +95,35 @@ import Testing
         #expect(rows[5].text.contains("Automatic") && rows[6].text.contains("Standard"))
     }
 
+    @Test func theSheetListsTheSameRowsToTap() throws {
+        var panel = ControlPanel()
+        var p = ClientPreferences()
+        p.reverseScroll = true
+        let sheet = panel.sheet(info: nil, video: VideoStats(), host: nil, hosts: hosts(selected: "B"), preferences: p)
+        #expect(sheet.title == "Not connected")
+        #expect(sheet.hosts.map(\.title) == ["Automatic", "Mac mini", "linux-box"])
+        #expect(sheet.hosts.map(\.isChecked) == [false, false, true])
+        #expect(sheet.hosts[1].value == "connected" && sheet.hostsNote == nil)
+        #expect(sheet.options.map(\.title) == ["Scroll direction", "Touch screen", "Wi-Fi path", "Radio priority"])
+        #expect(sheet.options[0].value == "Reversed")
+        // A tap on an item is a click on its row.
+        let rows = ControlPanel.rows(hosts: hosts())
+        #expect(sheet.hosts.compactMap(\.row).map { rows[$0] } == [.host(nil), .host("A"), .host("B")])
+        #expect(panel.click(row: try #require(sheet.hosts[1].row), hosts: hosts(), preferences: p) == .selectHost("A"))
+        #expect(rows[try #require(sheet.options[2].row)] == .wifiPath)
+
+        // On the cable the hosts are listed but can't be picked.
+        let cabled = panel.sheet(info: nil, video: VideoStats(), host: nil, hosts: hosts(onCable: true), preferences: p)
+        #expect(cabled.hosts.count == 2 && cabled.hosts.allSatisfy { $0.row == nil } && cabled.hostsNote != nil)
+        let none = panel.sheet(info: nil, video: VideoStats(), host: nil, hosts: ClientSession.HostList(), preferences: p)
+        #expect(none.hosts.isEmpty && none.hostsNote != nil)
+    }
+
+    @Test func deviceNameFollowsTheModel() {
+        #expect(ClientStatus.deviceName(model: "iPhone19,4") == "iPhone" && ClientStatus.deviceName(model: "iPad16,6") == "iPad")
+        #expect(ClientStatus.homeDisplay(model: "iPhone19,4")?.pixelWidth == 2853 && ClientStatus.homeDisplay(model: "iPad16,6") == nil)
+    }
+
     @Test func theHostLineSaysWhyItHasNoNumbers() {
         var info = ClientSession.ConnectionInfo()
         info.protocolVersion = 4

@@ -1,3 +1,4 @@
+import Foundation
 import LainProtocol
 import LainTransport
 
@@ -42,6 +43,27 @@ public enum ClientStatus: Sendable, Equatable {
         }
     }
 
+    /// What this device is called in the texts: "iPhone" on one, else "iPad".
+    public static let device = deviceName(model: hardwareModel())
+
+    public static func deviceName(model: String) -> String { model.hasPrefix("iPhone") ? "iPhone" : "iPad" }
+
+    /// The hardware's model identifier ("iPad16,6", "iPhone19,4"); in the simulator, the simulated device's.
+    public static func hardwareModel() -> String {
+        if let simulated = ProcessInfo.processInfo.environment["SIMULATOR_MODEL_IDENTIFIER"] { return simulated }
+        var info = utsname()
+        uname(&info)
+        return withUnsafeBytes(of: info.machine) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+    }
+
+    /// The display a device asks the host for when it isn't simply the screen the app is on. The iPhone Duo
+    /// asks for its whole inner display (951 × 669 points at 3×), whichever of its two screens the app opened
+    /// on, so the desktop is the same open or closed. Open, the display's rounded corners cover the desktop's
+    /// (decided 2026-11-12: the full size is worth more than the corners). nil: the screen's own.
+    public static func homeDisplay(model: String) -> (pixelWidth: Int, pixelHeight: Int, scale: Int)? {
+        model == "iPhone19,4" ? (2853, 2007, 3) : nil
+    }
+
     public var isConnected: Bool {
         switch self {
         case .connected, .session: true
@@ -57,7 +79,7 @@ public enum ClientStatus: Sendable, Equatable {
         case .versionMismatch(let name, _): "\(name ?? "The Mac") runs another lain"
         case .localNetworkDenied: "Local Network access is off"
         case .hostBusy(let name): "\(name) is busy"
-        case .pairingRefused(let name): "\(name) doesn't recognize this iPad"
+        case .pairingRefused(let name): "\(name) doesn't recognize this \(Self.device)"
         case .connecting(let name, _): "Connecting to \(name)"
         case .connected: "Connected to Mac"
         case .session(let info): "Connected to \(info.hostName.isEmpty ? "Mac" : info.hostName)"
@@ -68,15 +90,15 @@ public enum ClientStatus: Sendable, Equatable {
     public var detail: String {
         switch self {
         case .waitingForMac(let wifi):
-            wifi ? Self.connectHint : "Connect your iPad to the Mac with a USB-C cable"
+            wifi ? Self.connectHint : "Connect your \(Self.device) to the Mac with a USB-C cable"
         case .searching:
             Self.connectHint
         case .needsCable:
             "Connect the cable once to use it over Wi-Fi"
         case .versionMismatch(_, .peerOlder(let peer)):
-            "It speaks \(peer), this iPad protocol \(VersionList.offered): update lain on the Mac"
+            "It speaks \(peer), this \(Self.device) protocol \(VersionList.offered): update lain on the Mac"
         case .versionMismatch(_, .peerNewer(let peer)):
-            "It speaks \(peer), this iPad protocol \(VersionList.offered): update lain on this iPad"
+            "It speaks \(peer), this \(Self.device) protocol \(VersionList.offered): update lain on this \(Self.device)"
         case .versionMismatch(_, .differentBuilds(let version)):
             "It runs a different development build of protocol v\(version): update both from the same tree"
         case .localNetworkDenied:
@@ -133,5 +155,5 @@ public enum ClientStatus: Sendable, Equatable {
         }
     }
 
-    private static let connectHint = "Connect the USB-C cable, or keep the iPad near a paired Mac with Wi-Fi on"
+    private static let connectHint = "Connect the USB-C cable, or keep the \(device) near a paired Mac with Wi-Fi on"
 }

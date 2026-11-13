@@ -53,6 +53,15 @@ public struct CursorSnapshot: Sendable, Equatable {
     }
 }
 
+/// The part of the streamed display a view shows, as fractions of the display (top-left origin). `full`: all of it.
+public struct Viewport: Sendable, Equatable {
+    public var x: Double, y: Double, width: Double, height: Double
+    public init(x: Double, y: Double, width: Double, height: Double) {
+        self.x = x; self.y = y; self.width = width; self.height = height
+    }
+    public static let full = Viewport(x: 0, y: 0, width: 1, height: 1)
+}
+
 /// The `Sendable` front of `ClientInputPipeline` (§6.4): one serial `.userInteractive` queue owns the
 /// pipeline and every entry point runs there. Each call is stamped with `CLOCK_UPTIME_RAW` when it is
 /// made. Calls made on `queue` itself (GCMouse and GCKeyboard handlers, whose `handlerQueue` is
@@ -76,6 +85,11 @@ public final class ClientInput: @unchecked Sendable {
     private let streamY = Atomic<UInt64>(0)
     private let displayW = Atomic<UInt64>(0)
     private let displayH = Atomic<UInt64>(0)
+    /// The shown part of the streamed display (`Viewport`), for the renderer.
+    private let viewX = Atomic<UInt64>(0)
+    private let viewY = Atomic<UInt64>(0)
+    private let viewW = Atomic<UInt64>((1.0).bitPattern)
+    private let viewH = Atomic<UInt64>((1.0).bitPattern)
 
     public init(pipeline: ClientInputPipeline = ClientInputPipeline(), label: String = "lain.client.input") {
         queue = DispatchQueue(label: label, qos: .userInteractive)
@@ -203,7 +217,24 @@ public final class ClientInput: @unchecked Sendable {
 
     /// The size of the view the stream fills, in points.
     public func setTouchSurface(width: Double, height: Double) {
-        perform { self.pipeline.touchSurface = (width, height) }
+        perform {
+            self.pipeline.touchSurface = (width, height)
+            self.publishCursor()
+        }
+    }
+
+
+    /// The view fills the stream's area (zoomed in) instead of showing all of the display, until a pinch.
+    public func setFillsView(_ fills: Bool) {
+        perform {
+            self.pipeline.fillsView = fills
+            self.publishCursor()
+        }
+    }
+
+    /// A pinch on the trackpad strip zooms the view about the pointer (the deck), instead of nothing.
+    public func setPadPinchZooms(_ zooms: Bool) {
+        perform { self.pipeline.padPinchZooms = zooms }
     }
 
     public func touchBegan(id: Int, x: Double, y: Double) {
@@ -255,6 +286,12 @@ public final class ClientInput: @unchecked Sendable {
     public func padTouchesCancelled() {
         let t = MonotonicClock.now()
         perform { self.pipeline.padTouchesCancelled(at: t) }
+    }
+
+    /// A scroll from a control on the glass (the scroll ribbon), which needs no pointer lock.
+    public func glassScroll(_ action: TouchGestures.Action) {
+        let t = MonotonicClock.now()
+        perform { self.pipeline.glassScroll(action, at: t) }
     }
 
     public func mouseButton(_ button: MouseButton, isDown: Bool) {
@@ -319,6 +356,12 @@ public final class ClientInput: @unchecked Sendable {
                               globalY: Double(bitPattern: cursorY.load(ordering: .relaxed)), streamed: streamed)
     }
 
+    /// The part of the streamed display to draw. Lock-free, as `cursor`.
+    public var viewport: Viewport {
+        Viewport(x: Double(bitPattern: viewX.load(ordering: .relaxed)), y: Double(bitPattern: viewY.load(ordering: .relaxed)),
+                 width: Double(bitPattern: viewW.load(ordering: .relaxed)), height: Double(bitPattern: viewH.load(ordering: .relaxed)))
+    }
+
     /// Runs `body` on the queue and waits (tests and diagnostics only; never from `queue`).
     public func sync<T>(_ body: (ClientInputPipeline) -> T) -> T {
         dispatchPrecondition(condition: .notOnQueue(queue))
@@ -340,6 +383,12 @@ public final class ClientInput: @unchecked Sendable {
 
     /// On `queue`.
     private func publishCursor() {
+        pipeline.updateViewport()
+        let v = pipeline.viewport
+        viewX.store(v.x.bitPattern, ordering: .relaxed)
+        viewY.store(v.y.bitPattern, ordering: .relaxed)
+        viewW.store(v.width.bitPattern, ordering: .relaxed)
+        viewH.store(v.height.bitPattern, ordering: .relaxed)
         cursorX.store(pipeline.pointer.x.bitPattern, ordering: .relaxed)
         cursorY.store(pipeline.pointer.y.bitPattern, ordering: .relaxed)
         let s = pipeline.streamedDisplay ?? DesktopDisplay(x: 0, y: 0, width: 0, height: 0)

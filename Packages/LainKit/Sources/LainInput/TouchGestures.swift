@@ -37,6 +37,10 @@ public struct TouchGestures: Sendable {
         case scroll(dx: Double, dy: Double)
         case scrollEnded
         case scrollCancelled
+        /// Two fingers moved apart or together (only with `pinchZooms`): since the last zoom action the view's
+        /// zoom changes by `factor`, and the fingers' midpoint, now at (`x`, `y`) of the surface, has moved by
+        /// (`dx`, `dy`): what was under it stays under it.
+        case zoom(factor: Double, x: Double, y: Double, dx: Double, dy: Double)
     }
 
     public private(set) var mode = TouchMode.direct
@@ -52,6 +56,10 @@ public struct TouchGestures: Sendable {
     /// `doubleTapSlop`; `trackpad` drags if it moves.
     public var afterTapNs: UInt64 = 400_000_000
     public var doubleTapSlop = 44.0
+    /// Two fingers whose distance changes by more than `pinchSlop` before their midpoint has moved are a pinch
+    /// (`Action.zoom`), not a scroll. Off: two fingers only scroll and right-click.
+    public var pinchZooms = false
+    public var pinchSlop = 24.0
 
     private struct Point: Sendable, Equatable {
         var x: Double, y: Double
@@ -68,9 +76,13 @@ public struct TouchGestures: Sendable {
         case dragging(id: Int, last: Point, anchor: Point?)
         /// Two fingers; `scrolling` once their midpoint has moved.
         case two(a: Int, b: Int, start: Point, last: Point, at: UInt64, scrolling: Bool, mayTap: Bool)
+        /// Two fingers pinching; `last`: their distance at the last zoom action, `mid`: their midpoint then.
+        case zooming(a: Int, b: Int, last: Double, mid: Point)
         /// Nothing more from this gesture: wait until every finger is up.
         case spent
     }
+    /// The two fingers' distance when the second landed.
+    private var pinchStart = 0.0
     private var state = State.idle
     private var touches: [Int: Point] = [:]
     private var lastTap: (point: Point, at: UInt64)?
@@ -107,16 +119,21 @@ public struct TouchGestures: Sendable {
         case .pending(let first, _, let at, _):
             guard let a = touches[first] else { state = .spent; return [] }
             let mid = Point(x: (a.x + p.x) / 2, y: (a.y + p.y) / 2)
+            pinchStart = a.distance(to: p)
             state = .two(a: first, b: id, start: mid, last: mid, at: at, scrolling: false, mayTap: true)
             return []
         case .moving(let first, _):
             guard let a = touches[first] else { state = .spent; return [] }
             let mid = Point(x: (a.x + p.x) / 2, y: (a.y + p.y) / 2)
+            pinchStart = a.distance(to: p)
             state = .two(a: first, b: id, start: mid, last: mid, at: timeNs, scrolling: false, mayTap: false)
             return []
         case .two(_, _, _, _, _, let scrolling, _):
             state = .spent
             return scrolling ? [.scrollEnded] : []
+        case .zooming:
+            state = .spent
+            return []
         case .dragging, .spent:
             return []   // an extra finger doesn't disturb a drag
         }
@@ -154,9 +171,20 @@ public struct TouchGestures: Sendable {
                 state = .two(a: a, b: b, start: start, last: mid, at: at, scrolling: true, mayTap: false)
                 return [.scroll(dx: mid.x - last.x, dy: mid.y - last.y)]
             }
+            let apart = pa.distance(to: pb)
+            if pinchZooms, pinchStart > 0, abs(apart - pinchStart) > pinchSlop {
+                state = .zooming(a: a, b: b, last: apart, mid: mid)
+                return [.zoom(factor: apart / pinchStart, x: mid.x, y: mid.y, dx: mid.x - start.x, dy: mid.y - start.y)]
+            }
             guard mid.distance(to: start) > slop else { return [] }
             state = .two(a: a, b: b, start: start, last: mid, at: at, scrolling: true, mayTap: false)
             return [.scrollBegan, .scroll(dx: mid.x - start.x, dy: mid.y - start.y)]
+        case .zooming(let a, let b, let last, let was):
+            guard let pa = touches[a], let pb = touches[b], last > 0 else { return [] }
+            let apart = pa.distance(to: pb), mid = Point(x: (pa.x + pb.x) / 2, y: (pa.y + pb.y) / 2)
+            guard apart > 0, apart != last || mid != was else { return [] }
+            state = .zooming(a: a, b: b, last: apart, mid: mid)
+            return [.zoom(factor: apart / last, x: mid.x, y: mid.y, dx: mid.x - was.x, dy: mid.y - was.y)]
         default:
             return []
         }
@@ -177,6 +205,10 @@ public struct TouchGestures: Sendable {
         case .moving(let first, _) where first == id:
             lastTap = nil
             state = .spent
+            return []
+        case .zooming(let a, let b, _, _) where id == a || id == b:
+            state = .spent
+            lastTap = nil
             return []
         case .two(let a, let b, _, _, let at, let scrolling, let mayTap) where id == a || id == b:
             state = .spent

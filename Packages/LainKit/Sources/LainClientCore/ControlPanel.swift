@@ -167,7 +167,7 @@ public struct ControlPanel: Sendable, Equatable {
 
         add("STREAM", .heading)
         add(Self.streamLine(video))
-        add("iPad   " + Self.iPadLine(video))
+        add(Self.pad(ClientStatus.device, to: 7) + Self.iPadLine(video))
         add("Host   " + Self.hostLine(info: info, host: host), host == nil ? .dim : .text)
         if let sound { add("Sound  " + Self.soundLine(sound)) }
 
@@ -203,6 +203,65 @@ public struct ControlPanel: Sendable, Equatable {
         add("SHORTCUTS", .heading)
         for (keys, action) in Self.shortcuts { add(Self.pad(keys) + action) }
         add("in this panel: ↑ ↓ select · ← → change · return or click: choose · esc or right ⌥: close", .dim)
+        return out
+    }
+
+    // MARK: Content for a touch sheet
+
+    /// The panel's content for a window too narrow for its lines (a phone, a Split View half): the same rows,
+    /// as a list to tap. The shortcuts are left out: they are a keyboard's.
+    public struct Sheet: Sendable, Equatable {
+        public struct Item: Sendable, Equatable {
+            /// The index into `rows` a tap acts on (`click(row:)`); nil: nothing to do.
+            public var row: Int?
+            public var title: String
+            public var value: String
+            public var isChecked = false
+        }
+        public var title = ""
+        /// The stream's numbers, a line each.
+        public var status: [String] = []
+        public var hosts: [Item] = []
+        /// Why the hosts can't be switched, or that there are none.
+        public var hostsNote: String?
+        public var options: [Item] = []
+        public init() {}
+    }
+
+    public func sheet(info: ClientSession.ConnectionInfo?, video: VideoStats, host: HostStats?,
+                      hosts: ClientSession.HostList, preferences: ClientPreferences,
+                      sound: ClientAudioPlayer.Delay? = nil) -> Sheet {
+        var out = Sheet()
+        if let info {
+            out.title = "\(info.hostName.isEmpty ? "host" : info.hostName) · \(ClientStatus.describe(info.transport))"
+        } else {
+            out.title = "Not connected"
+        }
+        out.status = [Self.streamLine(video), ClientStatus.device + ": " + Self.iPadLine(video), "Host: " + Self.hostLine(info: info, host: host)]
+        if let sound { out.status.append("Sound: " + Self.soundLine(sound)) }
+
+        func hostItem(_ id: String?, row: Int?) -> Sheet.Item {
+            guard let id else { return Sheet.Item(row: row, title: "Automatic", value: "cable first, then the last used", isChecked: hosts.selected == nil) }
+            let h = hosts.hosts.first { $0.id == id }
+            return Sheet.Item(row: row, title: h?.name ?? id, value: h.map { $0.isCurrent ? "connected" : ($0.isSeen ? "in reach" : "") } ?? "",
+                              isChecked: hosts.selected == id)
+        }
+        let rows = Self.rows(hosts: hosts)
+        if hosts.hosts.isEmpty {
+            out.hostsNote = "None saved yet: connect a host with the cable once."
+        } else if hosts.onCable {
+            out.hostsNote = "The cable is in, and it always wins: unplug it to switch."
+            out.hosts = hosts.hosts.map { hostItem($0.id, row: nil) }
+        }
+        for (i, row) in rows.enumerated() {
+            switch row {
+            case .host(let id): out.hosts.append(hostItem(id, row: i))
+            case .scrollDirection: out.options.append(.init(row: i, title: "Scroll direction", value: preferences.reverseScroll ? "Reversed" : "Natural"))
+            case .touchMode: out.options.append(.init(row: i, title: "Touch screen", value: Self.title(preferences.touchMode)))
+            case .wifiPath: out.options.append(.init(row: i, title: "Wi-Fi path", value: Self.title(preferences.wifiPath)))
+            case .radioPriority: out.options.append(.init(row: i, title: "Radio priority", value: Self.title(preferences.radioPriority)))
+            }
+        }
         return out
     }
 

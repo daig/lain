@@ -208,7 +208,7 @@ public final class ClientInputPipeline {
         closeTapArmed = false
         keyRepeat.cancel()
         apply(touch.cancelled(), at: timeNs)
-        apply(pad.cancelled(), at: timeNs)
+        apply(pad.cancelled(), at: timeNs, fromPad: true)
         onLocalShortcut(.overlay(true))
     }
 
@@ -319,9 +319,105 @@ public final class ClientInputPipeline {
 
     // MARK: Touch screen
 
-    public private(set) var touch = TouchGestures()
+    public private(set) var touch: TouchGestures = {
+        var gestures = TouchGestures()
+        gestures.pinchZooms = true   // a pinch on the picture zooms the view
+        return gestures
+    }()
     /// The size of the view the stream fills (points). The stream is aspect-fit in it, as the renderer draws it.
-    public var touchSurface: (width: Double, height: Double) = (0, 0)
+    public var touchSurface: (width: Double, height: Double) = (0, 0) { didSet { updateViewport() } }
+
+    // MARK: Viewport (pinch to zoom)
+
+    /// How much the view is zoomed in on the streamed display: 1 shows all of it, aspect-fit; more shows a part,
+    /// which a pinch on the screen sets (`zoomBy`) and which then follows the pointer when it moves.
+    public private(set) var zoom = 1.0
+    /// Zoomed in furthest, a display point is this many of the view's points (or the fit, where that is more).
+    public static let maxViewScale = 2.0
+    /// The part of the streamed display the view shows, as fractions of it (the renderer's source rect).
+    public private(set) var viewport = Viewport.full
+    /// The shown part's top-left, in the streamed display's points; kept between updates so it only moves when
+    /// a pinch or the pointer moves it.
+    private var viewOrigin = (x: 0.0, y: 0.0)
+    /// Where the pointer was when the shown part last followed it: it follows only a pointer that moved.
+    private var followed = (x: Double.nan, y: Double.nan)
+    /// How far inside the shown part's edges the pointer starts to push it, as a fraction of its size.
+    public static let viewportMargin = 0.15
+
+    /// The view's points per display point, the shown part's size in display points, and where its picture
+    /// starts in the view (it is centred where it doesn't fill it); nil without a display or a surface.
+    private var viewGeometry: (scale: Double, width: Double, height: Double, left: Double, top: Double)? {
+        guard let s = streamedDisplay, let fit = fitScale else { return nil }
+        let scale = fit * effectiveZoom
+        let width = min(s.width, touchSurface.width / scale), height = min(s.height, touchSurface.height / scale)
+        return (scale, width, height, (touchSurface.width - width * scale) / 2, (touchSurface.height - height * scale) / 2)
+    }
+
+    /// The view's points per display point with all of the display shown; nil without a display or a surface.
+    private var fitScale: Double? {
+        guard let s = streamedDisplay, s.width > 0, s.height > 0, touchSurface.width > 0, touchSurface.height > 0 else { return nil }
+        return min(touchSurface.width / s.width, touchSurface.height / s.height)
+    }
+    /// The zoom at which the view fills the surface: the display's whole height in a surface narrower than
+    /// its shape (a portrait window), its whole width in a wider one.
+    private var fillZoom: Double {
+        guard let s = streamedDisplay, let fit = fitScale else { return 1 }
+        return max(touchSurface.width / s.width, touchSurface.height / s.height) / fit
+    }
+    /// The most `zoom` does in this view.
+    private var maxZoom: Double { fitScale.map { max(Self.maxViewScale / $0, fillZoom, 1) } ?? 1 }
+    /// The zoom in effect: the owner's, or what fills the view while `fillsView` and no pinch has said otherwise.
+    private var effectiveZoom: Double { min(max(fillsView && !pinched ? fillZoom : zoom, 1), maxZoom) }
+
+    /// A window of another shape than the display's (a portrait half of a screen): the view starts zoomed in
+    /// so that it fills the surface, and follows the pointer; a pinch then zooms from there, out to all of the
+    /// display. Turned off, the zoom goes back to all of it.
+    public var fillsView = false {
+        didSet {
+            guard fillsView != oldValue else { return }
+            pinched = false
+            zoom = 1
+            followed = (.nan, .nan)   // start around the pointer
+            updateViewport()
+        }
+    }
+    /// A pinch has set the zoom since `fillsView` changed.
+    private var pinched = false
+
+    /// A pinch: zooms by `factor`, and what was under the fingers' midpoint stays under it: the midpoint is now
+    /// at (`x`, `y`) of the view, having moved by (`dx`, `dy`).
+    public func zoomBy(_ factor: Double, aboutX x: Double, y: Double, movedByX dx: Double = 0, y dy: Double = 0) {
+        guard factor.isFinite, factor > 0, let before = viewGeometry else { return }
+        let px = viewOrigin.x + (x - dx - before.left) / before.scale, py = viewOrigin.y + (y - dy - before.top) / before.scale
+        zoom = min(max(effectiveZoom * factor, 1), maxZoom)
+        pinched = true
+        guard let after = viewGeometry else { return }
+        viewOrigin = (px - (x - after.left) / after.scale, py - (y - after.top) / after.scale)
+        // The pinch places the view: the pointer (which the first finger moved under itself) doesn't pull it back.
+        if let s = streamedDisplay { followed = (pointer.x - s.x, pointer.y - s.y) }
+        updateViewport()
+    }
+
+    /// Keeps the shown part inside the display, and moves it so that a pointer that has moved stays inside its
+    /// margins. Call after anything that moves the pointer or changes the display, the surface or the zoom.
+    public func updateViewport() {
+        guard let s = streamedDisplay, let g = viewGeometry else {
+            viewport = .full
+            return
+        }
+        let px = pointer.x - s.x, py = pointer.y - s.y
+        if px != followed.x || py != followed.y {
+            followed = (px, py)
+            if px >= 0, py >= 0, px <= s.width, py <= s.height {   // on another display: the view stays
+                let mx = g.width * Self.viewportMargin, my = g.height * Self.viewportMargin
+                viewOrigin.x = min(max(viewOrigin.x, px - (g.width - mx)), px - mx)
+                viewOrigin.y = min(max(viewOrigin.y, py - (g.height - my)), py - my)
+            }
+        }
+        viewOrigin.x = min(max(viewOrigin.x, 0), s.width - g.width)
+        viewOrigin.y = min(max(viewOrigin.y, 0), s.height - g.height)
+        viewport = Viewport(x: viewOrigin.x / s.width, y: viewOrigin.y / s.height, width: g.width / s.width, height: g.height / s.height)
+    }
 
     public var touchMode: TouchMode { touch.mode }
     public func setTouchMode(_ mode: TouchMode, at timeNs: UInt64) { apply(touch.setMode(mode), at: timeNs) }
@@ -347,29 +443,54 @@ public final class ClientInputPipeline {
 
     public private(set) var pad = TouchGestures(mode: .trackpad)
 
+    /// A pinch on the strip zooms the view, about the pointer (the deck, where the picture isn't touched).
+    public var padPinchZooms: Bool {
+        get { pad.pinchZooms }
+        set { pad.pinchZooms = newValue }
+    }
+
     public func padTouchBegan(id: Int, x: Double, y: Double, at timeNs: UInt64) {
         guard !overlayShown else { return }
-        apply(pad.began(id: id, x: x, y: y, at: timeNs), at: timeNs)
+        apply(pad.began(id: id, x: x, y: y, at: timeNs), at: timeNs, fromPad: true)
     }
 
     public func padTouchMoved(id: Int, x: Double, y: Double, at timeNs: UInt64) {
-        apply(pad.moved(id: id, x: x, y: y, at: timeNs), at: timeNs)
+        apply(pad.moved(id: id, x: x, y: y, at: timeNs), at: timeNs, fromPad: true)
     }
 
-    public func padTouchEnded(id: Int, at timeNs: UInt64) { apply(pad.ended(id: id, at: timeNs), at: timeNs) }
+    public func padTouchEnded(id: Int, at timeNs: UInt64) { apply(pad.ended(id: id, at: timeNs), at: timeNs, fromPad: true) }
 
-    public func padTouchesCancelled(at timeNs: UInt64) { apply(pad.cancelled(), at: timeNs) }
+    public func padTouchesCancelled(at timeNs: UInt64) { apply(pad.cancelled(), at: timeNs, fromPad: true) }
 
-    /// The host point under a point of the view: the streamed display, aspect-fit and centred in the surface.
-    func hostPoint(surfaceX: Double, surfaceY: Double) -> (x: Double, y: Double)? {
-        guard let s = streamedDisplay, s.width > 0, s.height > 0, touchSurface.width > 0, touchSurface.height > 0 else { return nil }
-        let scale = min(touchSurface.width / s.width, touchSurface.height / s.height)
-        let (w, h) = (s.width * scale, s.height * scale)
-        let u = (surfaceX - (touchSurface.width - w) / 2) / w, v = (surfaceY - (touchSurface.height - h) / 2) / h
-        return s.clamped(x: s.x + u * s.width, y: s.y + v * s.height)
+    /// A pinch away from the picture: zooms by `factor` about the pointer where the view shows it, else about
+    /// the view's centre.
+    public func zoomAboutPointer(_ factor: Double) {
+        guard let s = streamedDisplay, let g = viewGeometry else { return }
+        var x = (pointer.x - s.x - viewOrigin.x) * g.scale + g.left, y = (pointer.y - s.y - viewOrigin.y) * g.scale + g.top
+        if !(0...touchSurface.width).contains(x) || !(0...touchSurface.height).contains(y) {
+            (x, y) = (touchSurface.width / 2, touchSurface.height / 2)
+        }
+        zoomBy(factor, aboutX: x, y: y)
     }
 
-    private func apply(_ actions: [TouchGestures.Action], at timeNs: UInt64) {
+    /// A scroll from a control on the glass (the scroll ribbon): as a touch, it needs no pointer lock. Only the
+    /// scroll actions are taken.
+    public func glassScroll(_ action: TouchGestures.Action, at timeNs: UInt64) {
+        switch action {
+        case .scrollBegan, .scroll, .scrollEnded, .scrollCancelled: apply([action], at: timeNs)
+        default: break
+        }
+    }
+
+    /// The host point under a point of the view: the shown part of the streamed display, aspect-fit and centred
+    /// in the surface.
+    public func hostPoint(surfaceX: Double, surfaceY: Double) -> (x: Double, y: Double)? {
+        guard let s = streamedDisplay, let g = viewGeometry else { return nil }
+        return s.clamped(x: s.x + viewOrigin.x + (surfaceX - g.left) / g.scale, y: s.y + viewOrigin.y + (surfaceY - g.top) / g.scale)
+    }
+
+    /// `fromPad`: the trackpad strip's, whose positions aren't the view's.
+    private func apply(_ actions: [TouchGestures.Action], at timeNs: UInt64, fromPad: Bool = false) {
         guard !actions.isEmpty else { return }
         applyingTouch = true
         defer { applyingTouch = false }
@@ -389,6 +510,8 @@ public final class ClientInputPipeline {
             case .scroll(let dx, let dy): scrollChanged(dx: dx, dy: dy, at: timeNs)
             case .scrollEnded: scrollEnded(at: timeNs)
             case .scrollCancelled: scrollCancelled(at: timeNs)
+            case .zoom(let factor, let x, let y, let dx, let dy):   // the view's own: nothing is sent
+                if fromPad { zoomAboutPointer(factor) } else { zoomBy(factor, aboutX: x, y: y, movedByX: dx, y: dy) }
             }
         }
     }
@@ -464,7 +587,7 @@ public final class ClientInputPipeline {
         if let scroll = momentum.tick(at: timeNs) { send(.scroll(scroll)) }
         if let repeated = keyRepeat.tick(at: timeNs) { send(.keyEvent(repeated)) }
         apply(touch.tick(at: timeNs), at: timeNs)
-        apply(pad.tick(at: timeNs), at: timeNs)
+        apply(pad.tick(at: timeNs), at: timeNs, fromPad: true)
         if let down = systemKeyDownAtNs, !overlayShown, timeNs &- down >= Self.overlayHoldNs, timeNs >= down {
             systemKeyDownAtNs = nil
             overlayShown = true
@@ -472,7 +595,7 @@ public final class ClientInputPipeline {
             closeTapArmed = false
             keyRepeat.cancel()
             apply(touch.cancelled(), at: timeNs)   // the panel takes the screen too
-            apply(pad.cancelled(), at: timeNs)
+            apply(pad.cancelled(), at: timeNs, fromPad: true)
             onLocalShortcut(.overlay(true))
         }
     }
