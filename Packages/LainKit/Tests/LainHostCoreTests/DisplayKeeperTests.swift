@@ -14,6 +14,7 @@ import Testing
         var removed: Int { state.withLock { $0.removed } }
         func makeUnusable() { state.withLock { $0.usable = false } }
         func remove() async { state.withLock { $0.removed += 1 } }
+        func releaseNow() { state.withLock { $0.removed += 1 } }
     }
 
     @Test func theSameKindIsTakenBack() async {
@@ -90,6 +91,18 @@ import Testing
         #expect(a.removed == 1)
         #expect(await keeper.take(key: "k") === b)
     }
+
+    @Test func clearSyncAndCloseSyncReleaseImmediately() {
+        let keeper = DisplayKeeper(keepFor: .seconds(30))
+        let a = FakeDisplay("a"), b = FakeDisplay("b")
+        #expect(keeper.keep(a, key: "k"))
+        keeper.clearSync()
+        #expect(a.removed == 1 && !keeper.isHolding)
+        #expect(keeper.keep(b, key: "k"), "keeping still works after clearSync")
+        keeper.closeSync()
+        #expect(b.removed == 1 && !keeper.isHolding)
+        #expect(!keeper.keep(FakeDisplay("c"), key: "k"), "closed after closeSync")
+    }
 }
 
 #if os(macOS)
@@ -137,6 +150,13 @@ import Testing
         let specs = HostPreferences.scaleChoices.map(spec)
         for s in specs { #expect(s.pointWidth % 2 == 0 && s.pointHeight % 2 == 0 && s.streamWidth % 2 == 0 && s.streamHeight % 2 == 0) }
         #expect(Set(specs.map(\.keeperKey)).count == specs.count)
+    }
+
+    @Test func cappedCaptureSizePreservesMacBookAndCaps6K() {
+        #expect(VirtualDisplay.cappedCaptureSize(pixelWidth: 3456, pixelHeight: 2234) == (3456, 2234))
+        #expect(VirtualDisplay.cappedCaptureSize(pixelWidth: 3024, pixelHeight: 1964) == (3024, 1964))
+        let sixK = VirtualDisplay.cappedCaptureSize(pixelWidth: 6016, pixelHeight: 3384)
+        #expect(sixK == (3840, 2160))
     }
 }
 #endif

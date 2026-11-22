@@ -140,6 +140,77 @@ public final class VirtualDisplay: @unchecked Sendable {
         return ids
     }
 
+    /// Online displays (includes displays that are currently mirroring another).
+    public static func onlineDisplays() -> [CGDirectDisplayID] {
+        var count: UInt32 = 0
+        guard CGGetOnlineDisplayList(0, nil, &count) == .success, count > 0 else { return [] }
+        var ids = [CGDirectDisplayID](repeating: 0, count: Int(count))
+        guard CGGetOnlineDisplayList(count, &ids, &count) == .success else { return [] }
+        return Array(ids.prefix(Int(count)))
+    }
+
+    /// Active non-lain physical displays (excluding macOS's headless placeholder).
+    public static func activePhysicalDisplays() -> [CGDirectDisplayID] {
+        activeDisplays().filter { id in
+            let v = CGDisplayVendorNumber(id), m = CGDisplayModelNumber(id)
+            return v != vendorID && !(v == ActiveDisplay.placeholderVendor && m == ActiveDisplay.placeholderModel)
+        }
+    }
+
+    /// Mirrors each display in `displays` onto `master` (making `master` the mirror master whose geometry rules).
+    @discardableResult
+    public static func mirror(_ displays: [CGDirectDisplayID], onto master: CGDirectDisplayID) -> Bool {
+        let targets = displays.filter { $0 != master }
+        guard !targets.isEmpty else { return true }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return false }
+        for id in targets {
+            CGConfigureDisplayMirrorOfDisplay(config, id, master)
+        }
+        return CGCompleteDisplayConfiguration(config, .forSession) == .success
+    }
+
+    /// Unmirrors any online physical display that mirrors `master` (or any lain virtual display when `master` is nil),
+    /// synchronously restoring the host's native display arrangement. Safe on quit or emergency restore.
+    @discardableResult
+    public static func restoreHostDisplays(mirroredTo master: CGDirectDisplayID? = nil) -> Int {
+        let toUnmirror = onlineDisplays().filter { id in
+            guard CGDisplayVendorNumber(id) != vendorID else { return false }
+            let m = CGDisplayMirrorsDisplay(id)
+            guard m != kCGNullDirectDisplay else { return false }
+            if let master { return m == master }
+            return CGDisplayVendorNumber(m) == vendorID
+        }
+        guard !toUnmirror.isEmpty else { return 0 }
+        var config: CGDisplayConfigRef?
+        guard CGBeginDisplayConfiguration(&config) == .success else { return 0 }
+        for id in toUnmirror {
+            CGConfigureDisplayMirrorOfDisplay(config, id, kCGNullDirectDisplay)
+        }
+        return CGCompleteDisplayConfiguration(config, .forSession) == .success ? toUnmirror.count : 0
+    }
+
+    /// True if any online physical display is currently mirroring a lain virtual display.
+    public static func hasMirroredHostDisplay() -> Bool {
+        onlineDisplays().contains { id in
+            guard CGDisplayVendorNumber(id) != vendorID else { return false }
+            let m = CGDisplayMirrorsDisplay(id)
+            return m != kCGNullDirectDisplay && CGDisplayVendorNumber(m) == vendorID
+        }
+    }
+
+    /// Caps a physical display's pixel dimensions to `Spec.maxBackingPixels` on the long side, preserving aspect
+    /// ratio with even sides (MacBook Pro built-in displays are ≤ 3456 px and pass through 1:1).
+    public static func cappedCaptureSize(pixelWidth: Int, pixelHeight: Int) -> (width: Int, height: Int) {
+        let maxSide = max(pixelWidth, pixelHeight)
+        guard maxSide > 0 else { return (2, 2) }
+        if maxSide <= Spec.maxBackingPixels {
+            return (max(2, pixelWidth & ~1), max(2, pixelHeight & ~1))
+        }
+        let ratio = Double(Spec.maxBackingPixels) / Double(maxSide)
+        return (Spec.even(Double(pixelWidth) * ratio), Spec.even(Double(pixelHeight) * ratio))
+    }
+
     /// Every mode the window server offers, including 2× duplicates.
     public func modes() -> [CGDisplayMode] {
         let opts = [kCGDisplayShowDuplicateLowResolutionModes: kCFBooleanTrue] as CFDictionary

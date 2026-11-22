@@ -1,9 +1,12 @@
 import CoreGraphics
 import Foundation
+import LainProtocol
 import LainTelemetry
+import os
 import Synchronization
 
-/// The display the host streams (§5.1): in M3, the iPad-geometry virtual display in Extend mode.
+/// The display the host streams (§5.1): a virtual display in Extend or Mirror (`primary`) mode, or the host's
+/// own configured physical display (`captureExisting`).
 public struct StreamedDisplay: Sendable, Equatable {
     public var displayID: UInt32
     /// The capture and encode size: the display's current mode in pixels.
@@ -12,13 +15,17 @@ public struct StreamedDisplay: Sendable, Equatable {
     /// Global point coordinates (top-left origin, main display at 0,0), as `CGDisplayBounds` reports them.
     public var bounds: CGRect
     public var refreshRate: Int
+    /// How this display is placed on the host (v8 `HelloAck.displayMode`).
+    public var displayMode: DisplayMode
 
-    public init(displayID: UInt32, pixelWidth: Int, pixelHeight: Int, bounds: CGRect, refreshRate: Int) {
+    public init(displayID: UInt32, pixelWidth: Int, pixelHeight: Int, bounds: CGRect, refreshRate: Int,
+                displayMode: DisplayMode = .extend) {
         self.displayID = displayID
         self.pixelWidth = pixelWidth
         self.pixelHeight = pixelHeight
         self.bounds = bounds
         self.refreshRate = refreshRate
+        self.displayMode = displayMode
     }
 }
 
@@ -64,6 +71,9 @@ public protocol StreamedDisplayProvider: Sendable {
     /// The same at `scale` pixels per point (one of `scales(pixelWidth:pixelHeight:)`). By default the scale
     /// is ignored.
     func create(pixelWidth: Int, pixelHeight: Int, scale: Double) async throws -> StreamedDisplay
+    /// The same with a display mode (v8: `.extend`, `.primary` to mirror onto lain's display, or
+    /// `.captureExisting` to mirror the host's own display). By default the mode is ignored.
+    func create(pixelWidth: Int, pixelHeight: Int, scale: Double, mode: DisplayMode) async throws -> StreamedDisplay
     /// The scales a display for a client of this many pixels can be made at, ascending (v7
     /// `HelloAck.displayScales`); empty: only `ownScale`, by default.
     func scales(pixelWidth: Int, pixelHeight: Int) -> [Double]
@@ -89,6 +99,9 @@ extension StreamedDisplayProvider {
     public func create(pixelWidth: Int, pixelHeight: Int, scale: Double) async throws -> StreamedDisplay {
         try await create(pixelWidth: pixelWidth, pixelHeight: pixelHeight)
     }
+    public func create(pixelWidth: Int, pixelHeight: Int, scale: Double, mode: DisplayMode) async throws -> StreamedDisplay {
+        try await create(pixelWidth: pixelWidth, pixelHeight: pixelHeight, scale: scale)
+    }
     public func scales(pixelWidth: Int, pixelHeight: Int) -> [Double] { [] }
     public var ownScale: Double { HostPreferences.defaultScale }
 
@@ -113,8 +126,12 @@ public final class VirtualStreamedDisplayProvider: StreamedDisplayProvider {
     public let spec: VirtualDisplay.Spec
     public let refreshRate: Int
     public let keeper: DisplayKeeper?
-    private let display = Mutex<VirtualDisplay?>(nil)
-    /// The display `destroy()` last released, until it has left the active list.
+    private enum Active {
+        case virtual(VirtualDisplay, mode: DisplayMode)
+        case existing(CGDirectDisplayID)
+    }
+    private let active = Mutex<Active?>(nil)
+    /// The virtual display `destroy()` last released, until it has left the active list.
     private let removed = Mutex<CGDirectDisplayID?>(nil)
 
     public init(spec: VirtualDisplay.Spec = VirtualDisplay.Spec(), refreshRate: Int = 120, keeper: DisplayKeeper? = nil) {
@@ -123,16 +140,25 @@ public final class VirtualStreamedDisplayProvider: StreamedDisplayProvider {
         self.keeper = keeper
     }
 
-    public func create() async throws -> StreamedDisplay { try await create(spec) }
+    public func create() async throws -> StreamedDisplay { try await create(spec, mode: .extend) }
 
     public func create(pixelWidth: Int, pixelHeight: Int) async throws -> StreamedDisplay {
-        try await create(spec.sized(pixelWidth: pixelWidth, pixelHeight: pixelHeight))
+        try await create(spec.sized(pixelWidth: pixelWidth, pixelHeight: pixelHeight), mode: .extend)
     }
 
     public func create(pixelWidth: Int, pixelHeight: Int, scale: Double) async throws -> StreamedDisplay {
+        try await create(pixelWidth: pixelWidth, pixelHeight: pixelHeight, scale: scale, mode: .extend)
+    }
+
+    public func create(pixelWidth: Int, pixelHeight: Int, scale: Double, mode: DisplayMode) async throws -> StreamedDisplay {
         var s = spec.sized(pixelWidth: pixelWidth, pixelHeight: pixelHeight)
         s.scale = scale
-        return try await create(s)
+        if mode == .captureExisting {
+            if let existing = await captureExistingDisplay() { return existing }
+            // Headless Mac with no physical monitor: fall back to creating lain's virtual display.
+            return try await create(s, mode: .extend)
+        }
+        return try await create(s, mode: mode)
     }
 
     public func scales(pixelWidth: Int, pixelHeight: Int) -> [Double] {
@@ -141,55 +167,117 @@ public final class VirtualStreamedDisplayProvider: StreamedDisplayProvider {
 
     public var ownScale: Double { spec.scale }
 
-    private func create(_ spec: VirtualDisplay.Spec) async throws -> StreamedDisplay {
+    private static func keeperKey(for spec: VirtualDisplay.Spec, mode: DisplayMode) -> String {
+        "\(spec.keeperKey):\(mode.rawValue)"
+    }
+
+    /// Captures the Mac's own existing main physical display (after clearing any kept virtual display and
+    /// restoring host mirroring first). Returns nil on a headless Mac with no physical display.
+    private func captureExistingDisplay() async -> StreamedDisplay? {
         let log = Telemetry.logger("vdisplay")
+        await keeper?.clear()
+        _ = VirtualDisplay.restoreHostDisplays()
+        let physical = VirtualDisplay.activePhysicalDisplays()
+        guard let target = physical.first(where: { CGDisplayIsMain($0) != 0 }) ?? physical.first else {
+            log.notice("captureExisting requested, but no physical display is active; falling back to virtual display")
+            return nil
+        }
+        let bounds = CGDisplayBounds(target)
+        let mode = CGDisplayCopyDisplayMode(target)
+        let rawW = mode?.pixelWidth ?? Int((bounds.width * 2).rounded())
+        let rawH = mode?.pixelHeight ?? Int((bounds.height * 2).rounded())
+        let (width, height) = VirtualDisplay.cappedCaptureSize(pixelWidth: rawW, pixelHeight: rawH)
+        let hz = mode.map { Int($0.refreshRate.rounded()) }.flatMap { $0 > 0 ? $0 : nil } ?? 60
+        active.withLock { $0 = .existing(target) }
+        let result = StreamedDisplay(displayID: target, pixelWidth: width, pixelHeight: height, bounds: bounds,
+                                     refreshRate: hz, displayMode: .captureExisting)
+        log.notice("streaming existing host display \(result.displayID): \(result.pixelWidth)×\(result.pixelHeight) px at \(result.refreshRate) Hz, bounds \(String(describing: result.bounds))")
+        return result
+    }
+
+    private func create(_ spec: VirtualDisplay.Spec, mode: DisplayMode) async throws -> StreamedDisplay {
+        let log = Telemetry.logger("vdisplay")
+        let key = Self.keeperKey(for: spec, mode: mode)
         let vd: VirtualDisplay
-        if let kept = await keeper?.take(key: spec.keeperKey) as? KeptVirtualDisplay, let reused = kept.takeDisplay() {
-            vd = reused
-            display.withLock { $0 = vd }
-            log.notice("streaming the kept display \(vd.displayID)")
+        var reused = false
+        if let kept = await keeper?.take(key: key) as? KeptVirtualDisplay, let taken = kept.takeDisplay() {
+            vd = taken
+            reused = true
+            active.withLock { $0 = .virtual(vd, mode: mode) }
+            log.notice("streaming the kept display \(vd.displayID) (mode \(mode.rawValue))")
         } else {
-            // Created on the main thread, as the benches (and DeskPad) do.
+            // Snapshot physical displays before creating ours so we know what to mirror onto it.
             vd = try await MainActor.run { try VirtualDisplay(spec) }
-            display.withLock { $0 = vd }
+            active.withLock { $0 = .virtual(vd, mode: mode) }
         }
         do {
             try await vd.waitUntilActive()
-            if !vd.isInStreamingMode, vd.selectNativeMode(refreshRate: Double(refreshRate)) == nil {
-                log.error("the \(spec.pointWidth)×\(spec.pointHeight) pt (\(spec.backingWidth)×\(spec.backingHeight) px) @\(self.refreshRate) Hz mode isn't offered; streaming the current mode")
-            }
-            // The mode switch lands asynchronously; wait (bounded) until the window server reports it.
-            let deadline = Date().addingTimeInterval(2)
-            while Date() < deadline, !vd.isInStreamingMode {
-                try await Task.sleep(for: .milliseconds(20))
+            try await ensureStreamingMode(vd, spec: spec, log: log)
+            if mode == .primary {
+                let physical = VirtualDisplay.activePhysicalDisplays()
+                if !physical.isEmpty {
+                    if VirtualDisplay.mirror(physical, onto: vd.displayID) {
+                        log.notice("mirrored \(physical.count) host display(s) onto lain display \(vd.displayID)")
+                        // Wait briefly for the mirror set to settle, then verify our mode stayed intact.
+                        let deadline = Date().addingTimeInterval(1)
+                        while Date() < deadline, CGDisplayMirrorsDisplay(physical[0]) != vd.displayID {
+                            try await Task.sleep(for: .milliseconds(20))
+                        }
+                        try await ensureStreamingMode(vd, spec: spec, log: log)
+                    } else {
+                        log.error("failed to mirror host display(s) onto lain display \(vd.displayID)")
+                    }
+                } else if !reused {
+                    log.notice("primary/mirror requested on headless host: no physical display to mirror")
+                }
             }
         } catch {
             destroy()
             throw error
         }
-        let mode = CGDisplayCopyDisplayMode(vd.displayID)
+        let currentMode = CGDisplayCopyDisplayMode(vd.displayID)
         let inSpec = vd.isInStreamingMode
         // In the spec's mode, capture scales the backing store to the stream size; otherwise the current mode's own pixels.
-        let width = inSpec ? spec.streamWidth : (mode?.pixelWidth ?? spec.streamWidth)
-        let height = inSpec ? spec.streamHeight : (mode?.pixelHeight ?? spec.streamHeight)
+        let width = inSpec ? spec.streamWidth : (currentMode?.pixelWidth ?? spec.streamWidth)
+        let height = inSpec ? spec.streamHeight : (currentMode?.pixelHeight ?? spec.streamHeight)
         let result = StreamedDisplay(displayID: vd.displayID, pixelWidth: width, pixelHeight: height, bounds: CGDisplayBounds(vd.displayID),
-                                     refreshRate: mode.map { Int($0.refreshRate.rounded()) }.flatMap { $0 > 0 ? $0 : nil } ?? refreshRate)
-        log.notice("streamed display \(result.displayID): \(result.pixelWidth)×\(result.pixelHeight) px at \(result.refreshRate) Hz, bounds \(String(describing: result.bounds))")
+                                     refreshRate: currentMode.map { Int($0.refreshRate.rounded()) }.flatMap { $0 > 0 ? $0 : nil } ?? refreshRate,
+                                     displayMode: mode)
+        log.notice("streamed display \(result.displayID): \(result.pixelWidth)×\(result.pixelHeight) px at \(result.refreshRate) Hz, mode \(mode.rawValue), bounds \(String(describing: result.bounds))")
         return result
     }
 
+    private func ensureStreamingMode(_ vd: VirtualDisplay, spec: VirtualDisplay.Spec, log: Logger) async throws {
+        if !vd.isInStreamingMode, vd.selectNativeMode(refreshRate: Double(refreshRate)) == nil {
+            log.error("the \(spec.pointWidth)×\(spec.pointHeight) pt (\(spec.backingWidth)×\(spec.backingHeight) px) @\(self.refreshRate) Hz mode isn't offered; streaming the current mode")
+        }
+        let deadline = Date().addingTimeInterval(2)
+        while Date() < deadline, !vd.isInStreamingMode {
+            try await Task.sleep(for: .milliseconds(20))
+        }
+    }
+
     public func currentBounds() -> CGRect? {
-        guard let id = display.withLock({ $0?.displayID }), VirtualDisplay.activeDisplays().contains(id) else { return nil }
+        let id: CGDirectDisplayID? = active.withLock {
+            switch $0 {
+            case .virtual(let vd, _): vd.displayID
+            case .existing(let id): id
+            case nil: nil
+            }
+        }
+        guard let id, VirtualDisplay.activeDisplays().contains(id) else { return nil }
         return CGDisplayBounds(id)
     }
 
     public func destroy() {
-        // Releasing the object removes the display (S2).
-        let vd = display.withLock { d -> VirtualDisplay? in
-            defer { d = nil }
-            return d
+        // Releasing the object removes the virtual display (S2); physical displays are never removed.
+        let taken = active.withLock { a -> Active? in
+            defer { a = nil }
+            return a
         }
-        if let vd { removed.withLock { $0 = vd.displayID } }
+        guard case .virtual(let vd, let mode) = taken else { return }
+        if mode == .primary { _ = VirtualDisplay.restoreHostDisplays(mirroredTo: vd.displayID) }
+        removed.withLock { $0 = vd.displayID }
         withExtendedLifetime(vd) {}
     }
 
@@ -207,8 +295,14 @@ public final class VirtualStreamedDisplayProvider: StreamedDisplayProvider {
     /// Gives the display to the keeper, or releases it (synchronously, so no reference outlives this call):
     /// the id to wait out when it was released.
     private func handOver() -> CGDirectDisplayID? {
-        guard let vd = display.withLock({ d -> VirtualDisplay? in defer { d = nil }; return d }) else { return nil }
-        if let keeper, keeper.keep(KeptVirtualDisplay(vd), key: vd.spec.keeperKey) { return nil }   // its own shape's
+        let taken = active.withLock { a -> Active? in
+            defer { a = nil }
+            return a
+        }
+        guard case .virtual(let vd, let mode) = taken else { return nil }
+        let key = Self.keeperKey(for: vd.spec, mode: mode)
+        if let keeper, keeper.keep(KeptVirtualDisplay(vd, mirrored: mode == .primary), key: key) { return nil }
+        if mode == .primary { _ = VirtualDisplay.restoreHostDisplays(mirroredTo: vd.displayID) }
         return vd.displayID
     }
 }
@@ -216,8 +310,12 @@ public final class VirtualStreamedDisplayProvider: StreamedDisplayProvider {
 /// A `VirtualDisplay` held by the `DisplayKeeper` between sessions.
 final class KeptVirtualDisplay: KeepableDisplay {
     private let display: Mutex<VirtualDisplay?>
+    private let mirrored: Bool
 
-    init(_ display: VirtualDisplay) { self.display = Mutex(display) }
+    init(_ display: VirtualDisplay, mirrored: Bool = false) {
+        self.display = Mutex(display)
+        self.mirrored = mirrored
+    }
 
     var isUsable: Bool {
         guard let id = display.withLock({ $0?.displayID }) else { return false }
@@ -232,7 +330,17 @@ final class KeptVirtualDisplay: KeepableDisplay {
         await VirtualDisplay.waitUntilGone(id)
     }
 
-    /// Drops the last reference (removing the display, S2) before returning its id.
-    private func release() -> CGDirectDisplayID? { takeDisplay()?.displayID }
+    func releaseNow() {
+        _ = release()
+    }
+
+    /// Unmirrors (if mirrored) and drops the last reference (removing the display, S2) before returning its id.
+    private func release() -> CGDirectDisplayID? {
+        guard let vd = takeDisplay() else { return nil }
+        if mirrored { _ = VirtualDisplay.restoreHostDisplays(mirroredTo: vd.displayID) }
+        let id = vd.displayID
+        withExtendedLifetime(vd) {}
+        return id
+    }
 }
 #endif

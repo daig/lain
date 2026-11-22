@@ -9,6 +9,8 @@ public enum HostStatus: Sendable, Equatable {
     case connecting
     /// A session is up, over USB or Wi-Fi (§7.7).
     case connected(deviceModel: String, via: LinkTransport = .usb)
+    /// Paused by the owner ("Return to Host Display"): no sessions accepted or dialed until resumed.
+    case paused
     /// usbmuxd is unreachable, lain on the iPad speaks another protocol, or similar; the session retries
     /// on its own.
     case error(String)
@@ -40,6 +42,7 @@ public enum HostStatus: Sendable, Equatable {
         case .waitingForIPad: "Waiting for iPad"
         case .connecting: "iPad attached: open lain on the iPad"
         case .connected(let model, let transport): "Connected to \(model) over \(transport.menuName)"
+        case .paused: "Paused — host display restored"
         case .error(let why): "Error: \(why)"
         }
     }

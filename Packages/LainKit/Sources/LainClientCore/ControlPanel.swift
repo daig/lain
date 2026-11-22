@@ -22,6 +22,17 @@ public struct ClientPreferences: Sendable, Equatable {
     public var displayScale: UInt16 = ClientPreferences.defaultDisplayScale
     /// The device screen's own pixels per point, in hundredths: the default scale. Not kept: the device says.
     public var nativeDisplayScale: UInt16 = ClientPreferences.defaultDisplayScale
+    /// v8: mirror the computer's screen instead of extending as an extra display (default: mirror).
+    public var mirrorDisplay = true
+    /// v8: when mirroring, stream the computer's own configured display as-is (`captureExisting`) instead of
+    /// mirroring onto this device's requested display (`primary`).
+    public var mirrorComputerNative = false
+
+    /// Wire display mode for v8 `Hello.desiredDisplayMode`.
+    public var wireDisplayMode: DisplayMode {
+        guard mirrorDisplay else { return .extend }
+        return mirrorComputerNative ? .captureExisting : .primary
+    }
 
     /// 2×: an iPad's own, and the desktop lain has always made.
     public static let defaultDisplayScale: UInt16 = 200
@@ -31,6 +42,7 @@ public struct ClientPreferences: Sendable, Equatable {
     static let scrollKey = "lain.reverseScroll"
     static let pathKey = "lain.wifiPath", priorityKey = "lain.radioPriority", touchKey = "lain.touchMode"
     static let scaleKey = "lain.displayScale"
+    static let mirrorDisplayKey = "lain.mirrorDisplay", mirrorComputerNativeKey = "lain.mirrorComputerNative"
 
     /// `nativeScale`: the device screen's pixels per point, in hundredths (`nativeDisplayScale`), the scale
     /// until one is picked.
@@ -46,6 +58,8 @@ public struct ClientPreferences: Sendable, Equatable {
         }
         let scale = defaults.integer(forKey: scaleKey)
         if (50...400).contains(scale) { p.displayScale = UInt16(scale) }
+        if defaults.object(forKey: mirrorDisplayKey) != nil { p.mirrorDisplay = defaults.bool(forKey: mirrorDisplayKey) }
+        p.mirrorComputerNative = defaults.bool(forKey: mirrorComputerNativeKey)
         return p
     }
 
@@ -55,6 +69,8 @@ public struct ClientPreferences: Sendable, Equatable {
         defaults.set(wifiPath.rawValue, forKey: Self.pathKey)
         defaults.set(radioPriority.rawValue, forKey: Self.priorityKey)
         defaults.set(Int(displayScale), forKey: Self.scaleKey)
+        defaults.set(mirrorDisplay, forKey: Self.mirrorDisplayKey)
+        defaults.set(mirrorComputerNative, forKey: Self.mirrorComputerNativeKey)
     }
 }
 
@@ -78,6 +94,10 @@ public struct ControlPanel: Sendable, Equatable {
         case radioPriority
         /// v7: the display's scale, from those the host offers.
         case displayScale
+        /// v8: extend or mirror the computer's display.
+        case displayMode
+        /// v8: when mirroring, use this device's requested display or the computer's configured native display.
+        case mirrorSource
     }
 
     public enum Action: Sendable, Equatable {
@@ -101,15 +121,21 @@ public struct ControlPanel: Sendable, Equatable {
 
     public init() {}
 
-    /// What the owner can act on now: the hosts (unless the cable is in), then the iPad's options.
-    public static func rows(hosts: ClientSession.HostList) -> [Row] {
+    /// What the owner can act on now: the hosts (unless the cable is in), then the device's options.
+    public static func rows(hosts: ClientSession.HostList, preferences: ClientPreferences = ClientPreferences()) -> [Row] {
         var rows: [Row] = []
         if !hosts.onCable, !hosts.hosts.isEmpty {
             rows.append(.host(nil))
             rows += hosts.hosts.map { .host($0.id) }
         }
         rows += [.scrollDirection, .touchMode, .wifiPath, .radioPriority]
-        if !hosts.displayScales.isEmpty { rows.append(.displayScale) }
+        if hosts.supportsDisplayMode {
+            rows.append(.displayMode)
+            if preferences.mirrorDisplay { rows.append(.mirrorSource) }
+        }
+        if !hosts.displayScales.isEmpty, !(hosts.supportsDisplayMode && preferences.wireDisplayMode == .captureExisting) {
+            rows.append(.displayScale)
+        }
         return rows
     }
 
@@ -120,7 +146,7 @@ public struct ControlPanel: Sendable, Equatable {
 
     /// A key-down while the panel is open.
     public mutating func key(_ key: PhysicalKey, hosts: ClientSession.HostList, preferences: ClientPreferences) -> Action {
-        let rows = Self.rows(hosts: hosts)
+        let rows = Self.rows(hosts: hosts, preferences: preferences)
         selection = min(selection, rows.count - 1)
         guard key.page == PhysicalKey.keyboardPage else { return .none }
         switch key.usage {
@@ -142,7 +168,7 @@ public struct ControlPanel: Sendable, Equatable {
 
     /// A click on the line acting on `row`: selects it and acts as Return would.
     public mutating func click(row: Int, hosts: ClientSession.HostList, preferences: ClientPreferences) -> Action {
-        let rows = Self.rows(hosts: hosts)
+        let rows = Self.rows(hosts: hosts, preferences: preferences)
         guard rows.indices.contains(row) else { return .none }
         selection = row
         return activate(rows[row], hosts: hosts, preferences: preferences)
@@ -151,7 +177,7 @@ public struct ControlPanel: Sendable, Equatable {
     private func activate(_ row: Row, hosts: ClientSession.HostList, preferences: ClientPreferences) -> Action {
         switch row {
         case .host(let id): .selectHost(id)
-        case .scrollDirection, .touchMode, .wifiPath, .radioPriority, .displayScale:
+        case .scrollDirection, .touchMode, .wifiPath, .radioPriority, .displayScale, .displayMode, .mirrorSource:
             change(row, by: 1, hosts: hosts, preferences: preferences)
         }
     }
@@ -165,6 +191,8 @@ public struct ControlPanel: Sendable, Equatable {
         case .wifiPath: p.wifiPath = Self.cycle(p.wifiPath, by: step)
         case .radioPriority: p.radioPriority = Self.cycle(p.radioPriority, by: step)
         case .displayScale: p.displayScale = Self.nextScale(after: p.displayScale, in: hosts.displayScales, by: step)
+        case .displayMode: p.mirrorDisplay.toggle()
+        case .mirrorSource: p.mirrorComputerNative.toggle()
         }
         return p == preferences ? .none : .setPreferences(p)
     }
@@ -175,7 +203,7 @@ public struct ControlPanel: Sendable, Equatable {
     public func lines(info: ClientSession.ConnectionInfo?, video: VideoStats, host: HostStats?,
                       hosts: ClientSession.HostList, preferences: ClientPreferences,
                       sound: ClientAudioPlayer.Delay? = nil) -> [Line] {
-        let rows = Self.rows(hosts: hosts)
+        let rows = Self.rows(hosts: hosts, preferences: preferences)
         let selected = min(selection, rows.count - 1)
         var out: [Line] = []
         func add(_ text: String, _ style: Line.Style = .text, row: Int? = nil) {
@@ -221,6 +249,10 @@ public struct ControlPanel: Sendable, Equatable {
                 add(Self.pad("Radio priority") + "‹ " + Self.title(preferences.radioPriority) + " ›", row: i)
             case .displayScale:
                 add(Self.pad("Display scale") + "‹ " + Self.scaleValue(preferences.displayScale, hosts: hosts, info: info) + " ›", row: i)
+            case .displayMode:
+                add(Self.pad("Display") + "‹ " + (preferences.mirrorDisplay ? "Mirror" : "Extend") + " ›", row: i)
+            case .mirrorSource:
+                add(Self.pad("Mirror resolution") + "‹ " + (preferences.mirrorComputerNative ? "Computer's native" : "This device") + " ›", row: i)
             case .host:
                 break
             }
@@ -276,7 +308,7 @@ public struct ControlPanel: Sendable, Equatable {
             return Sheet.Item(row: row, title: h?.name ?? id, value: h.map { $0.isCurrent ? "connected" : ($0.isSeen ? "in reach" : "") } ?? "",
                               isChecked: hosts.selected == id)
         }
-        let rows = Self.rows(hosts: hosts)
+        let rows = Self.rows(hosts: hosts, preferences: preferences)
         if hosts.hosts.isEmpty {
             out.hostsNote = "None saved yet: connect a host with the cable once."
         } else if hosts.onCable {
@@ -290,6 +322,10 @@ public struct ControlPanel: Sendable, Equatable {
             case .touchMode: out.options.append(.init(row: i, title: "Touch screen", value: Self.title(preferences.touchMode)))
             case .wifiPath: out.options.append(.init(row: i, title: "Wi-Fi path", value: Self.title(preferences.wifiPath)))
             case .radioPriority: out.options.append(.init(row: i, title: "Radio priority", value: Self.title(preferences.radioPriority)))
+            case .displayMode:
+                out.options.append(.init(row: i, title: "Display", value: preferences.mirrorDisplay ? "Mirror" : "Extend"))
+            case .mirrorSource:
+                out.options.append(.init(row: i, title: "Mirror resolution", value: preferences.mirrorComputerNative ? "Computer's native" : "This device"))
             case .displayScale:
                 var item = Sheet.Item(row: i, title: "Display scale", value: Self.scaleValue(preferences.displayScale, hosts: hosts, info: info))
                 item.choices = hosts.displayScales.map { Self.scaleChoiceTitle($0, native: preferences.nativeDisplayScale) }
@@ -302,7 +338,7 @@ public struct ControlPanel: Sendable, Equatable {
 
     /// Picks entry `index` of a row's list (`Sheet.Item.choices`): the display scale.
     public func choose(row: Int, index: Int, hosts: ClientSession.HostList, preferences: ClientPreferences) -> Action {
-        let rows = Self.rows(hosts: hosts)
+        let rows = Self.rows(hosts: hosts, preferences: preferences)
         guard rows.indices.contains(row), rows[row] == .displayScale, hosts.displayScales.indices.contains(index) else { return .none }
         var p = preferences
         p.displayScale = hosts.displayScales[index]

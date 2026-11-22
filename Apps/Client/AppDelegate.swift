@@ -16,6 +16,12 @@ final class AppDelegate: UIResponder, UIApplicationDelegate {
         return config
     }
 
+    func applicationWillTerminate(_ application: UIApplication) {
+        for scene in application.connectedScenes {
+            (scene.delegate as? SceneDelegate)?.quitSession()
+        }
+    }
+
     /// Strips the app's own main menu (§6.4): the default iPadOS menu claims Cmd-Z/X/C/V/A/F/… and would
     /// swallow them before they reach the Mac.
     override func buildMenu(with builder: UIMenuBuilder) {
@@ -33,6 +39,10 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// The host's sound, played on the iPad.
     private let audio = ClientAudioPlayer()
     private var session: ClientSession?
+    /// Short background task kept on backgrounding so a swipe-quit in the App Switcher still runs
+    /// `applicationWillTerminate` / `sceneDidDisconnect` with the link open.
+    private var backgroundTask = UIBackgroundTaskIdentifier.invalid
+    private var backgroundTimer: DispatchWorkItem?
 
     func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
         guard let windowScene = scene as? UIWindowScene else { return }
@@ -54,13 +64,15 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         window.makeKeyAndVisible()
         self.window = window
         guard !AppDelegate.isTestHost else { return }
+        let prefs = ClientPreferences.load(nativeScale: nativeScale)
         let hello = Hello(deviceModel: model, pixelWidth: UInt32(display.pixelWidth), pixelHeight: UInt32(display.pixelHeight),
                           scale: UInt8(display.scale), maxRefreshRate: UInt16(screen.maximumFramesPerSecond),
                           // S3c: HEVC Main 4:4:4 10 only if the embedded vector decodes in hardware here.
                           decodeCapabilities: ClientVideoPipeline.probeDecodeCapabilities(),
                           keyboardType: .unknown,
-                          // v7: the scale this device asks for, from its settings (its screen's own, at first).
-                          desiredScale: ClientPreferences.load(nativeScale: nativeScale).displayScale)
+                          // v7/v8: the scale and display mode this device asks for, from its settings.
+                          desiredScale: prefs.displayScale,
+                          desiredDisplayMode: prefs.wireDisplayMode)
         startSession(hello: hello, view: stream)
     }
 
@@ -75,17 +87,48 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         input.releaseAll(.focusLost)
         (window?.rootViewController as? StreamViewController)?.diag("scene will resign")
     }
-    /// iPadOS suspends the app soon: Wi-Fi discovery pauses (§7.7).
+    /// iPadOS suspends the app soon: Wi-Fi discovery pauses (§7.7). Hold a short (10 s) background task so
+    /// swiping the app away in the switcher still delivers `applicationWillTerminate` while the link is open.
     func sceneDidEnterBackground(_ scene: UIScene) {
         input.releaseAll(.focusLost)
         session?.sceneDidEnterBackground()
+        beginQuitGraceTask()
     }
     /// §6.1: back in front, the picture may be stale; ask for a keyframe (sent only while connected).
     /// Wi-Fi discovery, which may have died while suspended, is recreated.
     func sceneDidBecomeActive(_ scene: UIScene) {
+        endQuitGraceTask()
         video.requestKeyframe(.resumed)
         session?.sceneDidBecomeActive()
         (window?.rootViewController as? StreamViewController)?.sceneBecameActive()
+    }
+    func sceneDidDisconnect(_ scene: UIScene) {
+        quitSession()
+    }
+
+    func quitSession() {
+        endQuitGraceTask()
+        session?.quit()
+    }
+
+    private func beginQuitGraceTask() {
+        endQuitGraceTask()
+        backgroundTask = UIApplication.shared.beginBackgroundTask(withName: "lain.quitGrace") { [weak self] in
+            MainActor.assumeIsolated { self?.endQuitGraceTask() }
+        }
+        guard backgroundTask != .invalid else { return }
+        let work = DispatchWorkItem { [weak self] in self?.endQuitGraceTask() }
+        backgroundTimer = work
+        DispatchQueue.main.asyncAfter(deadline: .now() + 10, execute: work)
+    }
+
+    private func endQuitGraceTask() {
+        backgroundTimer?.cancel()
+        backgroundTimer = nil
+        guard backgroundTask != .invalid else { return }
+        let id = backgroundTask
+        backgroundTask = .invalid
+        UIApplication.shared.endBackgroundTask(id)
     }
 
     /// The loopback listener the Mac dials through usbmuxd (§7.2), and the Wi-Fi loop that finds paired

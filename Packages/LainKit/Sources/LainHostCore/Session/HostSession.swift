@@ -7,8 +7,9 @@ extension HelloAck {
     /// M5 will use. `hostId` and `hostName` say which Mac this is (§7.7 D29: over USB the client keys its
     /// Wi-Fi secret by the id; empty without a host identity).
     public static func host(display: HostDisplay, settings: HostInputSettings, chroma: ChromaFormat = .yuv444,
-                            hostId: String = "", hostName: String = "", scale: DisplayScaleChoice? = nil) -> HelloAck {
-        HelloAck(codec: .hevc, chroma: chroma, bitDepth: chroma == .yuv444 ? 10 : 8, displayMode: .extend, bitrate: 60_000_000,
+                            hostId: String = "", hostName: String = "", scale: DisplayScaleChoice? = nil,
+                            displayMode: DisplayMode = .extend) -> HelloAck {
+        HelloAck(codec: .hevc, chroma: chroma, bitDepth: chroma == .yuv444 ? 10 : 8, displayMode: displayMode, bitrate: 60_000_000,
                  refreshRate: 120,
                  displayPointWidth: UInt32(max(display.pointSize.width, 0).rounded()),
                  displayPointHeight: UInt32(max(display.pointSize.height, 0).rounded()),
@@ -154,6 +155,8 @@ public final class HostSession: Sendable {
         var statusSequence: UInt64 = 0
         var started = false
         var stopped = false
+        /// Set by `restoreHostDisplay()` while a session was live: blocks automatic reconnects until resumed.
+        var paused = false
         var runTask: Task<Void, Never>?
         /// The USB device being dialed or connected. `generation` identifies its connect loop, so a loop
         /// that has been replaced or cancelled can't register a connection or change the status.
@@ -210,6 +213,7 @@ public final class HostSession: Sendable {
         /// The status is derived, never pushed (decision 8): connected only while the session whose
         /// `HelloAck` went out is live; otherwise what the USB side is doing.
         var derivedStatus: HostStatus {
+            if paused { return .paused }
             if let live, let model = liveModel { return .connected(deviceModel: model, via: live.transport) }
             if usbmuxDown { return .error("usbmuxd unavailable") }
             if let peerGap { return HostStatus.versionGap(peerGap) }
@@ -270,6 +274,7 @@ public final class HostSession: Sendable {
         /// USB wins: a live USB session, or this iPad attached over USB with its connect loop younger than
         /// `preference`; the capture backoff holds every transport; and one iPad at a time.
         func wifiBusy(peer: String, now: ContinuousClock.Instant, preference: Duration) -> String? {
+            if paused { return "paused on the host" }
             if case .usb? = live?.owner { return "a USB session is live" }
             if let until = captureBackoffUntil, now < until { return "backing off after capture failures" }
             for d in attached where d.serialNumber == peer {
@@ -327,6 +332,17 @@ public final class HostSession: Sendable {
     public var displayScale: DisplayScaleChoice? {
         state.withLock { s in s.live != nil ? s.video : nil }?.displayScale
     }
+
+    /// How the live session's display is placed (v8: extend, mirror onto lain, or mirror host native).
+    public var displayMode: DisplayMode? {
+        state.withLock { s in s.live != nil ? s.video : nil }?.displayMode
+    }
+
+    /// True while connections are paused after `restoreHostDisplay()`.
+    public var isPaused: Bool { state.withLock { $0.paused } }
+
+    /// True while a virtual display is held in `DisplayKeeper` after a disconnect.
+    public var hasKeptDisplay: Bool { deps.displayKeeper?.isHolding ?? false }
 
     /// Why the current session streams no video, if it failed to start.
     public var videoError: String? { state.withLock { $0.videoError } }
@@ -430,9 +446,52 @@ public final class HostSession: Sendable {
         listener?.cancel()
         acceptor?.cancel()
         connection?.finish()
-        // Nothing is kept from now on; a kept display goes (in the background: the session's own teardown
-        // retires its display to the closed keeper, which refuses it).
-        if let keeper = deps.displayKeeper { Task { await keeper.close() } }
+        // Synchronously unmirror and remove any kept virtual display before exit (important on app quit).
+        deps.displayKeeper?.closeSync()
+        _ = VirtualDisplay.restoreHostDisplays()
+    }
+
+    /// Immediately returns the Mac to its own display configuration: unmirrors any displays lain mirrored,
+    /// clears any kept display in `DisplayKeeper`, and if a client is connected, disconnects and pauses
+    /// incoming connections so the remote device doesn't immediately reconnect and re-mirror.
+    public func restoreHostDisplay() {
+        let (deviceTask, wifiTask, connection, pausedNow, change) = state.withLock {
+            s -> (Task<Void, Never>?, Task<Void, Never>?, HostConnection?, Bool, (status: HostStatus, sequence: UInt64)?) in
+            let hadSession = s.live != nil || s.wifi != nil || s.device != nil
+            if hadSession { s.paused = true }
+            let deviceTask = s.device?.task
+            let wifiTask = s.wifi?.task
+            let connection = s.live?.connection
+            if hadSession {
+                s.device = nil
+                s.wifi = nil
+                s.live = nil
+                s.liveModel = nil
+            }
+            return (deviceTask, wifiTask, connection, hadSession, s.refreshStatus())
+        }
+        deviceTask?.cancel()
+        wifiTask?.cancel()
+        connection?.finish()
+        deps.displayKeeper?.clearSync()
+        _ = VirtualDisplay.restoreHostDisplays()
+        publish(change)
+        log.notice("restored host display\(pausedNow ? " (connections paused)" : "", privacy: .public)")
+    }
+
+    /// Resumes dialing USB devices and accepting Wi-Fi sessions after `restoreHostDisplay()` paused them.
+    public func resumeConnections() {
+        let (resumed, change) = state.withLock { s -> (Bool, (status: HostStatus, sequence: UInt64)?) in
+            guard s.paused, !s.stopped else { return (false, nil) }
+            s.paused = false
+            if s.device == nil, let first = s.attached.first {
+                dial(first, in: &s)
+            }
+            return (true, s.refreshStatus())
+        }
+        guard resumed else { return }
+        publish(change)
+        log.notice("resumed accepting connections")
     }
 
     /// The video error after the owner stopped capture from the Mac's menu bar.
@@ -546,6 +605,7 @@ public final class HostSession: Sendable {
             // its turn. Automatic redials, the next device in line and Wi-Fi links still wait the backoff out.
             let ownersReset = device.serialNumber == s.captureFailedPeer
             if ownersReset { s.resetCaptureBackoff() }
+            guard !s.paused else { return (.none, nil, s.refreshStatus()) }
             // One iPad at a time: another device waits its turn; the same one re-attaching replaces itself.
             // The owner's reset goes ahead of a device whose loop is only waiting the backoff out (asleep: no
             // link, no handshake), which would sleep until the old deadline; that device keeps its place in line.
@@ -587,7 +647,7 @@ public final class HostSession: Sendable {
             s.device = nil
             s.peerGap = nil
             var next: Int?
-            if !s.stopped, let first = s.attached.first {
+            if !s.stopped, !s.paused, let first = s.attached.first {
                 dial(first, in: &s)
                 next = first.deviceID
             }
@@ -615,7 +675,7 @@ public final class HostSession: Sendable {
     /// (this one goes to the back of the line). Returns whether it handed off.
     private func handOff(from device: USBMuxDevice, generation: UInt64) -> Bool {
         state.withLock { s -> Bool in
-            guard !s.stopped, s.device?.generation == generation, s.attached.count > 1,
+            guard !s.stopped, !s.paused, s.device?.generation == generation, s.attached.count > 1,
                   let i = s.attached.firstIndex(where: { $0.deviceID == device.deviceID }) else { return false }
             s.attached.append(s.attached.remove(at: i))
             dial(s.attached[0], in: &s)
@@ -839,7 +899,8 @@ public final class HostSession: Sendable {
             let display = connection.provider.targetDisplay()
             connection.link.realtime.send(.helloAck(.host(display: display, settings: deps.settings(), chroma: chroma ?? .yuv444,
                                                           hostId: deps.identity?.id ?? "", hostName: deps.identity?.name ?? "",
-                                                          scale: connection.video?.displayScale)))
+                                                          scale: connection.video?.displayScale,
+                                                          displayMode: connection.video?.displayMode ?? .extend)))
             connection.sendLayoutIfChanged()   // the first one always goes
             sendSetup(to: connection)
             if !connection.link.olderPeerMisses.isEmpty {
@@ -1118,6 +1179,12 @@ final class HostConnection: Sendable {
             return
         case .statsRequest(let r):
             setStatsInterval(ms: r.intervalMs)
+            return
+        case .releaseAll(let r) where r.reason == .disconnect:
+            // Explicit client quit: skip DisplayKeeper so the host immediately restores its display.
+            log.notice("client quit: ending session and restoring host display")
+            video?.discardDisplayOnStop()
+            finish()
             return
         default:
             break

@@ -87,6 +87,17 @@ changes a display a device chose the scale of. Code: `lain-host` `video.rs` (`di
 `StreamedDisplayProvider.scales`, `HostVideoPipeline.displayScale`; tests `DisplayScaleTests`,
 `VersioningTests.displayScalesAreVersionSevenFields`, `DisplayScaleSettingTests`.
 
+**Since protocol v8 the display mode is the client's** (Mac host: done; Linux: to do). The device asks for one in
+`Hello.desiredDisplayMode` (advisory `u8` `DisplayMode`: `0 = extend`, `1 = primary` to mirror the computer's screen
+onto lain's requested virtual display, `2 = captureExisting` to mirror the computer's own configured display as-is;
+default on the client is mirror with this device's display). The host applies it (falling back to extend when
+headless) and reports the applied mode in `HelloAck.displayMode`. Mac host: `primary` mirrors active physical
+displays onto lain's `VirtualDisplay` via `CGConfigureDisplayMirrorOfDisplay`, unmirroring synchronously on teardown,
+app quit, or the menu bar's **Return to Host Display** action (which also pauses incoming connections until resumed).
+Code: `VirtualDisplay.mirror`/`restoreHostDisplays`, `VirtualStreamedDisplayProvider`, `HostSession.restoreHostDisplay`,
+`ControlPanel.Row.displayMode`/`mirrorSource`; tests `VersioningTests.desiredDisplayModeIsAVersionEightField`,
+`DisplayModeSettingTests`.
+
 ## 4. Keyboard: Right Option is the system key (Linux host: done; client and Mac host: to do)
 
 iPadOS keeps some Command shortcuts (Cmd-Tab, Cmd-Space, Cmd-H, Cmd-Q, Cmd-`, Cmd-Shift-3/4) and every three- and

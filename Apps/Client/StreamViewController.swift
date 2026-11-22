@@ -548,7 +548,8 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             input.setInvertScroll(p.reverseScroll)
             input.setTouchMode(p.touchMode)
             session?.setNetwork(path: p.wifiPath, radioPriority: p.radioPriority)
-            session?.setDesiredScale(p.displayScale)   // a new scale reconnects the session to take it
+            session?.setDesiredScale(p.displayScale)   // a new scale or mode reconnects the session to take it
+            session?.setDesiredDisplayMode(p.wireDisplayMode)
         }
         renderPanel()
         // The session applies a pick on its queue: show its result once it has.
@@ -1051,7 +1052,8 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             NSLayoutConstraint.deactivate(bandForms.values.flatMap { $0 })
             NSLayoutConstraint.activate(bandForms[form] ?? [])
         }
-        extraKeys.setForm(layout.isShared ? .shared : layout.isRemote ? .remote : .band)
+        let narrowBand = (layout.band?.width ?? 0) < 500
+        extraKeys.setForm(layout.isShared ? .shared : layout.isRemote ? .remote : narrowBand ? .compactBand : .band)
         let corners = !layout.cornerPads.isEmpty
         for (pad, frame) in zip(cornerPads, layout.cornerPads) { pad.frame = frame }
         for pad in cornerPads where pad.isHidden == corners {

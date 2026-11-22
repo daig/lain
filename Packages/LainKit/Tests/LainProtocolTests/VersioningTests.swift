@@ -155,6 +155,23 @@ private let frameVersions: [UInt8] = [LainProtocol.handshakeVersion] + LainProto
         #expect(old.displayScale == 0 && old.displayScales.isEmpty)
     }
 
+    /// v8: the client asks for extend or mirror (`Hello.desiredDisplayMode`); advisory, dropped for v7 and older.
+    @Test func desiredDisplayModeIsAVersionEightField() throws {
+        let hello = Hello(deviceModel: "iPhone19,3", pixelWidth: 2868, pixelHeight: 1320, scale: 3, maxRefreshRate: 120,
+                          decodeCapabilities: [.hevcMain], keyboardType: .unknown, desiredScale: 300,
+                          desiredDisplayMode: .primary)
+        var w8 = ByteWriter(version: 8)
+        hello.encode(into: &w8)
+        var r8 = ByteReader(w8.bytes, version: 8)
+        #expect(try Hello(from: &r8).desiredDisplayMode == .primary)
+        var w7 = ByteWriter(version: 7)
+        hello.encode(into: &w7)
+        #expect(w7.dropped == ["desiredDisplayMode"] && w7.refused == nil && w7.bytes.count == w8.bytes.count - 1)
+        var r7 = ByteReader(w7.bytes, version: 7)
+        #expect(try Hello(from: &r7).desiredDisplayMode == .extend)
+        #expect(!ProtocolFeature.displayMode.isSupported(at: 7) && ProtocolFeature.displayMode.isSupported(at: 8))
+    }
+
     @Test func aScaleListLongerThanTheLimitIsMalformed() {
         var w = ByteWriter(version: 7)
         Self.ack().encode(into: &w)
@@ -281,11 +298,13 @@ struct Widget: WireMessage, Equatable {
         #expect(ProtocolFeature.hostSetup.isSupported(at: 4))
         #expect(!ProtocolFeature.hostStats.isSupported(at: 4))
         #expect(ProtocolFeature.hostStats.isSupported(at: 5))
-        #expect(ProtocolFeature.missing(at: 4) == [.hostStats, .textInput, .audio, .displayScale])
-        #expect(ProtocolFeature.missing(at: 5) == [.textInput, .audio, .displayScale])
-        #expect(ProtocolFeature.missing(at: 6) == [.displayScale])
+        #expect(ProtocolFeature.missing(at: 4) == [.hostStats, .textInput, .audio, .displayScale, .displayMode])
+        #expect(ProtocolFeature.missing(at: 5) == [.textInput, .audio, .displayScale, .displayMode])
+        #expect(ProtocolFeature.missing(at: 6) == [.displayScale, .displayMode])
+        #expect(ProtocolFeature.missing(at: 7) == [.displayMode])
         #expect(ProtocolFeature.missing(at: LainProtocol.newestVersion).isEmpty)
         #expect(ProtocolFeature.displayScale.isSupported(at: 7) && !ProtocolFeature.displayScale.isSupported(at: 6))
+        #expect(ProtocolFeature.displayMode.isSupported(at: 8) && !ProtocolFeature.displayMode.isSupported(at: 7))
     }
 
     /// A feature replaced before the oldest supported version is dead compatibility code: delete it.

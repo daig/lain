@@ -160,6 +160,9 @@ public final class HostVideoPipeline: Sendable {
     /// has chosen.
     public var displayScale: DisplayScaleChoice? { scaleChoice.withLock { $0 } }
     private let scaleChoice = Mutex<DisplayScaleChoice?>(nil)
+    /// How the display is placed on the host (v8 `HelloAck.displayMode`).
+    public var displayMode: DisplayMode { modeChoice.withLock { $0 } }
+    private let modeChoice = Mutex<DisplayMode>(.extend)
     public var streamedDisplayID: UInt32? { streamedDisplay?.displayID }
     /// Live global point bounds of the streamed display (for `DisplayLayout`); the owner may move it in
     /// System Settings at any time, so this re-reads it.
@@ -199,20 +202,28 @@ public final class HostVideoPipeline: Sendable {
         let cursor: CursorMonitor?
         let timer: DispatchSourceTimer
         do {
-            // v7: the scale the client asks for (an older one asks for none: the host's own), the nearest the
-            // provider can make.
+            // v7/v8: the scale and display mode the client asks for (an older one asks for none: host's own / extend).
             let (w, h) = (Int(hello.pixelWidth), Int(hello.pixelHeight))
-            let choice = DisplayScaleChoice.choose(requested: hello.desiredScale, supported: displayProvider.scales(pixelWidth: w, pixelHeight: h),
+            let supportedScales = displayProvider.scales(pixelWidth: w, pixelHeight: h)
+            let choice = DisplayScaleChoice.choose(requested: hello.desiredScale, supported: supportedScales,
                                                    own: displayProvider.ownScale)
             scaleChoice.withLock { $0 = choice }
             func x(_ s: Double) -> String { String(format: "%g×", s) }
-            log.notice("display scale \(x(choice.applied), privacy: .public) (\(choice.askedFor ? "asked for \(x(Double(hello.desiredScale) / 100))" : "the host's own", privacy: .public); offered \(choice.supported.map(x).joined(separator: ", "), privacy: .public))")
-            display = try await displayProvider.create(pixelWidth: w, pixelHeight: h, scale: choice.applied)
+            log.notice("display mode \(hello.desiredDisplayMode.rawValue), scale \(x(choice.applied), privacy: .public) (\(choice.askedFor ? "asked for \(x(Double(hello.desiredScale) / 100))" : "the host's own", privacy: .public); offered \(choice.supported.map(x).joined(separator: ", "), privacy: .public))")
+            display = try await displayProvider.create(pixelWidth: w, pixelHeight: h, scale: choice.applied, mode: hello.desiredDisplayMode)
+            modeChoice.withLock { $0 = display.displayMode }
+            if display.displayMode == .captureExisting, display.bounds.width > 0 {
+                // Capturing the computer's configured display as-is: report its actual scale while keeping the
+                // virtual scale list available so the client doesn't lose its options if it switches modes.
+                let hostScale = Double(display.pixelWidth) / Double(display.bounds.width)
+                scaleChoice.withLock { $0 = DisplayScaleChoice(applied: hostScale, supported: supportedScales, askedFor: false) }
+            }
             guard state.withLock({ $0.phase == .starting }) else { throw HostVideoError.stopped }
 
             var wanted = VideoEncoder.Settings(width: display.pixelWidth, height: display.pixelHeight)
             wanted.chroma = Self.requestedChroma(for: hello, allows444: options.allows444)
-            wanted.frameRate = hello.maxRefreshRate > 0 ? min(options.frameRate, Int(hello.maxRefreshRate)) : options.frameRate
+            let hostCap = display.refreshRate > 0 ? min(options.frameRate, display.refreshRate) : options.frameRate
+            wanted.frameRate = hello.maxRefreshRate > 0 ? min(hostCap, Int(hello.maxRefreshRate)) : hostCap
             var control: BitrateController?
             if options.adaptive {
                 var config = BitrateController.Config()
@@ -286,6 +297,12 @@ public final class HostVideoPipeline: Sendable {
         }
         // stop() may have raced the capture start; make sure capture ends.
         if !isRunning { await frameSource.stop() }
+    }
+
+    /// Marks the display to be removed immediately rather than handed to `DisplayKeeper` when `stop()` runs
+    /// (used when the client explicitly quits via `ReleaseAll(.disconnect)`).
+    public func discardDisplayOnStop() {
+        state.withLock { $0.discardDisplay = true }
     }
 
     /// Stops capture, releases the encoder and gate, stops the cursor monitor and retires the display: kept

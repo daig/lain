@@ -14,6 +14,9 @@ public enum ProtocolFeature: CaseIterable, Sendable {
     /// v7: the client asks for its display's scale (`Hello.desiredScale`) and the host says which it applied
     /// and which it can (`HelloAck.displayScale`, `displayScales`).
     case displayScale
+    /// v8: the client asks for extend or mirror (`Hello.desiredDisplayMode`) and the host answers in
+    /// `HelloAck.displayMode`.
+    case displayMode
 
     /// The first version with the feature.
     public var since: UInt8 {
@@ -22,13 +25,14 @@ public enum ProtocolFeature: CaseIterable, Sendable {
         case .hostStats: 5
         case .textInput, .audio: 6
         case .displayScale: 7
+        case .displayMode: 8
         }
     }
 
     /// The first version without it, when a newer behavior replaced it; nil while current.
     public var until: UInt8? {
         switch self {
-        case .hostSetup, .hostStats, .textInput, .audio, .displayScale: nil
+        case .hostSetup, .hostStats, .textInput, .audio, .displayScale, .displayMode: nil
         }
     }
 
@@ -42,6 +46,7 @@ public enum ProtocolFeature: CaseIterable, Sendable {
         case .textInput: "dictation and the on-screen keyboard"
         case .audio: "the computer's sound on the iPad"
         case .displayScale: "choosing the display's scale on the iPad"
+        case .displayMode: "choosing extend or mirror on the device"
         }
     }
 

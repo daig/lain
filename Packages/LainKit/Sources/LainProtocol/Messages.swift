@@ -120,9 +120,13 @@ public struct Hello: WireMessage {
     /// an iPad has always had); 0: no preference, the host's own. The host applies the nearest scale it
     /// supports and says which in `HelloAck.displayScale`. Advisory: dropped for an older host.
     public var desiredScale: UInt16
+    /// v8: how the host places the streamed display (`extend`, `primary` = mirror onto lain's display,
+    /// `captureExisting` = mirror the computer's own display as configured). Advisory: dropped for an older host.
+    public var desiredDisplayMode: DisplayMode
 
     public init(deviceModel: String, pixelWidth: UInt32, pixelHeight: UInt32, scale: UInt8, maxRefreshRate: UInt16,
-                decodeCapabilities: DecodeCapabilities, keyboardType: KeyboardType, desiredScale: UInt16 = 0) {
+                decodeCapabilities: DecodeCapabilities, keyboardType: KeyboardType, desiredScale: UInt16 = 0,
+                desiredDisplayMode: DisplayMode = .extend) {
         self.deviceModel = deviceModel
         self.pixelWidth = pixelWidth
         self.pixelHeight = pixelHeight
@@ -131,12 +135,14 @@ public struct Hello: WireMessage {
         self.decodeCapabilities = decodeCapabilities
         self.keyboardType = keyboardType
         self.desiredScale = desiredScale
+        self.desiredDisplayMode = desiredDisplayMode
     }
 
     public func encode(into w: inout ByteWriter) {
         w.string(deviceModel); w.u32(pixelWidth); w.u32(pixelHeight); w.u8(scale)
         w.u16(maxRefreshRate); w.u32(decodeCapabilities.rawValue); w.u8(keyboardType.rawValue)
         w.since(7, "desiredScale", desiredScale, default: 0, lowering: .drop) { $0.u16($1) }
+        w.since(8, "desiredDisplayMode", desiredDisplayMode, default: .extend, lowering: .drop) { $0.u8($1.rawValue) }
     }
 
     public init(from r: inout ByteReader) throws(ProtocolError) {
@@ -144,6 +150,7 @@ public struct Hello: WireMessage {
         scale = try r.u8(); maxRefreshRate = try r.u16()
         decodeCapabilities = DecodeCapabilities(rawValue: try r.u32()); keyboardType = try r.enumValue(KeyboardType.self)
         desiredScale = try r.since(7, default: 0) { r throws(ProtocolError) in try r.u16() }
+        desiredDisplayMode = try r.since(8, default: .extend) { r throws(ProtocolError) in try r.enumValue(DisplayMode.self) }
     }
 }
 

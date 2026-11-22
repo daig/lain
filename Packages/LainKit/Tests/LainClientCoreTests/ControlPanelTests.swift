@@ -239,3 +239,71 @@ import Testing
         #expect(ClientPreferences.load(from: defaults).displayScale == 200)
     }
 }
+
+/// v8: extend or mirror (mirror by default), and when mirroring: this device's display or the computer's native.
+@Suite struct DisplayModeSettingTests {
+    func hostV8(scales: [UInt16] = [150, 200, 300], mode: DisplayMode = .primary) -> ClientSession.HostList {
+        var l = ClientSession.HostList()
+        l.displayScales = scales
+        l.displayScale = 300
+        l.supportsDisplayMode = true
+        l.displayMode = mode
+        return l
+    }
+
+    @Test func defaultsToMirrorUsingThisDevicesDisplay() throws {
+        let defaults = try #require(UserDefaults(suiteName: "lain.test.displayMode.\(UUID().uuidString)"))
+        let p = ClientPreferences.load(from: defaults, nativeScale: 300)
+        #expect(p.mirrorDisplay && !p.mirrorComputerNative && p.wireDisplayMode == .primary)
+        var extend = p
+        extend.mirrorDisplay = false
+        #expect(extend.wireDisplayMode == .extend)
+        var native = p
+        native.mirrorComputerNative = true
+        #expect(native.wireDisplayMode == .captureExisting)
+        native.save(to: defaults)
+        let loaded = ClientPreferences.load(from: defaults, nativeScale: 300)
+        #expect(loaded.mirrorDisplay && loaded.mirrorComputerNative && loaded.wireDisplayMode == .captureExisting)
+        extend.save(to: defaults)
+        #expect(!ClientPreferences.load(from: defaults, nativeScale: 300).mirrorDisplay)
+    }
+
+    @Test func rowsShowMirrorResolutionOnlyWhenMirroringAndHideScaleForComputerNative() {
+        let h = hostV8()
+        var p = ClientPreferences()
+        // Mirror · This device: Display, Mirror resolution, Display scale all show.
+        let mirrorDevice = ControlPanel.rows(hosts: h, preferences: p)
+        #expect(mirrorDevice.contains(.displayMode) && mirrorDevice.contains(.mirrorSource) && mirrorDevice.contains(.displayScale))
+        // Mirror · Computer's native: Display and Mirror resolution show; Display scale is hidden.
+        p.mirrorComputerNative = true
+        let mirrorNative = ControlPanel.rows(hosts: h, preferences: p)
+        #expect(mirrorNative.contains(.displayMode) && mirrorNative.contains(.mirrorSource) && !mirrorNative.contains(.displayScale))
+        // Extend: Display and Display scale show; Mirror resolution is hidden.
+        p.mirrorDisplay = false
+        let extend = ControlPanel.rows(hosts: h, preferences: p)
+        #expect(extend.contains(.displayMode) && !extend.contains(.mirrorSource) && extend.contains(.displayScale))
+        // Older host (v7): neither v8 row appears.
+        var v7 = hostV8()
+        v7.supportsDisplayMode = false
+        let older = ControlPanel.rows(hosts: v7, preferences: ClientPreferences())
+        #expect(!older.contains(.displayMode) && !older.contains(.mirrorSource) && older.contains(.displayScale))
+    }
+
+    @Test func tappingDisplayAndMirrorResolutionTogglesThem() throws {
+        var panel = ControlPanel()
+        let h = hostV8()
+        let p = ClientPreferences()
+        let sheet = panel.sheet(info: nil, video: VideoStats(), host: nil, hosts: h, preferences: p)
+        let displayItem = try #require(sheet.options.first { $0.title == "Display" })
+        let sourceItem = try #require(sheet.options.first { $0.title == "Mirror resolution" })
+        #expect(displayItem.value == "Mirror" && sourceItem.value == "This device")
+        guard case .setPreferences(let extended) = panel.click(row: try #require(displayItem.row), hosts: h, preferences: p) else {
+            Issue.record("expected toggle to Extend"); return
+        }
+        #expect(!extended.mirrorDisplay && extended.wireDisplayMode == .extend)
+        guard case .setPreferences(let native) = panel.click(row: try #require(sourceItem.row), hosts: h, preferences: p) else {
+            Issue.record("expected toggle to Computer's native"); return
+        }
+        #expect(native.mirrorDisplay && native.mirrorComputerNative && native.wireDisplayMode == .captureExisting)
+    }
+}

@@ -120,8 +120,9 @@ public struct StreamLayout: Sendable, Equatable {
     }
     public var deck: Deck?
 
-    /// A side strip the system keeps clear of content (the Duo's outer display: 84 points beside the camera).
-    static let sideStrip: CGFloat = 60
+    /// A side strip the system keeps clear of content (the Duo's outer display: 84 points beside the camera,
+    /// on one side only — distinct from symmetric 59–62 pt Dynamic Island safe areas on standard iPhones).
+    static let sideStrip: CGFloat = 72
     static let controlRow: CGFloat = 56
     static let bandMinHeight: CGFloat = 110
     /// The row of keys (38) and its gap (8), plus a strip worth having under them.
@@ -156,7 +157,7 @@ public struct StreamLayout: Sendable, Equatable {
         isPortrait = h > w
         let bottom = h - max(i.keyboardInset, i.safeArea.bottom)
         transcriptCenterX = w / 2
-        if isPortrait, i.isCompact {
+        if isPortrait, i.isCompact, i.sharesScreen || Self.strip(i, bottom: bottom) != nil {
             remote(i, bottom: bottom)
         } else if isPortrait {
             portrait(i, bottom: bottom)
@@ -243,13 +244,19 @@ public struct StreamLayout: Sendable, Equatable {
         transcriptCenterX = column.midX
     }
 
+    /// True when `edge` is a wide single-sided camera strip (the Duo's outer display: 84 pt on one side),
+    /// rather than symmetric Dynamic Island safe-area insets on both sides.
+    private static func isSideStrip(_ edge: CGFloat, opposite: CGFloat) -> Bool {
+        edge >= sideStrip && opposite < sideStrip
+    }
+
     /// The side strip the system keeps clear of content (the Duo's outer display, beside the camera), less what
     /// covers its ends (the camera) and what is under `bottom` (the keyboard); nil where there is none.
     private static func strip(_ i: Input, bottom: CGFloat) -> CGRect? {
         let x: CGFloat, width: CGFloat
-        if i.safeArea.right >= sideStrip {
+        if isSideStrip(i.safeArea.right, opposite: i.safeArea.left) {
             (x, width) = (i.size.width - i.safeArea.right, i.safeArea.right)
-        } else if i.safeArea.left >= sideStrip {
+        } else if isSideStrip(i.safeArea.left, opposite: i.safeArea.right) {
             (x, width) = (0, i.safeArea.left)
         } else {
             return nil
@@ -287,20 +294,22 @@ public struct StreamLayout: Sendable, Equatable {
     }
 
     private mutating func portrait(_ i: Input, bottom: CGFloat) {
-        let w = i.size.width, h = i.size.height
+        let w = i.size.width
         if let fold = i.fold, fold.width > fold.height, !i.sharesScreen, i.softKeyboard || i.touchPointer,
            deckLayout(i, fold: fold) { return }
         keyboardIsAutomatic = i.softKeyboard && !i.sharesScreen
-        // What the docked keyboard leaves; at the top at the stream's own shape, which leaves the band.
-        var area = CGRect(x: 0, y: 0, width: w, height: max(h - i.keyboardInset, 1))
+        // What the docked keyboard leaves; at the top (clear of a top safe area such as the Dynamic Island) at
+        // the stream's own shape, which leaves the band.
+        let topInset = i.safeArea.top
+        var area = CGRect(x: 0, y: topInset, width: w, height: max(bottom - topInset, 1))
         let fold = i.fold.flatMap { $0.width > $0.height ? $0 : nil }   // across: the laptop pose
-        if let fold { area.size.height = min(area.height, max(fold.minY, 1)) }
+        if let fold { area.size.height = min(area.height, max(fold.minY - topInset, 1)) }
         stream = area
         if i.streamAspect > 0 {
             let width = min(area.width, area.height * i.streamAspect).rounded()
             let height = (width / i.streamAspect).rounded()
             // Above a fold the picture sits in the middle of its half, as a laptop's screen does.
-            stream = CGRect(x: ((w - width) / 2).rounded(), y: fold == nil ? 0 : ((area.height - height) / 2).rounded(), width: width, height: height)
+            stream = CGRect(x: ((w - width) / 2).rounded(), y: fold == nil ? topInset : topInset + ((area.height - height) / 2).rounded(), width: width, height: height)
         }
         let top = (fold?.maxY ?? stream.maxY) + 8
         let frame = CGRect(x: 8, y: top, width: w - 16, height: bottom - top - 8)
@@ -314,10 +323,10 @@ public struct StreamLayout: Sendable, Equatable {
             // screen, and the picture gives up what the strip lacks.
             let gap: CGFloat = 4
             if fold == nil {
-                let tallest = max(bottom - Self.portraitStripMinHeight - 2 * gap, 1)
+                let tallest = max(bottom - topInset - Self.portraitStripMinHeight - 2 * gap, 1)
                 if stream.height > tallest {
                     let width = (tallest * i.streamAspect).rounded()
-                    stream = CGRect(x: ((w - width) / 2).rounded(), y: 0, width: width, height: tallest)
+                    stream = CGRect(x: ((w - width) / 2).rounded(), y: topInset, width: width, height: tallest)
                 }
                 band = CGRect(x: 8, y: stream.maxY + gap, width: w - 16, height: bottom - stream.maxY - 2 * gap)
                 stripHasRibbon = true
@@ -337,14 +346,18 @@ public struct StreamLayout: Sendable, Equatable {
         // As it will be once the row is gone (so that showing the side keys doesn't undo itself).
         let room = h - (i.keyboardInset - i.keyRowHeight)
         let width = min(w, (room * i.streamAspect).rounded()), gutter = ((w - width) / 2).rounded(.down)
-        guard room > Self.sideKeysHeight + 24, gutter >= Self.sideKeysMinGutter else { return false }
+        let leftMargin = Self.isSideStrip(i.safeArea.left, opposite: i.safeArea.right) ? 0 : i.safeArea.left
+        let rightMargin = Self.isSideStrip(i.safeArea.right, opposite: i.safeArea.left) ? 0 : i.safeArea.right
+        let margin: CGFloat = 8
+        let leftX = leftMargin + margin, rightX = w - gutter + margin
+        let leftWidth = gutter - margin - leftX, rightWidth = (w - rightMargin - margin) - rightX
+        guard room > Self.sideKeysHeight + 24, min(leftWidth, rightWidth) >= Self.sideKeysMinGutter - 2 * margin else { return false }
         stream = CGRect(x: gutter, y: 0, width: width, height: (width / i.streamAspect).rounded())
-        let margin: CGFloat = 8, keyWidth = gutter - 2 * margin
-        sideKeys = [CGRect(x: margin, y: margin, width: keyWidth, height: Self.sideKeysHeight),
-                    CGRect(x: w - margin - keyWidth, y: margin, width: keyWidth, height: Self.sideKeysHeight)]
+        sideKeys = [CGRect(x: leftX, y: margin, width: leftWidth, height: Self.sideKeysHeight),
+                    CGRect(x: rightX, y: margin, width: rightWidth, height: Self.sideKeysHeight)]
         let padTop = margin + Self.sideKeysHeight + margin, padHeight = room - padTop - margin
         if i.touchPointer, padHeight >= 60 {
-            cornerPads = sideKeys.map { CGRect(x: $0.minX, y: padTop, width: keyWidth, height: padHeight) }
+            cornerPads = sideKeys.map { CGRect(x: $0.minX, y: padTop, width: $0.width, height: padHeight) }
         }
         transcriptCenterX = w / 2
         return true
@@ -357,20 +370,22 @@ public struct StreamLayout: Sendable, Equatable {
         // camera covers a little of one corner).
         stream = CGRect(x: 0, y: 0, width: w, height: max(h - i.keyboardInset, 1))
         if sideKeysLayout(i) { return }
+        let leftMargin = Self.isSideStrip(i.safeArea.left, opposite: i.safeArea.right) ? 0 : i.safeArea.left
+        let rightMargin = Self.isSideStrip(i.safeArea.right, opposite: i.safeArea.left) ? 0 : i.safeArea.right
         if i.softKeyboard {
-            // Floats over the picture at the right edge; a wide side strip is the camera's, not a margin to keep.
-            let margin = i.safeArea.right >= Self.sideStrip ? 0 : i.safeArea.right
-            edgeButton = CGPoint(x: w - margin - 34, y: h / 2)
+            // Floats over the picture at the right edge; a wide single-sided strip is the camera's, not a margin to keep.
+            edgeButton = CGPoint(x: w - rightMargin - 34, y: h / 2)
         }
         if i.touchPointer {
             // Tuned on a 13-inch iPad: where the thumbs rest when it is held by its lower corners, clear of the
-            // host's Dock. A short window (a phone's) has smaller ones, lower.
+            // host's Dock. A short window (a phone's) has smaller ones, lower, and clear of horizontal safe areas.
             let small = h < 600
             let size = small ? CGSize(width: 124, height: 100) : CGSize(width: 150, height: 120)
             let inset: CGFloat = small ? 14 : 36, lift: CGFloat = small ? 44 : 104
+            let leftInset = max(inset, leftMargin), rightInset = max(inset, rightMargin)
             let y = h - i.keyboardInset - lift - size.height
-            cornerPads = [CGRect(x: stream.minX + inset, y: y, width: size.width, height: size.height),
-                          CGRect(x: stream.maxX - inset - size.width, y: y, width: size.width, height: size.height)]
+            cornerPads = [CGRect(x: stream.minX + leftInset, y: y, width: size.width, height: size.height),
+                          CGRect(x: stream.maxX - rightInset - size.width, y: y, width: size.width, height: size.height)]
             // A patch the camera would cover sits above it.
             cornerPads = cornerPads.map { pad in
                 guard let covered = i.occlusions.filter({ $0.intersects(pad) }).map(\.minY).min() else { return pad }

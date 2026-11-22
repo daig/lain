@@ -44,6 +44,8 @@ public final class ClientSession: Sendable {
         /// 0 and none with an older host.
         public var displayScale: UInt16 = 0
         public var displayScales: [UInt16] = []
+        /// v8: the display mode the host applied (`HelloAck.displayMode`).
+        public var displayMode: DisplayMode = .extend
         public init() {}
 
         /// The Mac runs an older protocol than this iPad's newest: what updating it adds (empty if not).
@@ -121,6 +123,13 @@ public final class ClientSession: Sendable {
         core.stop()
     }
 
+    /// The app is quitting (swiped away in the switcher): tells the host to end the session and restore its
+    /// display immediately (skipping keep-alive), waits briefly for the frame to flush, then stops.
+    public func quit() {
+        listener.cancel()
+        core.quit()
+    }
+
     /// A Mac this iPad can reach over Wi-Fi (it holds its key), for the panel's host list.
     public struct SavedHost: Sendable, Equatable, Identifiable {
         public var id: String
@@ -145,6 +154,10 @@ public final class ClientSession: Sendable {
         /// applied; none without a link, or with an older host. The panel offers them.
         public var displayScales: [UInt16] = []
         public var displayScale: UInt16 = 0
+        /// v8: whether the current host supports choosing extend/mirror (`ProtocolFeature.displayMode`), and
+        /// the mode it applied.
+        public var supportsDisplayMode = false
+        public var displayMode: DisplayMode = .extend
         public init() {}
     }
 
@@ -155,6 +168,12 @@ public final class ClientSession: Sendable {
     /// on, and on the current one at once, which reconnects to take it (a new scale is a new display).
     public func setDesiredScale(_ scale: UInt16) {
         core.queue.async { [core] in core.setDesiredScale(scale) }
+    }
+
+    /// The display mode to ask the host for (v8 `Hello.desiredDisplayMode`: extend, mirror onto this device's
+    /// display, or mirror the computer's native display): reconnects the current link to apply it.
+    public func setDesiredDisplayMode(_ mode: DisplayMode) {
+        core.queue.async { [core] in core.setDesiredDisplayMode(mode) }
     }
 
     /// Picks the Mac to use over Wi-Fi (nil: automatic). Over Wi-Fi, a link to another Mac closes and the
@@ -324,6 +343,27 @@ final class SessionCore: @unchecked Sendable {
         }
     }
 
+    /// Sends `ReleaseAll(.disconnect)` so the host immediately tears down its display without keeping it
+    /// alive, waits briefly for the frame to reach the wire, then closes the link. Idempotent.
+    func quit() {
+        let link: Link? = onQueue { [self] in
+            guard !stopped else { return nil }
+            stopped = true
+            epoch &+= 1
+            stopWiFi()
+            guard let c = current else { return nil }
+            current = nil
+            input.disconnect()
+            video?.disconnect()
+            c.link.realtime.send(.releaseAll(ReleaseAll(reason: .disconnect)))
+            return c.link
+        }
+        guard let link else { return }
+        _ = DispatchSemaphore(value: 0).wait(timeout: .now() + .milliseconds(120))
+        link.close()
+        release(link)
+    }
+
     // MARK: Adoption (on `queue`)
 
     /// USB always wins: installed whatever is current.
@@ -423,6 +463,7 @@ final class SessionCore: @unchecked Sendable {
                     i.chroma = ack.chroma
                     i.displayScale = ack.displayScale
                     i.displayScales = ack.displayScales
+                    i.displayMode = ack.displayMode
                     i.isConfigured = true
                     if !ack.hostName.isEmpty { i.hostName = ack.hostName }
                 }, publish: { info in
@@ -509,12 +550,14 @@ final class SessionCore: @unchecked Sendable {
     }
 
     /// On `queue`, in the order the link's snapshots were taken.
-    /// The scales the last host offered and the one it applied (v7 `HelloAck`), kept across reconnects.
+    /// The scales and display mode the last host offered and applied (v7/v8 `HelloAck`), kept across reconnects.
     private var lastDisplayScales: (scales: [UInt16], applied: UInt16) = ([], 0)
+    private var lastDisplayMode: (supported: Bool, applied: DisplayMode) = (false, .extend)
 
     private func helloAcked(_ ack: HelloAck, info: ClientSession.ConnectionInfo, generation g: UInt64) {
         guard let c = current, c.generation == g else { return }
         lastDisplayScales = (ack.displayScales, ack.displayScale)
+        lastDisplayMode = (c.link.supports(.displayMode), ack.displayMode)
         current?.hostId = ack.hostId
         if PairingAccounts.isCanonicalHostId(ack.hostId), !ack.hostName.isEmpty {
             wifi?.config.lastHost.setName(ack.hostId, ack.hostName)
@@ -533,9 +576,11 @@ final class SessionCore: @unchecked Sendable {
 
     func hostList() -> ClientSession.HostList {
         var list = ClientSession.HostList()
-        // The last host's, also while a new link comes up (a new scale reconnects): the setting stays put.
+        // The last host's, also while a new link comes up (a new scale or mode reconnects): the settings stay put.
         list.displayScales = lastDisplayScales.scales
         list.displayScale = lastDisplayScales.applied
+        list.supportsDisplayMode = lastDisplayMode.supported
+        list.displayMode = lastDisplayMode.applied
         guard let w = wifi else { return list }
         list.selected = w.config.lastHost.selected()
         if let c = current, c.via.isUSB { list.onCable = true }
@@ -562,6 +607,17 @@ final class SessionCore: @unchecked Sendable {
         guard hello.desiredScale != scale else { return }
         hello.desiredScale = scale
         log.notice("display scale \(scale): reconnecting to take it")
+        reconnectForDisplayChange()
+    }
+
+    func setDesiredDisplayMode(_ mode: DisplayMode) {
+        guard hello.desiredDisplayMode != mode else { return }
+        hello.desiredDisplayMode = mode
+        log.notice("display mode \(mode.rawValue): reconnecting to take it")
+        reconnectForDisplayChange()
+    }
+
+    private func reconnectForDisplayChange() {
         guard let c = current, !stopped else { return }
         // A new link says the new `Hello`. Over the cable the Mac dials again by itself; over Wi-Fi, at once.
         current = nil
@@ -673,7 +729,8 @@ final class SessionCore: @unchecked Sendable {
     }
 
     /// Runs `body` on `queue` and waits (inline when already there).
-    private func onQueue(_ body: () -> Void) {
-        if DispatchQueue.getSpecific(key: onQueueKey) != nil { body() } else { queue.sync(execute: body) }
+    private func onQueue<R>(_ body: () -> R) -> R {
+        if DispatchQueue.getSpecific(key: onQueueKey) != nil { return body() }
+        return queue.sync(execute: body)
     }
 }

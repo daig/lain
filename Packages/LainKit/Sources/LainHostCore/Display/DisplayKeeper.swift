@@ -8,6 +8,12 @@ public protocol KeepableDisplay: AnyObject, Sendable {
     var isUsable: Bool { get }
     /// Removes it, and waits (bounded) until the window server no longer lists it.
     func remove() async
+    /// Synchronous teardown for app quit / emergency host restore: unmirrors and drops the display immediately.
+    func releaseNow()
+}
+
+public extension KeepableDisplay {
+    func releaseNow() {}
 }
 
 /// The display keep-alive (rust/HOST-PARITY.md §1; Linux `lain-host`'s `DisplayKeeper`): lain's display
@@ -108,6 +114,28 @@ public final class DisplayKeeper: Sendable {
             _ = startRemoval(kept.display)
         }
         await waitForRemovals()
+    }
+
+    /// Synchronous close for app termination: refuses further keeps and immediately releases any kept display.
+    public func closeSync() {
+        let kept = state.withLock { s -> Kept? in
+            s.closed = true
+            defer { s.kept = nil }
+            return s.kept
+        }
+        if let kept {
+            kept.expiry.cancel()
+            kept.display.releaseNow()
+        }
+    }
+
+    /// Synchronous clear for emergency host restore: immediately releases any kept display while keeping goes on.
+    public func clearSync() {
+        let kept = state.withLock { s -> Kept? in defer { s.kept = nil }; return s.kept }
+        if let kept {
+            kept.expiry.cancel()
+            kept.display.releaseNow()
+        }
     }
 
     /// Removes a kept display now, if any (awaited); keeping goes on.

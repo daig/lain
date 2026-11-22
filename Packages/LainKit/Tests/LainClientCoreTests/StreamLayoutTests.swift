@@ -219,14 +219,42 @@ import Testing
         #expect(!closed().isShared && !closed().fillsStream)
     }
 
-    // MARK: An ordinary iPhone
+    // MARK: iPhone 18 Pro Max (unfolded Duo layout adapted for 440 × 956 / 956 × 440)
 
-    @Test func aPhoneWithoutASideStripHasItsControlsInARow() throws {
-        let l = StreamLayout(input(402, 874, aspect: duoAspect) { $0.isCompact = true; $0.safeArea = .init(top: 62, bottom: 34) })
-        #expect(l.isRemote)
-        #expect(l.stream == CGRect(x: 0, y: 62, width: 402, height: 283))
-        #expect(l.controls == StreamLayout.Controls(frame: CGRect(x: 0, y: 345, width: 402, height: 56), isVertical: false))
-        #expect(try #require(l.band).minY == 401)
+    private let proMaxAspect: CGFloat = 2868.0 / 1320.0
+
+    @Test func proMaxPortraitUsesTheUnfoldedPortraitLayoutBelowTheDynamicIsland() throws {
+        let l = StreamLayout(input(440, 956, aspect: proMaxAspect) {
+            $0.isCompact = true
+            $0.safeArea = .init(top: 62, bottom: 34)
+            $0.keyboardInset = 345
+        })
+        #expect(l.isPortrait && !l.isRemote && l.keyboardIsAutomatic && l.controls == nil)
+        #expect(l.stream == CGRect(x: 0, y: 62, width: 440, height: 203))
+        let band = try #require(l.band)
+        #expect(band == CGRect(x: 8, y: 273, width: 424, height: 330))
+        #expect(l.bandHasKeys)
+    }
+
+    @Test func proMaxLandscapeClearsTheDynamicIslandForButtonPadsAndSideKeys() {
+        let l = StreamLayout(input(956, 440, aspect: proMaxAspect) {
+            $0.safeArea = .init(left: 62, bottom: 21, right: 62)
+        })
+        #expect(!l.isPortrait && !l.isRemote && l.controls == nil)
+        #expect(l.stream == CGRect(x: 0, y: 0, width: 956, height: 440))
+        // 62 pt symmetric safe area is the Dynamic Island, not the Duo's 84 pt side strip.
+        #expect(l.edgeButton == CGPoint(x: 860, y: 220))
+        #expect(l.cornerPads == [CGRect(x: 62, y: 296, width: 124, height: 100), CGRect(x: 770, y: 296, width: 124, height: 100)])
+
+        // Landscape keyboard up: side keys and thumb pads sit inside the horizontal safe areas.
+        let typing = StreamLayout(input(956, 440, aspect: proMaxAspect) {
+            $0.safeArea = .init(left: 62, bottom: 21, right: 62)
+            $0.keyboardInset = 250
+            $0.keyRowHeight = 48
+        })
+        #expect(typing.stream == CGRect(x: 219, y: 0, width: 517, height: 238))
+        #expect(typing.sideKeys == [CGRect(x: 70, y: 8, width: 141, height: 132), CGRect(x: 745, y: 8, width: 141, height: 132)])
+        #expect(typing.cornerPads == [CGRect(x: 70, y: 148, width: 141, height: 82), CGRect(x: 745, y: 148, width: 141, height: 82)])
     }
 
     @Test func beforeTheStreamsShapeIsKnownTheRemoteStillLaysOut() {

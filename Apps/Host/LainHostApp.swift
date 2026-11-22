@@ -70,6 +70,12 @@ struct LainHostApp: App {
             if host.videoStoppedOnTheMac {
                 Button("Resume Video") { host.resumeVideo() }
             }
+            if host.canRestoreHostDisplay {
+                Button("Return to Host Display") { host.restoreHostDisplay() }
+            }
+            if host.isPaused {
+                Button("Resume Accepting Connections") { host.resumeConnections() }
+            }
             Divider()
             Menu("Color") {
                 ForEach(HostPreferences.ColorFormat.allCases, id: \.self) { format in
@@ -144,6 +150,10 @@ final class HostController {
     private(set) var preferences = HostPreferences.load()
     /// The live session's capture was stopped from the Mac's menu bar.
     private(set) var videoStoppedOnTheMac = false
+    /// Whether "Return to Host Display" should be offered (connected, kept display, or mirrored display).
+    private(set) var canRestoreHostDisplay = false
+    /// Whether connections are paused after "Return to Host Display".
+    private(set) var isPaused = false
     /// Read by the session's queues as each session starts.
     @ObservationIgnored private let livePreferences = LivePreferences(HostPreferences.load())
     @ObservationIgnored private let keeper = DisplayKeeper(keepFor: .seconds(HostPreferences.load().displayKeepAliveSeconds))
@@ -206,6 +216,10 @@ final class HostController {
                 if self?.peerVersionNote != note { self?.peerVersionNote = note }
                 let stopped = session.isVideoStoppedOnTheMac
                 if self?.videoStoppedOnTheMac != stopped { self?.videoStoppedOnTheMac = stopped }
+                let restore = session.status.isConnected || session.hasKeptDisplay || VirtualDisplay.hasMirroredHostDisplay()
+                if self?.canRestoreHostDisplay != restore { self?.canRestoreHostDisplay = restore }
+                let paused = session.isPaused
+                if self?.isPaused != paused { self?.isPaused = paused }
             }
         }
     }
@@ -240,12 +254,19 @@ final class HostController {
         }
         // Fixed for the session: live numbers would rebuild the menu every second (the iPad's HUD has them).
         // The scale is the device's to choose (v7, in lain's settings there); an older device gets this Mac's.
-        let scale = session.displayScale.map { c in
+        let mode = session.displayMode ?? .extend
+        let label = mode == .captureExisting ? "Mac display" : "lain display"
+        let modeNote: String = switch mode {
+        case .extend: ""
+        case .primary: " · mirrored"
+        case .captureExisting: " · mirrored native"
+        }
+        let scale = mode == .captureExisting ? "" : (session.displayScale.map { c in
             " at \(scaleText(c.applied)), \(c.askedFor ? "chosen on the device" : "this Mac's default")"
-        } ?? ""
+        } ?? "")
         return [
             "Video \(d.pixelWidth)×\(d.pixelHeight) px, \(v.chroma == .yuv444 ? "4:4:4 10-bit" : "4:2:0"), \(d.refreshRate) Hz",
-            "lain display \(Int(d.bounds.width))×\(Int(d.bounds.height)) points" + scale,
+            "\(label) \(Int(d.bounds.width))×\(Int(d.bounds.height)) points" + scale + modeNote,
         ]
     }
 
@@ -271,6 +292,17 @@ final class HostController {
 
     func resumeVideo() {
         session?.resumeVideo()
+    }
+
+    func restoreHostDisplay() {
+        session?.restoreHostDisplay()
+        canRestoreHostDisplay = VirtualDisplay.hasMirroredHostDisplay()
+        isPaused = session?.isPaused ?? false
+    }
+
+    func resumeConnections() {
+        session?.resumeConnections()
+        isPaused = session?.isPaused ?? false
     }
 
     /// "2×", "1.75×".

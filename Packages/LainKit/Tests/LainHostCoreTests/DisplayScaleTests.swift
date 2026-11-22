@@ -59,6 +59,19 @@ import Testing
         #expect(keys.count == scales.count)
     }
 
+    @Test func theProMaxDisplayOffersOneAndAHalfToThree() {
+        let scales = VirtualDisplay.Spec.scales(pixelWidth: 2868, pixelHeight: 1320)
+        #expect(scales == [1.5, 1.75, 2, 2.25, 2.5, 2.75, 3])
+        var keys = Set<String>()
+        for scale in scales {
+            var s = VirtualDisplay.Spec().sized(pixelWidth: 2868, pixelHeight: 1320)
+            s.scale = scale
+            #expect(s.pointWidth % 2 == 0 && s.pointHeight % 2 == 0 && s.backingWidth <= VirtualDisplay.Spec.maxBackingPixels)
+            keys.insert(s.keeperKey)
+        }
+        #expect(keys.count == scales.count)
+    }
+
     @Test func aSmallerPanelOffersOneToo() {
         #expect(VirtualDisplay.Spec.scales(pixelWidth: 1920, pixelHeight: 1080).first == 1)
     }

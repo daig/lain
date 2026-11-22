@@ -126,6 +126,8 @@ final class KeyRow: UIInputView {
         let b = UIButton(type: .system, primaryAction: UIAction { _ in action() })
         b.setTitle(title, for: .normal)
         b.titleLabel?.font = .systemFont(ofSize: 17, weight: .medium)
+        b.titleLabel?.adjustsFontSizeToFitWidth = true
+        b.titleLabel?.minimumScaleFactor = 0.7
         b.tintColor = .white
         b.backgroundColor = UIColor(white: 1, alpha: 0.16)
         b.layer.cornerRadius = 7
@@ -305,7 +307,7 @@ final class TrackpadStrip: UIView {
 ///   alone (with its label it doesn't fit a key that narrow and draws nothing).
 /// - `shared` (beside another app, at the trackpad strip's left): Esc and Paste only.
 final class ExtraKeys: UIStackView {
-    enum Form { case band, remote, shared }
+    enum Form { case band, compactBand, remote, shared }
 
     var onKey: (PhysicalKey) -> Void = { _ in }
     private weak var pasteTarget: (any UIPasteConfigurationSupporting)?
@@ -350,7 +352,7 @@ final class ExtraKeys: UIStackView {
     }
 
     private func apply() {
-        escape?.isHidden = form == .band
+        escape?.isHidden = form == .band || form == .compactBand
         for b in navigation { b.isHidden = form == .shared }
         // The paste control's look is fixed when it is made: a new one for each form.
         paste?.removeFromSuperview()
