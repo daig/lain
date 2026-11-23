@@ -913,6 +913,10 @@ public final class HostSession: Sendable {
                 connection.link.close()
             }
         }
+        // Bridge the power assertion across async video retirement so DisplayKeeper takes over without a gap
+        // (on explicit disconnect/quit, the display isn't kept and power drops as soon as teardown finishes).
+        let bridgePower = connection.video != nil
+        if bridgePower { deps.power.beginPreventingDisplaySleep() }
         connection.finish()
         let captureFailed = connection.captureFailed.load(ordering: .acquiring)
         updateStatus { s in
@@ -929,6 +933,7 @@ public final class HostSession: Sendable {
             await video.waitUntilStopped()
             state.withLock { s in s.retiring.removeAll { $0 === video } }
         }
+        if bridgePower { deps.power.endPreventingDisplaySleep() }
         log.notice("session ended")
     }
 
@@ -1051,14 +1056,17 @@ final class HostConnection: Sendable {
     }
 
     /// Takes the display-sleep assertion unless the connection has already been finished (a detach or
-    /// stop raced the handshake). Returns whether the session should go on.
+    /// stop raced the handshake). Also declares user activity right away so a Mac woken into Dark Wake
+    /// (e.g. closed lid on AC via WoL or Bonjour Sleep Proxy) promotes to Full Wake before video starts.
     func start() -> Bool {
-        rt.withLock { s -> Bool in
+        let started = rt.withLock { s -> Bool in
             guard !s.finished else { return false }
             s.holdsPower = true
             deps.power.beginPreventingDisplaySleep()
             return true
         }
+        if started { deps.power.declareUserActivity() }
+        return started
     }
 
     /// `finish()` has run: a takeover, detach or stop ended the session.

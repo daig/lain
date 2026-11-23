@@ -156,12 +156,14 @@ final class HostController {
     private(set) var isPaused = false
     /// Read by the session's queues as each session starts.
     @ObservationIgnored private let livePreferences = LivePreferences(HostPreferences.load())
-    @ObservationIgnored private let keeper = DisplayKeeper(keepFor: .seconds(HostPreferences.load().displayKeepAliveSeconds))
+    @ObservationIgnored private let power = IOPMPowerAssertions()
+    @ObservationIgnored private let keeper: DisplayKeeper
 
     @ObservationIgnored private var session: HostSession?
     @ObservationIgnored private var accessPoll: Task<Void, Never>?
 
     init() {
+        keeper = DisplayKeeper(keepFor: .seconds(HostPreferences.load().displayKeepAliveSeconds), power: power)
         guard !LainHostEntry.isTestHost else { return }
         // Who this Mac is to its iPads over Wi-Fi (§7.7 D29). Without it the session stays USB-only rather
         // than advertise an id that changes.
@@ -176,6 +178,7 @@ final class HostController {
         // advertises (§7.7 D29 decision 12).
         let preferences = livePreferences, keeper = keeper
         let session = HostSession(dependencies: .init(sink: InputInjector(),
+                                                      power: power,
                                                       video: { HostVideoPipeline.live(keeper: keeper,
                                                                                       scale: preferences.value.displayScale,
                                                                                       colorFormat: preferences.value.colorFormat) },

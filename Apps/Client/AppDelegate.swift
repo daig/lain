@@ -1,5 +1,6 @@
 import Foundation
 import LainClientCore
+import LainTransport
 import UIKit
 
 @main
@@ -53,25 +54,32 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
         let native = screen.nativeBounds.size
         var display = (pixelWidth: Int(max(native.width, native.height)), pixelHeight: Int(min(native.width, native.height)),
                        scale: Int(screen.nativeScale))
-        if let home = ClientStatus.homeDisplay(model: model) { display = home }
+        let home = ClientStatus.homeDisplay(model: model)
+        if let home { display = home }
+        // Standard iPhones (without a fixed foldable home display) request a portrait host display when upright.
+        let allowsPortraitDisplay = home == nil && model.hasPrefix("iPhone")
         // The scale of the screen the display is for (the Duo's inner one: 3×): the display scale until one is picked.
         let nativeScale = UInt16(clamping: max(display.scale, 1) * 100)
         let stream = StreamViewController(input: input, video: video,
                                           referenceWidth: Double(display.pixelWidth) / Double(max(display.scale, 1)),
-                                          nativeScale: nativeScale)
+                                          nativeScale: nativeScale,
+                                          landscapePixels: (display.pixelWidth, display.pixelHeight),
+                                          allowsPortraitDisplay: allowsPortraitDisplay)
         let window = UIWindow(windowScene: windowScene)
         window.rootViewController = stream
         window.makeKeyAndVisible()
+        stream.view.layoutIfNeeded()
         self.window = window
         guard !AppDelegate.isTestHost else { return }
         let prefs = ClientPreferences.load(nativeScale: nativeScale)
-        let hello = Hello(deviceModel: model, pixelWidth: UInt32(display.pixelWidth), pixelHeight: UInt32(display.pixelHeight),
+        let initial = stream.desiredDisplay
+        let hello = Hello(deviceModel: model, pixelWidth: initial.pixelWidth, pixelHeight: initial.pixelHeight,
                           scale: UInt8(display.scale), maxRefreshRate: UInt16(screen.maximumFramesPerSecond),
                           // S3c: HEVC Main 4:4:4 10 only if the embedded vector decodes in hardware here.
                           decodeCapabilities: ClientVideoPipeline.probeDecodeCapabilities(),
                           keyboardType: .unknown,
                           // v7/v8: the scale and display mode this device asks for, from its settings.
-                          desiredScale: prefs.displayScale,
+                          desiredScale: initial.scale,
                           desiredDisplayMode: prefs.wireDisplayMode)
         startSession(hello: hello, view: stream)
     }
@@ -136,7 +144,8 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
     /// is in the foreground; iPadOS suspends them otherwise.
     private func startSession(hello: Hello, view: StreamViewController) {
         let wifi = ClientWiFiConfig(discovery: { BonjourHostDiscovery(serviceType: LainProtocol.bonjourServiceType) },
-                                    lastHost: .userDefaults())
+                                    lastHost: .userDefaults(),
+                                    wakeOnLAN: WakeOnLAN.send)
         do {
             session = try ClientSession(secrets: KeychainSecretStore(), hello: hello, input: input, video: video,
                                         wifi: wifi) { [weak view] status in

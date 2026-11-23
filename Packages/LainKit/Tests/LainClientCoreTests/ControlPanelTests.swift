@@ -238,6 +238,27 @@ import Testing
         defaults.removePersistentDomain(forName: "lain.test.displayScale")
         #expect(ClientPreferences.load(from: defaults).displayScale == 200)
     }
+
+    @Test func portraitScaleIsIndependentOfLandscapeScale() throws {
+        let suite = "lain.test.portraitScale.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        var p = ClientPreferences.load(from: defaults, nativeScale: 300)
+        #expect(p.displayScale == 300 && p.portraitDisplayScale == 300 && p.activeDisplayScale == 300)
+        p.isPortraitDisplay = true
+        #expect(p.activeDisplayScale == 300)
+        let h = offering([150, 200, 250, 300], applied: 300)
+        let sheet = ControlPanel().sheet(info: nil, video: VideoStats(), host: nil, hosts: h, preferences: p)
+        let item = try #require(sheet.options.first { $0.title == "Display scale" })
+        #expect(item.chosen == 3)
+        guard case .setPreferences(let picked) = ControlPanel().choose(row: try #require(item.row), index: 2, hosts: h, preferences: p) else {
+            Issue.record("expected portrait scale change"); return
+        }
+        #expect(picked.portraitDisplayScale == 250 && picked.displayScale == 300, "landscape scale stays untouched")
+        picked.save(to: defaults)
+        let reloaded = ClientPreferences.load(from: defaults, nativeScale: 300)
+        #expect(reloaded.displayScale == 300 && reloaded.portraitDisplayScale == 250)
+        defaults.removePersistentDomain(forName: suite)
+    }
 }
 
 /// v8: extend or mirror (mirror by default), and when mirroring: this device's display or the computer's native.

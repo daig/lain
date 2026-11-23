@@ -213,17 +213,21 @@ extension DisplayLayoutProvider {
     }
 }
 
-/// IOPM assertions: `PreventUserIdleDisplaySleep` while connected (counted: held while begins outnumber
-/// ends), `IOPMAssertionDeclareUserActivity` for injected input.
+/// IOPM assertions: `PreventUserIdleDisplaySleep` + `PreventUserIdleSystemSleep` while connected or during
+/// display keep-alive (counted: held while begins outnumber ends), and `IOPMAssertionDeclareUserActivity` on
+/// connect (promotes Dark Wake → Full Wake) and injected input.
 public final class IOPMPowerAssertions: PowerAssertions {
     private struct State {
         var count = PowerAssertionCount()
         var displayAssertion: IOPMAssertionID?
+        var systemAssertion: IOPMAssertionID?
         var activityAssertion: IOPMAssertionID = IOPMAssertionID(0)
 
         mutating func release() {
             if let id = displayAssertion { IOPMAssertionRelease(id) }
             displayAssertion = nil
+            if let id = systemAssertion { IOPMAssertionRelease(id) }
+            systemAssertion = nil
             if activityAssertion != 0 {
                 IOPMAssertionRelease(activityAssertion)
                 activityAssertion = 0
@@ -239,11 +243,19 @@ public final class IOPMPowerAssertions: PowerAssertions {
 
     public func beginPreventingDisplaySleep() {
         state.withLock { s in
-            guard s.count.begin(), s.displayAssertion == nil else { return }
-            var id = IOPMAssertionID(0)
-            let rc = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
-                                                 IOPMAssertionLevel(kIOPMAssertionLevelOn), name as CFString, &id)
-            if rc == kIOReturnSuccess { s.displayAssertion = id }
+            guard s.count.begin() else { return }
+            if s.displayAssertion == nil {
+                var id = IOPMAssertionID(0)
+                let rc = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleDisplaySleep as CFString,
+                                                     IOPMAssertionLevel(kIOPMAssertionLevelOn), name as CFString, &id)
+                if rc == kIOReturnSuccess { s.displayAssertion = id }
+            }
+            if s.systemAssertion == nil {
+                var id = IOPMAssertionID(0)
+                let rc = IOPMAssertionCreateWithName(kIOPMAssertionTypePreventUserIdleSystemSleep as CFString,
+                                                     IOPMAssertionLevel(kIOPMAssertionLevelOn), name as CFString, &id)
+                if rc == kIOReturnSuccess { s.systemAssertion = id }
+            }
         }
     }
 

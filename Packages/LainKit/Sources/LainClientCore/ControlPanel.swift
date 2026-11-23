@@ -20,6 +20,12 @@ public struct ClientPreferences: Sendable, Equatable {
     /// (`nativeDisplayScale`): things on the computer's display are the size they are on the device (an
     /// iPad's 2× desktop, as always; 3× on an iPhone); more room is a setting away.
     public var displayScale: UInt16 = ClientPreferences.defaultDisplayScale
+    /// The pixels per point asked for when this device uses a dedicated portrait display shape (in hundredths).
+    /// Defaults to `nativeDisplayScale` (same physical UI size as iOS, matching landscape) until picked.
+    public var portraitDisplayScale: UInt16 = ClientPreferences.defaultDisplayScale
+    /// Runtime flag (not persisted): true while the current layout uses a dedicated portrait display, so the
+    /// panel shows and edits `portraitDisplayScale` independently of landscape's `displayScale`.
+    public var isPortraitDisplay = false
     /// The device screen's own pixels per point, in hundredths: the default scale. Not kept: the device says.
     public var nativeDisplayScale: UInt16 = ClientPreferences.defaultDisplayScale
     /// v8: mirror the computer's screen instead of extending as an extra display (default: mirror).
@@ -27,6 +33,14 @@ public struct ClientPreferences: Sendable, Equatable {
     /// v8: when mirroring, stream the computer's own configured display as-is (`captureExisting`) instead of
     /// mirroring onto this device's requested display (`primary`).
     public var mirrorComputerNative = false
+
+    /// The scale for the current display orientation.
+    public var activeDisplayScale: UInt16 {
+        get { isPortraitDisplay ? portraitDisplayScale : displayScale }
+        set {
+            if isPortraitDisplay { portraitDisplayScale = newValue } else { displayScale = newValue }
+        }
+    }
 
     /// Wire display mode for v8 `Hello.desiredDisplayMode`.
     public var wireDisplayMode: DisplayMode {
@@ -41,7 +55,7 @@ public struct ClientPreferences: Sendable, Equatable {
 
     static let scrollKey = "lain.reverseScroll"
     static let pathKey = "lain.wifiPath", priorityKey = "lain.radioPriority", touchKey = "lain.touchMode"
-    static let scaleKey = "lain.displayScale"
+    static let scaleKey = "lain.displayScale", portraitScaleKey = "lain.portraitDisplayScale"
     static let mirrorDisplayKey = "lain.mirrorDisplay", mirrorComputerNativeKey = "lain.mirrorComputerNative"
 
     /// `nativeScale`: the device screen's pixels per point, in hundredths (`nativeDisplayScale`), the scale
@@ -50,6 +64,7 @@ public struct ClientPreferences: Sendable, Equatable {
         var p = ClientPreferences()
         p.nativeDisplayScale = nativeScale
         p.displayScale = nativeScale
+        p.portraitDisplayScale = nativeScale
         p.reverseScroll = defaults.bool(forKey: scrollKey)
         if let raw = defaults.string(forKey: touchKey), let mode = TouchMode(rawValue: raw) { p.touchMode = mode == .off ? .off : .direct }
         if let raw = defaults.string(forKey: pathKey), let path = WiFiPath(rawValue: raw) { p.wifiPath = path }
@@ -58,6 +73,8 @@ public struct ClientPreferences: Sendable, Equatable {
         }
         let scale = defaults.integer(forKey: scaleKey)
         if (50...400).contains(scale) { p.displayScale = UInt16(scale) }
+        let portraitScale = defaults.integer(forKey: portraitScaleKey)
+        if (50...400).contains(portraitScale) { p.portraitDisplayScale = UInt16(portraitScale) }
         if defaults.object(forKey: mirrorDisplayKey) != nil { p.mirrorDisplay = defaults.bool(forKey: mirrorDisplayKey) }
         p.mirrorComputerNative = defaults.bool(forKey: mirrorComputerNativeKey)
         return p
@@ -69,6 +86,7 @@ public struct ClientPreferences: Sendable, Equatable {
         defaults.set(wifiPath.rawValue, forKey: Self.pathKey)
         defaults.set(radioPriority.rawValue, forKey: Self.priorityKey)
         defaults.set(Int(displayScale), forKey: Self.scaleKey)
+        defaults.set(Int(portraitDisplayScale), forKey: Self.portraitScaleKey)
         defaults.set(mirrorDisplay, forKey: Self.mirrorDisplayKey)
         defaults.set(mirrorComputerNative, forKey: Self.mirrorComputerNativeKey)
     }
@@ -190,7 +208,7 @@ public struct ControlPanel: Sendable, Equatable {
         case .touchMode: p.touchMode = p.touchMode == .off ? .direct : .off
         case .wifiPath: p.wifiPath = Self.cycle(p.wifiPath, by: step)
         case .radioPriority: p.radioPriority = Self.cycle(p.radioPriority, by: step)
-        case .displayScale: p.displayScale = Self.nextScale(after: p.displayScale, in: hosts.displayScales, by: step)
+        case .displayScale: p.activeDisplayScale = Self.nextScale(after: p.activeDisplayScale, in: hosts.displayScales, by: step)
         case .displayMode: p.mirrorDisplay.toggle()
         case .mirrorSource: p.mirrorComputerNative.toggle()
         }
@@ -248,7 +266,7 @@ public struct ControlPanel: Sendable, Equatable {
             case .radioPriority:
                 add(Self.pad("Radio priority") + "‹ " + Self.title(preferences.radioPriority) + " ›", row: i)
             case .displayScale:
-                add(Self.pad("Display scale") + "‹ " + Self.scaleValue(preferences.displayScale, hosts: hosts, info: info) + " ›", row: i)
+                add(Self.pad("Display scale") + "‹ " + Self.scaleValue(preferences.activeDisplayScale, hosts: hosts, info: info) + " ›", row: i)
             case .displayMode:
                 add(Self.pad("Display") + "‹ " + (preferences.mirrorDisplay ? "Mirror" : "Extend") + " ›", row: i)
             case .mirrorSource:
@@ -327,9 +345,9 @@ public struct ControlPanel: Sendable, Equatable {
             case .mirrorSource:
                 out.options.append(.init(row: i, title: "Mirror resolution", value: preferences.mirrorComputerNative ? "Computer's native" : "This device"))
             case .displayScale:
-                var item = Sheet.Item(row: i, title: "Display scale", value: Self.scaleValue(preferences.displayScale, hosts: hosts, info: info))
+                var item = Sheet.Item(row: i, title: "Display scale", value: Self.scaleValue(preferences.activeDisplayScale, hosts: hosts, info: info))
                 item.choices = hosts.displayScales.map { Self.scaleChoiceTitle($0, native: preferences.nativeDisplayScale) }
-                item.chosen = hosts.displayScales.firstIndex(of: preferences.displayScale)
+                item.chosen = hosts.displayScales.firstIndex(of: preferences.activeDisplayScale)
                 out.options.append(item)
             }
         }
@@ -341,7 +359,7 @@ public struct ControlPanel: Sendable, Equatable {
         let rows = Self.rows(hosts: hosts, preferences: preferences)
         guard rows.indices.contains(row), rows[row] == .displayScale, hosts.displayScales.indices.contains(index) else { return .none }
         var p = preferences
-        p.displayScale = hosts.displayScales[index]
+        p.activeDisplayScale = hosts.displayScales[index]
         return p == preferences ? .none : .setPreferences(p)
     }
 

@@ -219,21 +219,34 @@ import Testing
         #expect(!closed().isShared && !closed().fillsStream)
     }
 
-    // MARK: iPhone 18 Pro Max (unfolded Duo layout adapted for 440 × 956 / 956 × 440)
+    // MARK: iPhone 18 Pro Max (440 × 956 portrait / 956 × 440 landscape)
 
     private let proMaxAspect: CGFloat = 2868.0 / 1320.0
+    private let proMaxPortraitAspect: CGFloat = 1320.0 / 1584.0
 
-    @Test func proMaxPortraitUsesTheUnfoldedPortraitLayoutBelowTheDynamicIsland() throws {
-        let l = StreamLayout(input(440, 956, aspect: proMaxAspect) {
+    @Test func proMaxPortraitFillsAboveKeyboardWithBottomEdgeThumbPads() {
+        let l = StreamLayout(input(440, 956, aspect: proMaxPortraitAspect) {
             $0.isCompact = true
             $0.safeArea = .init(top: 62, bottom: 34)
-            $0.keyboardInset = 345
+            $0.keyboardInset = 366
         })
-        #expect(l.isPortrait && !l.isRemote && l.keyboardIsAutomatic && l.controls == nil)
-        #expect(l.stream == CGRect(x: 0, y: 62, width: 440, height: 203))
-        let band = try #require(l.band)
-        #expect(band == CGRect(x: 8, y: 273, width: 424, height: 330))
-        #expect(l.bandHasKeys)
+        #expect(l.isPortrait && l.usesPortraitDisplay && !l.isRemote && l.keyboardIsAutomatic && l.controls == nil)
+        #expect(l.stream == CGRect(x: 0, y: 62, width: 440, height: 528))
+        #expect(l.band == nil && !l.bandHasKeys)
+        #expect(l.edgeButton == nil, "the key row has mic and settings while the keyboard is up")
+        #expect(l.cornerPads == [
+            CGRect(x: 10, y: 492, width: 116, height: 88),
+            CGRect(x: 314, y: 492, width: 116, height: 88),
+        ])
+
+        // Disconnected (keyboard not up yet): keeps Settings/Dictate reachable via the edge button.
+        let disconnected = StreamLayout(input(440, 956, aspect: 0) {
+            $0.isCompact = true
+            $0.safeArea = .init(top: 62, bottom: 34)
+        })
+        #expect(disconnected.usesPortraitDisplay && disconnected.band == nil)
+        #expect(disconnected.stream == CGRect(x: 0, y: 62, width: 440, height: 860))
+        #expect(disconnected.edgeButton == CGPoint(x: 406, y: 492))
     }
 
     @Test func proMaxLandscapeClearsTheDynamicIslandForButtonPadsAndSideKeys() {

@@ -42,10 +42,24 @@ public final class DisplayKeeper: Sendable {
         var removing: Task<Void, Never>?
     }
     private let state: Mutex<State>
+    /// Held while a display is kept so a clamshell MacBook stays awake during brief iPhone app-switches,
+    /// and released immediately when the display is taken, expires, or is cleared/closed.
+    private let power: (any PowerAssertions)?
     private let log = Telemetry.logger("vdisplay")
 
-    public init(keepFor: Duration) {
+    public init(keepFor: Duration, power: (any PowerAssertions)? = nil) {
         state = Mutex(State(keepFor: max(keepFor, .zero)))
+        self.power = power
+    }
+
+    deinit {
+        let hadKept = state.withLock { s -> Bool in
+            guard let k = s.kept else { return false }
+            k.expiry.cancel()
+            s.kept = nil
+            return true
+        }
+        if hadKept { power?.endPreventingDisplaySleep() }
     }
 
     /// For the next display kept (one kept now keeps its time).
@@ -60,8 +74,8 @@ public final class DisplayKeeper: Sendable {
     /// Keeps `display` for the next session asking for `key`. false: not kept (keep-alive off, or the host
     /// is stopping), and the caller removes it.
     public func keep(_ display: any KeepableDisplay, key: String) -> Bool {
-        let (kept, previous) = state.withLock { s -> (Bool, (any KeepableDisplay)?) in
-            guard !s.closed, s.keepFor > .zero else { return (false, nil) }
+        let (kept, previous, tookPower) = state.withLock { s -> (Bool, (any KeepableDisplay)?, Bool) in
+            guard !s.closed, s.keepFor > .zero else { return (false, nil, false) }
             // Not expected (one display at a time), but never lose track of one.
             let previous = s.kept.map { k in k.expiry.cancel(); return k.display }
             s.generation &+= 1
@@ -72,8 +86,9 @@ public final class DisplayKeeper: Sendable {
                 await self?.expire(generation)
             }
             s.kept = Kept(display: display, key: key, generation: generation, expiry: expiry)
-            return (true, previous)
+            return (true, previous, previous == nil)
         }
+        if tookPower { power?.beginPreventingDisplaySleep() }
         if let previous { _ = startRemoval(previous) }
         if kept { log.notice("keeping lain's display for \(self.keepFor, privacy: .public) for the iPad's return") }
         return kept
@@ -86,6 +101,7 @@ public final class DisplayKeeper: Sendable {
             await waitForRemovals()   // an expiry may be removing the last one
             return nil
         }
+        power?.endPreventingDisplaySleep()
         kept.expiry.cancel()
         let closed = state.withLock { $0.closed }
         if kept.key == key, !closed, kept.display.isUsable {
@@ -110,6 +126,7 @@ public final class DisplayKeeper: Sendable {
             return s.kept
         }
         if let kept {
+            power?.endPreventingDisplaySleep()
             kept.expiry.cancel()
             _ = startRemoval(kept.display)
         }
@@ -124,6 +141,7 @@ public final class DisplayKeeper: Sendable {
             return s.kept
         }
         if let kept {
+            power?.endPreventingDisplaySleep()
             kept.expiry.cancel()
             kept.display.releaseNow()
         }
@@ -133,6 +151,7 @@ public final class DisplayKeeper: Sendable {
     public func clearSync() {
         let kept = state.withLock { s -> Kept? in defer { s.kept = nil }; return s.kept }
         if let kept {
+            power?.endPreventingDisplaySleep()
             kept.expiry.cancel()
             kept.display.releaseNow()
         }
@@ -142,6 +161,7 @@ public final class DisplayKeeper: Sendable {
     public func clear() async {
         let kept = state.withLock { s -> Kept? in defer { s.kept = nil }; return s.kept }
         if let kept {
+            power?.endPreventingDisplaySleep()
             kept.expiry.cancel()
             _ = startRemoval(kept.display)
         }
@@ -155,6 +175,7 @@ public final class DisplayKeeper: Sendable {
             return k
         }
         guard let kept else { return }
+        power?.endPreventingDisplaySleep()
         log.notice("the iPad didn't come back in time; removing lain's display")
         await startRemoval(kept.display).value
     }

@@ -37,14 +37,25 @@ public struct ClientWiFiConfig: Sendable {
     public var lastHost: LastConnectedHost
     /// Which way to reach a Mac over Wi-Fi (the panel's Wi-Fi path).
     public var path = WiFiPath.automatic
+    /// Sends Wake-on-LAN magic packets when the target Mac isn't visible on Bonjour (asleep on AC).
+    /// `WakeOnLAN.send` in the app; a no-op in tests unless injected.
+    public var wakeOnLAN: @Sendable ([String]) -> Void = { _ in }
+    /// Seconds to wait for Bonjour to spot an awake Mac before broadcasting the first Wake-on-LAN packet.
+    public var wolDelay = 1.0
+    /// Seconds between Wake-on-LAN retries while still searching.
+    public var wolInterval = 5.0
+    /// Maximum Wake-on-LAN packets sent per foreground search before stopping.
+    public var wolMaxAttempts = 6
     /// Tests only: wraps each attempt's dialer (to hold a dial, or watch its streams).
     var interpose: (@Sendable (any StreamDialer) -> any StreamDialer)?
 
     public init(discovery: @escaping @Sendable () -> any HostDiscovery, options: NetworkStreamOptions = NetworkStreamOptions(),
-                lastHost: LastConnectedHost = .memory()) {
+                lastHost: LastConnectedHost = .memory(),
+                wakeOnLAN: @escaping @Sendable ([String]) -> Void = { _ in }) {
         self.discovery = discovery
         self.options = options
         self.lastHost = lastHost
+        self.wakeOnLAN = wakeOnLAN
     }
 }
 
@@ -73,6 +84,9 @@ public struct LastConnectedHost: Sendable {
     /// The host the owner picked in the panel; nil: automatic (the cable first, then the last connected).
     public var selected: @Sendable () -> String?
     public var setSelected: @Sendable (String?) -> Void
+    /// Each Mac's Wake-on-LAN hardware MAC addresses (from Bonjour TXT `mac`), by host id.
+    public var macs: @Sendable (_ hostId: String) -> [String]
+    public var setMacs: @Sendable (_ hostId: String, _ macs: [String]) -> Void
 
     public init(get: @escaping @Sendable () -> String?, set: @escaping @Sendable (String) -> Void,
                 service: @escaping @Sendable (_ hostId: String) -> String? = { _ in nil },
@@ -80,7 +94,9 @@ public struct LastConnectedHost: Sendable {
                 names: @escaping @Sendable () -> [String: String] = { [:] },
                 setName: @escaping @Sendable (_ hostId: String, _ name: String) -> Void = { _, _ in },
                 selected: @escaping @Sendable () -> String? = { nil },
-                setSelected: @escaping @Sendable (String?) -> Void = { _ in }) {
+                setSelected: @escaping @Sendable (String?) -> Void = { _ in },
+                macs: @escaping @Sendable (_ hostId: String) -> [String] = { _ in [] },
+                setMacs: @escaping @Sendable (_ hostId: String, _ macs: [String]) -> Void = { _, _ in }) {
         self.get = get
         self.set = set
         self.service = service
@@ -89,13 +105,16 @@ public struct LastConnectedHost: Sendable {
         self.setName = setName
         self.selected = selected
         self.setSelected = setSelected
+        self.macs = macs
+        self.setMacs = setMacs
     }
 
     /// `servicesKey` holds a dictionary host id → service (one entry per Mac that answered over Wi-Fi).
     public static func userDefaults(key: String = "lain.lastHostId",
                                     servicesKey: String = "lain.lastHostServices",
                                     namesKey: String = "lain.hostNames",
-                                    selectedKey: String = "lain.selectedHostId") -> LastConnectedHost {
+                                    selectedKey: String = "lain.selectedHostId",
+                                    macsKey: String = "lain.hostMacs") -> LastConnectedHost {
         LastConnectedHost(get: { UserDefaults.standard.string(forKey: key) },
                           set: { UserDefaults.standard.set($0, forKey: key) },
                           service: { id in UserDefaults.standard.dictionary(forKey: servicesKey)?[id] as? String },
@@ -116,6 +135,14 @@ public struct LastConnectedHost: Sendable {
                           setSelected: { id in
                               if let id { UserDefaults.standard.set(id, forKey: selectedKey) }
                               else { UserDefaults.standard.removeObject(forKey: selectedKey) }
+                          },
+                          macs: { id in (UserDefaults.standard.dictionary(forKey: macsKey) as? [String: [String]])?[id] ?? [] },
+                          setMacs: { id, list in
+                              guard !list.isEmpty else { return }
+                              var all = (UserDefaults.standard.dictionary(forKey: macsKey) as? [String: [String]]) ?? [:]
+                              guard all[id] != list else { return }
+                              all[id] = list
+                              UserDefaults.standard.set(all, forKey: macsKey)
                           })
     }
 
@@ -127,12 +154,14 @@ public struct LastConnectedHost: Sendable {
                                  names: { box.value.withLock { $0.names } },
                                  setName: { id, name in box.value.withLock { $0.names[id] = name } },
                                  selected: { box.value.withLock { $0.selected } },
-                                 setSelected: { id in box.value.withLock { $0.selected = id } })
+                                 setSelected: { id in box.value.withLock { $0.selected = id } },
+                                 macs: { id in box.value.withLock { $0.macs[id] ?? [] } },
+                                 setMacs: { id, list in box.value.withLock { if !list.isEmpty { $0.macs[id] = list } } })
     }
 
     private final class Box: Sendable {
-        let value: Mutex<(id: String?, services: [String: String], names: [String: String], selected: String?)>
-        init(_ initial: String?) { value = Mutex((initial, [:], [:], nil)) }
+        let value: Mutex<(id: String?, services: [String: String], names: [String: String], selected: String?, macs: [String: [String]])>
+        init(_ initial: String?) { value = Mutex((initial, [:], [:], nil, [:])) }
     }
 }
 
@@ -301,6 +330,9 @@ final class WiFiLoop {
     var busyHost: String?
     /// A dial found Local Network access off.
     var dialDenied = false
+    /// Wake-on-LAN attempts sent during the current search, and when the next one may go out (ns).
+    var wolAttempts = 0
+    var nextWolAt: UInt64 = 0
     var timer: DispatchWorkItem?
     var timerAt: UInt64 = 0
 
@@ -333,8 +365,16 @@ final class WiFiLoop {
 extension SessionCore {
     func startWiFi() {
         guard let w = wifi else { return }
-        w.graceUntil = MonotonicClock.now() + Self.ns(w.config.grace)
+        let now = MonotonicClock.now()
+        w.graceUntil = now + Self.ns(w.config.grace)
+        resetWakeOnLAN(now: now)
         evaluateWiFi()
+    }
+
+    func resetWakeOnLAN(now: UInt64) {
+        guard let w = wifi else { return }
+        w.wolAttempts = 0
+        w.nextWolAt = now + Self.ns(w.config.wolDelay)
     }
 
     /// `stop()`: the loop, the discovery and any dial in flight (its link, if it still comes, is closed).
@@ -358,6 +398,7 @@ extension SessionCore {
         }
         w.paused = false
         w.dialDenied = false
+        resetWakeOnLAN(now: MonotonicClock.now())
         evaluateWiFi()
         publish()
     }
@@ -383,6 +424,7 @@ extension SessionCore {
         guard let w = wifi else { return }
         w.config.lastHost.set(host.hostId)
         w.config.lastHost.setService(host.hostId, WiFiDialPlan.serviceKey(host.endpoint))
+        if !host.macs.isEmpty { w.config.lastHost.setMacs(host.hostId, host.macs) }
         w.services[host.endpoint]?.clearFailures()
     }
 
@@ -414,6 +456,7 @@ extension SessionCore {
                 w.graceUntil = now + Self.ns(w.config.grace)
             }
         }
+        resetWakeOnLAN(now: now)
         evaluateWiFi()
     }
 
@@ -427,6 +470,7 @@ extension SessionCore {
                            path: w.config.path, versions: versions, secret: storedSecret)
                 .ordered(lastGood: w.config.lastHost.service, lastTried: { w.services[$0]?.lastAttemptAt ?? now })
             : WiFiDialPlan()
+        maybeWakeSleepingHost(now: now)
         guard current == nil, w.dialing == nil, !w.paused, !w.plan.candidates.isEmpty else { return }
         let notBefore = Swift.max(w.graceUntil, w.backoffUntil)
         guard now >= notBefore else { return wakeWiFi(at: notBefore) }
@@ -435,6 +479,26 @@ extension SessionCore {
             return wakeWiFi(at: next)
         }
         dial(pick)
+    }
+
+    /// If no paired candidate is currently visible on Bonjour (the saved Mac is likely asleep on AC),
+    /// broadcasts a Wake-on-LAN magic packet after a short settle delay and retries periodically.
+    private func maybeWakeSleepingHost(now: UInt64) {
+        guard let w = wifi, current == nil, w.dialing == nil, !w.paused, w.discovery != nil,
+              w.discoveryState != .denied, !w.dialDenied, w.config.path != .direct,
+              w.plan.candidates.isEmpty, w.wolAttempts < w.config.wolMaxAttempts else { return }
+        guard let targetId = w.config.lastHost.selected() ?? w.config.lastHost.get(),
+              PairingAccounts.isCanonicalHostId(targetId),
+              storedSecret(PairingAccounts.mac(targetId)) != nil else { return }
+        let macs = w.config.lastHost.macs(targetId)
+        guard !macs.isEmpty else { return }
+        if w.nextWolAt == 0 { w.nextWolAt = now + Self.ns(w.config.wolDelay) }
+        guard now >= w.nextWolAt else { return wakeWiFi(at: w.nextWolAt) }
+        w.wolAttempts += 1
+        w.nextWolAt = now + Self.ns(w.config.wolInterval)
+        log.notice("Wi-Fi: sending Wake-on-LAN (#\(w.wolAttempts)) for host \(targetId, privacy: .public)")
+        w.config.wakeOnLAN(macs)
+        if w.wolAttempts < w.config.wolMaxAttempts { wakeWiFi(at: w.nextWolAt) }
     }
 
     /// The loop's part of the status while no link is current, strongest first: what it is doing
@@ -526,6 +590,10 @@ extension SessionCore {
         }
         for host in hosts where !PairingAccounts.isCanonicalHostId(host.hostId) {
             log.notice("Wi-Fi: ignoring \(host.description, privacy: .public): not a canonical host id")
+        }
+        for host in hosts where !host.macs.isEmpty && PairingAccounts.isCanonicalHostId(host.hostId)
+            && storedSecret(PairingAccounts.mac(host.hostId)) != nil {
+            w.config.lastHost.setMacs(host.hostId, host.macs)
         }
         evaluateWiFi()
         publish()

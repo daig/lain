@@ -41,7 +41,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 pub fn display_spec(hello: &Hello) -> DisplaySpec {
     let (w, h) = (hello.pixel_width, hello.pixel_height);
     let (w, h) =
-        if (640..=4096).contains(&w) && (480..=4096).contains(&h) && w >= h { (w & !1, h & !1) } else { IPAD_PIXELS };
+        if (480..=4096).contains(&w) && (480..=4096).contains(&h) { (w & !1, h & !1) } else { IPAD_PIXELS };
     let desired_scale = choose_scale(hello.desired_scale);
     let (pixel_width, pixel_height) = size_for_scale(w, h, desired_scale);
     DisplaySpec {
@@ -428,8 +428,11 @@ mod spec_tests {
             display_spec(&hello(2752, 2064, 2)),
             DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, desired_scale: 0, refresh_hz: 120 }
         );
+        // Portrait displays (e.g. iPhone 18 Pro Max above the portrait keyboard) are supported too.
+        let portrait = display_spec(&hello(1320, 1584, 3));
+        assert_eq!((portrait.pixel_width, portrait.pixel_height), (1320, 1584));
         // A size that makes no display: the iPad's.
-        for (w, h) in [(0, 0), (2007, 2853), (100_000, 2000), (639, 480), (640, 479)] {
+        for (w, h) in [(0, 0), (479, 1000), (100_000, 2000), (640, 479)] {
             let s = display_spec(&hello(w, h, 2));
             assert_eq!((s.pixel_width, s.pixel_height), IPAD_PIXELS, "{w}×{h}");
         }

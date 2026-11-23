@@ -103,6 +103,39 @@ import Testing
         #expect(b.removed == 1 && !keeper.isHolding)
         #expect(!keeper.keep(FakeDisplay("c"), key: "k"), "closed after closeSync")
     }
+
+    @Test func powerAssertionIsHeldOnlyWhileKeepingADisplay() async throws {
+        let power = RecordingPower()
+        let keeper = DisplayKeeper(keepFor: .milliseconds(60), power: power)
+        let a = FakeDisplay("a"), b = FakeDisplay("b"), c = FakeDisplay("c")
+
+        #expect(keeper.keep(a, key: "k"))
+        #expect(power.holding && power.begins == 1 && power.ends == 0)
+
+        // Replacing a kept display keeps power balanced (1 begin, 0 ends).
+        #expect(keeper.keep(b, key: "k"))
+        #expect(power.holding && power.begins == 1 && power.ends == 0)
+
+        // Taking it back releases the keeper's power hold.
+        #expect(await keeper.take(key: "k") === b)
+        #expect(!power.holding && power.begins == 1 && power.ends == 1)
+
+        // Letting it expire releases power automatically.
+        #expect(keeper.keep(c, key: "k"))
+        #expect(power.holding && power.begins == 2 && power.ends == 1)
+        let deadline = ContinuousClock.now + .seconds(2)
+        while power.holding, ContinuousClock.now < deadline { try await Task.sleep(for: .milliseconds(10)) }
+        #expect(!power.holding && power.begins == 2 && power.ends == 2)
+
+        // clearSync and closeSync release immediately too.
+        #expect(keeper.keep(FakeDisplay("d"), key: "k"))
+        #expect(power.holding)
+        keeper.clearSync()
+        #expect(!power.holding && power.begins == 3 && power.ends == 3)
+        #expect(keeper.keep(FakeDisplay("e"), key: "k"))
+        keeper.closeSync()
+        #expect(!power.holding && power.begins == 4 && power.ends == 4)
+    }
 }
 
 #if os(macOS)
@@ -119,8 +152,13 @@ import Testing
         #expect((duo.pointWidth, duo.pointHeight) == (1142, 802))
         #expect((duo.streamWidth, duo.streamHeight) == (2284, 1604))
         #expect(duo.serial != 1 && duo.keeperKey != spec(2.5).keeperKey, "macOS and the keeper tell it from the iPad's")
+        // Portrait display sizes (e.g. iPhone 18 Pro Max above the portrait keyboard) are supported too.
+        let portrait = spec(2).sized(pixelWidth: 1320, pixelHeight: 1584)
+        #expect((portrait.pointWidth, portrait.pointHeight) == (660, 792))
+        #expect((portrait.streamWidth, portrait.streamHeight) == (1320, 1584))
+        #expect(portrait.serial != 1 && portrait.serial != duo.serial)
         // The iPad's own size, or none that makes a display: the iPad's display, as before.
-        for (w, h) in [(2752, 2064), (0, 0), (2007, 2853), (100_000, 2000)] {
+        for (w, h) in [(2752, 2064), (0, 0), (400, 1000), (100_000, 2000)] {
             let same = spec(2).sized(pixelWidth: w, pixelHeight: h)
             #expect((same.pixelWidth, same.pixelHeight, same.serial) == (2752, 2064, 1))
         }

@@ -26,7 +26,19 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     /// Set once the session exists: the panel asks it for the host's stats while it shows, and it takes the
     /// iPad's Wi-Fi path and radio priority.
     var session: ClientSession? {
-        didSet { session?.setNetwork(path: preferences.wifiPath, radioPriority: preferences.radioPriority) }
+        didSet {
+            session?.setNetwork(path: preferences.wifiPath, radioPriority: preferences.radioPriority)
+            if allowsPortraitDisplay, currentDesiredPixels.width > 0 {
+                session?.setDesiredDisplay(pixelWidth: UInt32(currentDesiredPixels.width),
+                                           pixelHeight: UInt32(currentDesiredPixels.height),
+                                           desiredScale: preferences.activeDisplayScale)
+            }
+        }
+    }
+
+    /// The display pixels and scale matching the current orientation, for the initial `Hello`.
+    var desiredDisplay: (pixelWidth: UInt32, pixelHeight: UInt32, scale: UInt16) {
+        (UInt32(currentDesiredPixels.width), UInt32(currentDesiredPixels.height), preferences.activeDisplayScale)
     }
 
     /// The host's sound: silenced while dictation listens, so the microphone doesn't hear it.
@@ -71,6 +83,13 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     private var layout = StreamLayout()
     /// The streamed display's width, in points, that the pointer speeds were tuned at: this device's own.
     private let referenceWidth: Double
+    /// Standard iPhones request a portrait display sized to the stream area above the keyboard when upright,
+    /// and their native landscape display when sideways.
+    private let allowsPortraitDisplay: Bool
+    private let landscapePixels: (width: Int, height: Int)
+    private var currentDesiredPixels: (width: Int, height: Int)
+    /// Fallback portrait keyboard + KeyRow height (pt) used before the keyboard has settled once on this device.
+    private static let defaultPortraitKeyboardInset: CGFloat = 366
     /// A trackpad or mouse drives the pointer (and can be locked): no trackpad areas then. An iPhone has none.
     private var hasPointer: Bool { !GCMouse.mice().isEmpty && view.window?.windowScene?.pointerLockState != nil }
     /// A window too narrow for the panel's lines (a phone, a Split View half) has the settings as a sheet.
@@ -137,11 +156,15 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
     private var lastWheelTranslation = CGPoint.zero
 
     /// `nativeScale`: the device screen's pixels per point, in hundredths: the display scale until one is picked.
-    init(input: ClientInput, video: ClientVideoPipeline, referenceWidth: Double, nativeScale: UInt16) {
+    init(input: ClientInput, video: ClientVideoPipeline, referenceWidth: Double, nativeScale: UInt16,
+         landscapePixels: (width: Int, height: Int), allowsPortraitDisplay: Bool) {
         preferences = ClientPreferences.load(nativeScale: nativeScale)
         self.input = input
         self.video = video
         self.referenceWidth = referenceWidth
+        self.landscapePixels = landscapePixels
+        self.allowsPortraitDisplay = allowsPortraitDisplay
+        self.currentDesiredPixels = landscapePixels
         super.init(nibName: nil, bundle: nil)
     }
 
@@ -242,6 +265,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             }
         }
         layout = StreamLayout(shape)
+        syncDesiredDisplay(shape: shape, scale: scale)
         let stream = layout.stream
         logGeometry()
         updateInputMode()
@@ -255,6 +279,45 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
         layer.contentsScale = scale
         layer.drawableSize = CGSize(width: (stream.width * scale).rounded(), height: (stream.height * scale).rounded())
         CATransaction.commit()
+    }
+
+    /// On compact iPhones (`allowsPortraitDisplay`), asks the host for a portrait display matching the stream area
+    /// above the keyboard when upright, and the native landscape display when sideways.
+    private func syncDesiredDisplay(shape: StreamLayout.Input, scale: CGFloat) {
+        guard allowsPortraitDisplay, view.bounds.width > 0, view.bounds.height > 0,
+              settingsSheet == nil, panelView.isHidden else { return }
+        let portrait = layout.usesPortraitDisplay
+        let targetWidth: Int
+        let targetHeight: Int
+        if portrait {
+            let effectiveInset: CGFloat
+            if !shape.softKeyboard {
+                effectiveInset = shape.safeArea.bottom
+            } else if keyboardSettled, shape.keyboardInset > 0 {
+                effectiveInset = max(shape.keyboardInset, shape.safeArea.bottom)
+            } else {
+                let key = "lain.keyboardInset.\(Int(view.bounds.width))x\(Int(view.bounds.height))"
+                let known = CGFloat(UserDefaults.standard.double(forKey: key))
+                let fallback = known > 0 && known < view.bounds.height ? known : Self.defaultPortraitKeyboardInset
+                effectiveInset = max(fallback, shape.safeArea.bottom)
+            }
+            let streamHeight = max(view.bounds.height - shape.safeArea.top - effectiveInset, 1)
+            targetWidth = max(480, Int((view.bounds.width * scale).rounded()) & ~1)
+            targetHeight = max(480, Int((streamHeight * scale).rounded()) & ~1)
+        } else {
+            targetWidth = landscapePixels.width
+            targetHeight = landscapePixels.height
+        }
+        let orientationChanged = portrait != preferences.isPortraitDisplay
+        if orientationChanged { preferences.isPortraitDisplay = portrait }
+        let sizeChanged = abs(targetWidth - currentDesiredPixels.width) > 8
+            || abs(targetHeight - currentDesiredPixels.height) > 8
+        guard orientationChanged || sizeChanged else { return }
+        currentDesiredPixels = (targetWidth, targetHeight)
+        let nativeDivisor = Double(max(Int(preferences.nativeDisplayScale) / 100, 1))
+        input.setReferenceWidth(Double(targetWidth) / nativeDivisor)
+        session?.setDesiredDisplay(pixelWidth: UInt32(targetWidth), pixelHeight: UInt32(targetHeight),
+                                   desiredScale: preferences.activeDisplayScale)
     }
 
     override func viewDidAppear(_ animated: Bool) {
@@ -509,6 +572,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             self.session?.setHostStatsInterval(ms: 0)
             self.becomeFirstResponder()
             self.updateInputMode()
+            self.view.setNeedsLayout()
         }
         settingsSheet = sheet
         setTouchKeyboard(false)
@@ -548,7 +612,7 @@ final class StreamViewController: UIViewController, UIGestureRecognizerDelegate 
             input.setInvertScroll(p.reverseScroll)
             input.setTouchMode(p.touchMode)
             session?.setNetwork(path: p.wifiPath, radioPriority: p.radioPriority)
-            session?.setDesiredScale(p.displayScale)   // a new scale or mode reconnects the session to take it
+            session?.setDesiredScale(p.activeDisplayScale)   // a new scale or mode reconnects the session to take it
             session?.setDesiredDisplayMode(p.wireDisplayMode)
         }
         renderPanel()

@@ -24,12 +24,12 @@ public final class VirtualDisplay: @unchecked Sendable {
         public var serial: UInt32 = 1
         public init() {}
 
-        /// The display a client asks for (its `Hello`: pixels, long side first). The 13-inch iPad Pro's own is
-        /// the default spec, untouched; another client (an iPhone Duo, which asks for its inner display)
-        /// gets a display of that shape, with a serial number of its own so that macOS
-        /// arranges it separately. A size that makes no display (nothing, or absurd) falls back to the iPad's.
+        /// The display a client asks for (its `Hello`: pixels). The 13-inch iPad Pro's own is the default spec,
+        /// untouched; another client (an iPhone Duo, or an iPhone 18 Pro Max in landscape or portrait) gets a
+        /// display of that shape, with a serial number of its own so that macOS arranges it separately. A size
+        /// that makes no display (nothing, or absurd) falls back to the iPad's.
         public func sized(pixelWidth w: Int, pixelHeight h: Int) -> Spec {
-            guard (w, h) != (pixelWidth, pixelHeight), (640...4096).contains(w), (480...4096).contains(h), w >= h else { return self }
+            guard (w, h) != (pixelWidth, pixelHeight), (480...4096).contains(w), (480...4096).contains(h) else { return self }
             var s = self
             s.pixelWidth = w
             s.pixelHeight = h

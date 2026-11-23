@@ -16,18 +16,29 @@ public enum LainTXT {
     public static let hostIdKey = "id"
     /// `bench=1` marks `--bench wifi` (for logs).
     public static let benchKey = "bench"
+    /// Comma-separated lowercase hex hardware MAC addresses (`"aabbccddeeff"`), for Wake-on-LAN.
+    public static let macsKey = "mac"
 
     /// `versions` nil: `VersionList.offered`'s.
-    public static func dictionary(hostId: String, versions: [UInt8]? = nil, bench: Bool = false) -> [String: String] {
+    public static func dictionary(hostId: String, versions: [UInt8]? = nil, bench: Bool = false, macs: [String] = []) -> [String: String] {
         let versions = versions ?? VersionList.offered.versions
         var txt = [versionKey: String(versions.max() ?? 0), versionsKey: versions.map(String.init).joined(separator: ","),
                    hostIdKey: hostId]
         if bench { txt[benchKey] = "1" }
+        let normalized = macs.compactMap(WakeOnLAN.normalizeMAC)
+        if !normalized.isEmpty { txt[macsKey] = normalized.joined(separator: ",") }
         return txt
     }
 
-    public static func record(hostId: String, versions: [UInt8]? = nil, bench: Bool = false) -> NWTXTRecord {
-        NWTXTRecord(dictionary(hostId: hostId, versions: versions, bench: bench))
+    public static func record(hostId: String, versions: [UInt8]? = nil, bench: Bool = false, macs: [String] = []) -> NWTXTRecord {
+        NWTXTRecord(dictionary(hostId: hostId, versions: versions, bench: bench, macs: macs))
+    }
+
+    /// Validated Wake-on-LAN MAC addresses advertised in `txt` (12-char lowercase hex); empty if absent.
+    public static func macs(in txt: [String: String]) -> [String] {
+        guard let raw = txt[macsKey], !raw.isEmpty else { return [] }
+        var seen: Set<String> = []
+        return raw.split(separator: ",").compactMap { WakeOnLAN.normalizeMAC(String($0)) }.filter { seen.insert($0).inserted }
     }
 
     /// The versions a TXT record advertises: `vs`, or a legacy host's single `v`; empty if neither parses.
@@ -54,6 +65,8 @@ public struct DiscoveredHost: Sendable, Hashable, CustomStringConvertible {
     /// The interfaces it was seen on (e.g. en0 and awdl0).
     public var interfaceNames: [String]
     public var isBench: Bool
+    /// Hardware MAC addresses advertised in Bonjour TXT (`mac`), for Wake-on-LAN when the host sleeps.
+    public var macs: [String]
     /// The peer-to-peer interface it was seen on (awdl0, llw0), if any: what a Direct dial requires.
     public var peerToPeerInterface: NWInterface?
 
@@ -61,13 +74,14 @@ public struct DiscoveredHost: Sendable, Hashable, CustomStringConvertible {
     public var isOnNetwork: Bool { interfaceNames.contains { !NetworkPath.isPeerToPeer($0) } || interfaceNames.isEmpty }
 
     public init(hostId: String, name: String, versions: [UInt8], endpoint: NWEndpoint,
-                interfaceNames: [String] = [], isBench: Bool = false) {
+                interfaceNames: [String] = [], isBench: Bool = false, macs: [String] = []) {
         self.hostId = hostId
         self.name = name
         self.versions = versions
         self.endpoint = endpoint
         self.interfaceNames = interfaceNames
         self.isBench = isBench
+        self.macs = macs
     }
 
     /// Maps one browse result: a pure function of the endpoint, the TXT record and the interface
@@ -77,7 +91,8 @@ public struct DiscoveredHost: Sendable, Hashable, CustomStringConvertible {
         let name: String
         if case .service(let serviceName, _, _, _) = endpoint { name = serviceName } else { name = endpoint.debugDescription }
         self.init(hostId: hostId, name: name, versions: LainTXT.versions(in: txt),
-                  endpoint: endpoint, interfaceNames: interfaceNames, isBench: txt[LainTXT.benchKey] == "1")
+                  endpoint: endpoint, interfaceNames: interfaceNames, isBench: txt[LainTXT.benchKey] == "1",
+                  macs: LainTXT.macs(in: txt))
     }
 
     /// Whether it advertises a version this side also offers (`offered` nil: `VersionList.offered`).

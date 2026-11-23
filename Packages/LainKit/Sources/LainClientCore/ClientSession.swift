@@ -170,6 +170,15 @@ public final class ClientSession: Sendable {
         core.queue.async { [core] in core.setDesiredScale(scale) }
     }
 
+    /// Updates the display pixel dimensions and scale asked of the host (e.g. rotating an iPhone between
+    /// portrait and landscape displays): reconnects the current link to apply it unless mirroring the host's
+    /// own native display (`captureExisting`).
+    public func setDesiredDisplay(pixelWidth: UInt32, pixelHeight: UInt32, desiredScale: UInt16) {
+        core.queue.async { [core] in
+            core.setDesiredDisplay(pixelWidth: pixelWidth, pixelHeight: pixelHeight, desiredScale: desiredScale)
+        }
+    }
+
     /// The display mode to ask the host for (v8 `Hello.desiredDisplayMode`: extend, mirror onto this device's
     /// display, or mirror the computer's native display): reconnects the current link to apply it.
     public func setDesiredDisplayMode(_ mode: DisplayMode) {
@@ -610,6 +619,16 @@ final class SessionCore: @unchecked Sendable {
         reconnectForDisplayChange()
     }
 
+    func setDesiredDisplay(pixelWidth: UInt32, pixelHeight: UInt32, desiredScale: UInt16) {
+        guard hello.pixelWidth != pixelWidth || hello.pixelHeight != pixelHeight || hello.desiredScale != desiredScale else { return }
+        hello.pixelWidth = pixelWidth
+        hello.pixelHeight = pixelHeight
+        hello.desiredScale = desiredScale
+        guard hello.desiredDisplayMode != .captureExisting else { return }
+        log.notice("display \(pixelWidth)×\(pixelHeight) @ \(desiredScale): reconnecting to take it")
+        reconnectForDisplayChange()
+    }
+
     func setDesiredDisplayMode(_ mode: DisplayMode) {
         guard hello.desiredDisplayMode != mode else { return }
         hello.desiredDisplayMode = mode
@@ -655,6 +674,7 @@ final class SessionCore: @unchecked Sendable {
         guard let w = wifi else { return }
         w.graceUntil = 0
         w.backoffUntil = 0
+        resetWakeOnLAN(now: MonotonicClock.now())
         evaluateWiFi()
         publish()
     }

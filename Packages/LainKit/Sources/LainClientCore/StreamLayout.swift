@@ -67,6 +67,9 @@ public struct StreamLayout: Sendable, Equatable {
     }
 
     public var isPortrait = false
+    /// Compact upright phone layout: requests a portrait host display filling the area above the keyboard,
+    /// with bottom-edge thumb pads overlaid on the stream instead of a separate band.
+    public var usesPortraitDisplay = false
     public var isRemote = false
     /// The remote beside another app, the keyboard down: its own row of keys, and a view that fills the stream.
     public var isShared = false
@@ -159,6 +162,8 @@ public struct StreamLayout: Sendable, Equatable {
         transcriptCenterX = w / 2
         if isPortrait, i.isCompact, i.sharesScreen || Self.strip(i, bottom: bottom) != nil {
             remote(i, bottom: bottom)
+        } else if isPortrait, i.isCompact {
+            compactPortrait(i, bottom: bottom)
         } else if isPortrait {
             portrait(i, bottom: bottom)
         } else {
@@ -291,6 +296,31 @@ public struct StreamLayout: Sendable, Equatable {
         fillsStream = true
         transcriptCenterX = frame.midX
         return true
+    }
+
+    /// Standard iPhone upright (compact width, not shared, no Duo side strip): the host is asked for a portrait
+    /// display matching all of the screen between the Dynamic Island (`safeArea.top`) and the keyboard (`bottom`),
+    /// with no touchpad band — instead, two thumb pads sit along the stream's bottom corners, as in landscape.
+    private mutating func compactPortrait(_ i: Input, bottom: CGFloat) {
+        let w = i.size.width
+        usesPortraitDisplay = true
+        keyboardIsAutomatic = i.softKeyboard
+        let topInset = i.safeArea.top
+        stream = CGRect(x: 0, y: topInset, width: w, height: max(bottom - topInset, 1))
+        if i.softKeyboard, i.keyboardInset == 0 {
+            // Disconnected (keyboard not up yet): keep Settings and Dictate reachable via the edge button.
+            edgeButton = CGPoint(x: w - 34, y: stream.midY)
+        }
+        if i.touchPointer {
+            let inset: CGFloat = 10, lift: CGFloat = 10
+            let padWidth = min(116, max(72, ((w - 2 * inset - 80) / 2).rounded(.down)))
+            let padHeight = min(88, max(56, (stream.height * 0.2).rounded(.down)))
+            let y = max(stream.minY, stream.maxY - lift - padHeight)
+            cornerPads = [
+                CGRect(x: inset, y: y, width: padWidth, height: padHeight),
+                CGRect(x: w - inset - padWidth, y: y, width: padWidth, height: padHeight),
+            ]
+        }
     }
 
     private mutating func portrait(_ i: Input, bottom: CGFloat) {

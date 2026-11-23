@@ -90,7 +90,8 @@ final class HostWiFiListener: Sendable {
         self.onAccept = onAccept
         if config.advertise, let identity {
             advertisement = NetworkStreamListener.Advertisement(type: LainProtocol.bonjourServiceType,
-                                                                txt: LainTXT.dictionary(hostId: identity.id))
+                                                                txt: LainTXT.dictionary(hostId: identity.id,
+                                                                                        macs: WakeOnLAN.localMACs()))
         } else {
             if config.advertise { Telemetry.logger("wifi").error("Wi-Fi: no host id to advertise; listening unadvertised") }
             advertisement = nil
