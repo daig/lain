@@ -31,6 +31,8 @@ enum Action {
     Scale(Option<f64>),
     KeepAlive(u32),
     Resume,
+    RestoreHostDisplay,
+    ResumeConnections,
     ResumeAfterStop(bool),
     Sound(bool),
 }
@@ -64,6 +66,10 @@ struct LainTray {
     keep_alive: u32,
     /// Video was stopped on the desktop (GNOME's sharing indicator).
     stopped: bool,
+    /// Whether "Return to Host Display" should be offered (connected, kept display, or hidden host displays).
+    can_restore_host_display: bool,
+    /// Whether connections are paused after "Return to Host Display".
+    is_paused: bool,
     resume_after_stop: bool,
     sound: bool,
     actions: mpsc::UnboundedSender<Action>,
@@ -108,6 +114,30 @@ impl ksni::Tray for LainTray {
                     label: "Resume video".into(),
                     activate: Box::new(|t: &mut Self| {
                         let _ = t.actions.send(Action::Resume);
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+        if self.can_restore_host_display {
+            items.push(
+                StandardItem {
+                    label: "Return to Host Display".into(),
+                    activate: Box::new(|t: &mut Self| {
+                        let _ = t.actions.send(Action::RestoreHostDisplay);
+                    }),
+                    ..Default::default()
+                }
+                .into(),
+            );
+        }
+        if self.is_paused {
+            items.push(
+                StandardItem {
+                    label: "Resume Accepting Connections".into(),
+                    activate: Box::new(|t: &mut Self| {
+                        let _ = t.actions.send(Action::ResumeConnections);
                     }),
                     ..Default::default()
                 }
@@ -233,6 +263,8 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
         scale_options: FALLBACK_SCALES.to_vec(),
         keep_alive: 0,
         stopped: false,
+        can_restore_host_display: false,
+        is_paused: false,
         resume_after_stop: false,
         sound: true,
         actions,
@@ -258,6 +290,7 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
             (control.scale_setting(), control.scale_options(), control.keep_alive_seconds());
         let (stopped, resume_after_stop) =
             (control.video_problem() == "capture stopped on the desktop", control.resume_after_stop());
+        let (can_restore, is_paused) = (control.can_restore_host_display(), control.is_paused());
         let sound = control.sound();
         handle
             .update(|t| {
@@ -273,6 +306,8 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
                 }
                 t.keep_alive = keep_alive;
                 t.stopped = stopped;
+                t.can_restore_host_display = can_restore;
+                t.is_paused = is_paused;
                 t.resume_after_stop = resume_after_stop;
                 t.sound = sound;
             })
@@ -297,6 +332,14 @@ pub async fn run(control: Arc<dyn Control>, autostart: Autostart, program: PathB
                 Action::Resume => {
                     info!("tray: resume video");
                     control.resume_video();
+                }
+                Action::RestoreHostDisplay => {
+                    info!("tray: Return to Host Display");
+                    control.restore_host_display().await;
+                }
+                Action::ResumeConnections => {
+                    info!("tray: Resume Accepting Connections");
+                    control.resume_connections();
                 }
                 Action::ResumeAfterStop(on) => {
                     if let Err(e) = set_resume_after_stop_persisted(&*control, Some(&config), on) {

@@ -55,6 +55,7 @@ fn build() -> Vec<Message> {
             decode_capabilities: DecodeCapabilities::HEVC_MAIN | DecodeCapabilities::HEVC_MAIN_444_10_HARDWARE,
             keyboard_type: KeyboardType::Iso,
             desired_scale: 175,
+            desired_display_mode: DisplayMode::Primary,
         }),
         Message::HelloAck(HelloAck {
             codec: VideoCodec::Hevc,

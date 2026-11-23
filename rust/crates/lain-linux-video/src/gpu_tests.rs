@@ -29,7 +29,11 @@ const W: u32 = 2752;
 const H: u32 = 2064;
 
 fn settings(width: u32, height: u32) -> GpuSettings {
-    GpuSettings { encoder: EncoderSettings { width, height, fps: 120, bitrate: 60_000_000 }, modifier: MUTTER_MODIFIER }
+    GpuSettings {
+        encoder: EncoderSettings { width, height, fps: 120, bitrate: 60_000_000 },
+        source_size: (width, height),
+        modifier: MUTTER_MODIFIER,
+    }
 }
 
 fn pipeline(width: u32, height: u32) -> GpuPipeline {

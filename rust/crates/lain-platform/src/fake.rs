@@ -11,9 +11,10 @@ use tokio::sync::{mpsc, watch};
 
 use crate::{
     AUDIO_QUEUE_CHUNKS, Advertiser, AudioBackend, AudioChunk, AudioFormat, Chroma, Clock, ColorTags, CursorImage,
-    CursorSource, DisplayBackend, DisplaySpec, EncodeConfig, EncodeRequest, EncodedFrame, InputAction, InputBackend,
-    InputSettings, Monitor, Platform, PlatformError, PointF, PowerBackend, RectF, Result, SecretStore, ServiceAd,
-    SettingsSource, SetupReport, SetupSource, StreamInfo, StreamedDisplay, VideoBackend, VideoEvent, VideoSession,
+    CursorSource, DisplayBackend, DisplayMode, DisplaySpec, EncodeConfig, EncodeRequest, EncodedFrame, InputAction,
+    InputBackend, InputSettings, Monitor, Platform, PlatformError, PointF, PowerBackend, RectF, Result, SecretStore,
+    ServiceAd, SettingsSource, SetupReport, SetupSource, StreamInfo, StreamedDisplay, VideoBackend, VideoEvent,
+    VideoSession, capped_capture_size,
 };
 
 /// A poisoned fake is still inspectable: a failed assertion elsewhere shouldn't hide the state.
@@ -65,13 +66,16 @@ pub struct FakeSource {
 #[derive(Debug)]
 struct DisplayState {
     physical: Vec<Monitor>,
-    created: Option<(StreamedDisplay, Monitor)>,
+    /// True while `DisplayMode::Primary` has hidden physical monitors.
+    physical_hidden: bool,
+    created: Option<(StreamedDisplay, Option<Monitor>)>,
     /// The spec the live display was made for.
     spec: Option<DisplaySpec>,
     next_id: u32,
     fail_next_create: Option<PlatformError>,
     creates: usize,
     destroys: usize,
+    restores: usize,
     cursor: Option<PointF>,
 }
 
@@ -101,12 +105,14 @@ impl FakeDisplay {
         Self(Arc::new(DisplayShared {
             state: Mutex::new(DisplayState {
                 physical,
+                physical_hidden: false,
                 created: None,
                 spec: None,
                 next_id: 100,
                 fail_next_create: None,
                 creates: 0,
                 destroys: 0,
+                restores: 0,
                 cursor: None,
             }),
             monitors,
@@ -114,8 +120,8 @@ impl FakeDisplay {
     }
 
     fn publish(&self, state: &DisplayState) {
-        let mut all = state.physical.clone();
-        if let Some((_, monitor)) = &state.created {
+        let mut all = if state.physical_hidden { Vec::new() } else { state.physical.clone() };
+        if let Some((_, Some(monitor))) = &state.created {
             all.push(monitor.clone());
         }
         self.0.monitors.send_replace(all);
@@ -131,7 +137,7 @@ impl FakeDisplay {
     /// Moves lain's display, as the owner might in the display settings.
     pub fn move_lain(&self, origin: PointF) {
         let mut s = lock(&self.0.state);
-        if let Some((_, monitor)) = s.created.as_mut() {
+        if let Some((_, Some(monitor))) = s.created.as_mut() {
             monitor.bounds.x = origin.x;
             monitor.bounds.y = origin.y;
         }
@@ -159,6 +165,10 @@ impl FakeDisplay {
     pub fn destroy_count(&self) -> usize {
         lock(&self.0.state).destroys
     }
+
+    pub fn restore_count(&self) -> usize {
+        lock(&self.0.state).restores
+    }
 }
 
 impl Default for FakeDisplay {
@@ -179,18 +189,47 @@ impl DisplayBackend for FakeDisplay {
         if s.created.is_some() {
             return Err(PlatformError::Failed("a display already exists".into()));
         }
+        if spec.mode == DisplayMode::CaptureExisting {
+            s.physical_hidden = false;
+            if let Some(target) = s.physical.iter().find(|m| m.primary).or_else(|| s.physical.first()).cloned() {
+                let raw_w = target.bounds.width.round().max(2.0) as u32;
+                let raw_h = target.bounds.height.round().max(2.0) as u32;
+                let (pixel_width, pixel_height) = capped_capture_size(raw_w, raw_h);
+                let display = StreamedDisplay {
+                    id: target.id,
+                    pixel_width,
+                    pixel_height,
+                    refresh_hz: 60,
+                    mode: DisplayMode::CaptureExisting,
+                };
+                s.created = Some((display, None));
+                s.spec = Some(spec);
+                self.publish(&s);
+                return Ok((display, FakeSource { display_id: target.id }));
+            }
+            // Headless: fall back to virtual display in Extend mode.
+        }
+        let applied_mode = if spec.mode == DisplayMode::CaptureExisting { DisplayMode::Extend } else { spec.mode };
         let id = s.next_id;
         s.next_id += 1;
-        let x = s.physical.iter().map(|m| m.bounds.max_x()).fold(0.0, f64::max);
+        let hide_physical = applied_mode == DisplayMode::Primary && !s.physical.is_empty();
+        s.physical_hidden = hide_physical;
+        let x = if hide_physical { 0.0 } else { s.physical.iter().map(|m| m.bounds.max_x()).fold(0.0, f64::max) };
         let (width, height) = spec.logical_size();
         let display = StreamedDisplay {
             id,
             pixel_width: spec.pixel_width,
             pixel_height: spec.pixel_height,
             refresh_hz: spec.refresh_hz,
+            mode: applied_mode,
         };
-        let monitor = Monitor { id, bounds: RectF::new(x, 0.0, width, height), primary: false, lain: true };
-        s.created = Some((display, monitor));
+        let monitor = Monitor {
+            id,
+            bounds: RectF::new(x, 0.0, width, height),
+            primary: hide_physical || s.physical.is_empty(),
+            lain: true,
+        };
+        s.created = Some((display, Some(monitor)));
         s.spec = Some(spec);
         self.publish(&s);
         Ok((display, FakeSource { display_id: id }))
@@ -198,7 +237,9 @@ impl DisplayBackend for FakeDisplay {
 
     async fn destroy(&self) {
         let mut s = lock(&self.0.state);
-        if s.created.take().is_some() {
+        let had_created = s.created.take().is_some();
+        let had_hidden = std::mem::take(&mut s.physical_hidden);
+        if had_created || had_hidden {
             s.spec = None;
             s.destroys += 1;
             self.publish(&s);
@@ -213,11 +254,29 @@ impl DisplayBackend for FakeDisplay {
         lock(&self.0.state).cursor
     }
 
-    /// The live display's scale: the client's choice, else the spec's own.
+    /// The live display's scale: the physical monitor's scale for `CaptureExisting`, else the client's choice or
+    /// the spec's own.
     fn applied_scale(&self) -> Option<f64> {
-        lock(&self.0.state)
-            .spec
-            .map(|s| if s.desired_scale > 0 { f64::from(s.desired_scale) / 100.0 } else { f64::from(s.scale.max(1)) })
+        let s = lock(&self.0.state);
+        if let Some((display, None)) = &s.created {
+            let phys = s.physical.iter().find(|m| m.id == display.id)?;
+            return (phys.bounds.width > 0.0).then(|| f64::from(display.pixel_width) / phys.bounds.width);
+        }
+        s.spec.map(|spec| {
+            if spec.desired_scale > 0 { f64::from(spec.desired_scale) / 100.0 } else { f64::from(spec.scale.max(1)) }
+        })
+    }
+
+    async fn restore_host_displays(&self) {
+        let mut s = lock(&self.0.state);
+        s.restores += 1;
+        if std::mem::take(&mut s.physical_hidden) {
+            self.publish(&s);
+        }
+    }
+
+    fn has_hidden_host_displays(&self) -> bool {
+        lock(&self.0.state).physical_hidden
     }
 }
 
@@ -931,8 +990,14 @@ impl Platform for FakePlatform {
 mod tests {
     use super::*;
 
-    const SPEC: DisplaySpec =
-        DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, desired_scale: 0, refresh_hz: 120 };
+    const SPEC: DisplaySpec = DisplaySpec {
+        pixel_width: 2752,
+        pixel_height: 2064,
+        scale: 2,
+        desired_scale: 0,
+        refresh_hz: 120,
+        mode: DisplayMode::Extend,
+    };
     const CONFIG: EncodeConfig = EncodeConfig {
         width: 2752,
         height: 2064,

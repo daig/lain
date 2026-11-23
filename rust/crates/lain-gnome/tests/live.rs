@@ -27,12 +27,20 @@ use lain_gnome::display_config::{RawState, parse_state};
 use lain_gnome::monitors::{self, DesktopHandle};
 use lain_gnome::negotiate::{self, Negotiation};
 use lain_gnome::{Barrier, CursorState, GnomeDisplay, GnomeInput, GnomePower, StreamGeometry, settings};
-use lain_platform::{DisplayBackend, DisplaySpec, InputAction, InputBackend, Monitor, PointF, PowerBackend};
+use lain_platform::{
+    DisplayBackend, DisplayMode, DisplaySpec, InputAction, InputBackend, Monitor, PointF, PowerBackend,
+};
 use zbus::Connection;
 use zbus::zvariant::OwnedObjectPath;
 
-const IPAD: DisplaySpec =
-    DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, desired_scale: 0, refresh_hz: 120 };
+const IPAD: DisplaySpec = DisplaySpec {
+    pixel_width: 2752,
+    pixel_height: 2064,
+    scale: 2,
+    desired_scale: 0,
+    refresh_hz: 120,
+    mode: DisplayMode::Extend,
+};
 
 async fn conn() -> Connection {
     Connection::session().await.expect("the session bus")

@@ -58,8 +58,8 @@ impl Default for PipelineOptions {
 /// Intended difference from Swift (decision L3): always HEVC Main 4:2:0 8-bit, whatever the client decodes;
 /// the Mac host asks for 4:4:4 10-bit when the client hardware-decodes it.
 pub fn encode_config(display: &StreamedDisplay, max_refresh_rate: u16, options: &PipelineOptions) -> EncodeConfig {
-    let frame_rate =
-        if max_refresh_rate > 0 { options.frame_rate.min(u32::from(max_refresh_rate)) } else { options.frame_rate };
+    let host_cap = if display.refresh_hz > 0 { options.frame_rate.min(display.refresh_hz) } else { options.frame_rate };
+    let frame_rate = if max_refresh_rate > 0 { host_cap.min(u32::from(max_refresh_rate)) } else { host_cap };
     EncodeConfig {
         width: display.pixel_width,
         height: display.pixel_height,

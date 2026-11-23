@@ -7,6 +7,39 @@ use tokio::sync::watch;
 
 use crate::{PointF, RectF, Result};
 
+/// How the host places the streamed display (v8 `Hello.desiredDisplayMode` / `HelloAck.displayMode`).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum DisplayMode {
+    /// Virtual display alongside any physical monitors.
+    #[default]
+    Extend,
+    /// Virtual display at the client's size/scale taking over from physical monitors (Swift: mirroring physical
+    /// displays onto lain's virtual display; GNOME: temporarily disabling physical monitors until teardown).
+    Primary,
+    /// Stream the host's own configured primary physical display as-is (falls back to `Extend` when headless).
+    CaptureExisting,
+}
+
+/// The maximum pixel dimension on the long side when capturing an existing physical display (Swift:
+/// `VirtualDisplay.Spec.maxBackingPixels`). Monitors at or below this stream 1:1; larger monitors (e.g.
+/// dual-4K ultrawides or 5K displays) are downscaled proportionally with even sides.
+pub const MAX_CAPTURE_SIDE: u32 = 3840;
+
+/// Caps a physical display's pixel dimensions to [`MAX_CAPTURE_SIDE`] on the long side, preserving aspect ratio
+/// with even sides (Swift: `VirtualDisplay.cappedCaptureSize`).
+pub fn capped_capture_size(pixel_width: u32, pixel_height: u32) -> (u32, u32) {
+    let max_side = pixel_width.max(pixel_height);
+    if max_side == 0 {
+        return (2, 2);
+    }
+    if max_side <= MAX_CAPTURE_SIDE {
+        return ((pixel_width & !1).max(2), (pixel_height & !1).max(2));
+    }
+    let ratio = f64::from(MAX_CAPTURE_SIDE) / f64::from(max_side);
+    let even = |v: f64| ((v.round() as u32) & !1).max(2);
+    (even(f64::from(pixel_width) * ratio), even(f64::from(pixel_height) * ratio))
+}
+
 /// The mode of the display lain creates for the iPad. The Mac host uses a fixed spec (the 13" iPad Pro's
 /// 2752×2064 px at 2× and 120 Hz, `VirtualDisplay.Spec`); the core here derives it from the client's
 /// `Hello`.
@@ -22,6 +55,9 @@ pub struct DisplaySpec {
     /// applies. Part of the spec, so a display kept for one scale isn't reused for another.
     pub desired_scale: u16,
     pub refresh_hz: u32,
+    /// How the display is placed on the host (v8 `Hello.desiredDisplayMode`). Part of the spec, so a display
+    /// kept for one mode isn't reused for another.
+    pub mode: DisplayMode,
 }
 
 impl DisplaySpec {
@@ -48,16 +84,18 @@ pub struct Monitor {
     pub lain: bool,
 }
 
-/// The display lain created (Swift: `StreamedDisplay`). Its current bounds are its entry in
+/// The display lain streams (Swift: `StreamedDisplay`). Its current bounds are its entry in
 /// [`DisplayBackend::monitors`]: the owner may move it at any time.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StreamedDisplay {
     /// Its [`Monitor::id`].
     pub id: u32,
-    /// The capture and encode size: the display's mode in device pixels.
+    /// The encode size in pixels (the display's mode, or capped by [`capped_capture_size`] for `CaptureExisting`).
     pub pixel_width: u32,
     pub pixel_height: u32,
     pub refresh_hz: u32,
+    /// How this display is placed on the host (v8 `HelloAck.displayMode`).
+    pub mode: DisplayMode,
 }
 
 /// Creates and removes the iPad's display, and reports the desktop around it.
@@ -95,6 +133,18 @@ pub trait DisplayBackend: Send + Sync + 'static {
     fn applied_scale(&self) -> Option<f64> {
         None
     }
+
+    /// Restores any physical host displays hidden or mirrored by lain (Swift: `VirtualDisplay.restoreHostDisplays`).
+    /// Idempotent; safe on quit or emergency "Return to Host Display".
+    fn restore_host_displays(&self) -> impl Future<Output = ()> + Send {
+        async {}
+    }
+
+    /// True if physical host displays are currently hidden or mirrored for lain (Swift:
+    /// `VirtualDisplay.hasMirroredHostDisplay`).
+    fn has_hidden_host_displays(&self) -> bool {
+        false
+    }
 }
 
 #[cfg(test)]
@@ -103,11 +153,29 @@ mod tests {
 
     #[test]
     fn logical_size() {
-        let spec = DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, desired_scale: 0, refresh_hz: 120 };
+        let spec = DisplaySpec {
+            pixel_width: 2752,
+            pixel_height: 2064,
+            scale: 2,
+            desired_scale: 0,
+            refresh_hz: 120,
+            mode: DisplayMode::Extend,
+        };
         assert_eq!(spec.logical_size(), (1376.0, 1032.0));
         let unscaled = DisplaySpec { scale: 0, ..spec };
         assert_eq!(unscaled.logical_size(), (2752.0, 2064.0));
         let chosen = DisplaySpec { pixel_width: 2850, pixel_height: 2004, desired_scale: 300, ..spec };
         assert_eq!(chosen.logical_size(), (950.0, 668.0));
+    }
+
+    #[test]
+    fn capped_capture_size_scales_above_max_with_even_sides() {
+        assert_eq!(capped_capture_size(3840, 2160), (3840, 2160));
+        assert_eq!(capped_capture_size(2560, 1440), (2560, 1440));
+        assert_eq!(capped_capture_size(1921, 1081), (1920, 1080));
+        assert_eq!(capped_capture_size(7680, 2160), (3840, 1080));
+        assert_eq!(capped_capture_size(5120, 2880), (3840, 2160));
+        assert_eq!(capped_capture_size(2160, 5120), (1620, 3840));
+        assert_eq!(capped_capture_size(0, 0), (2, 2));
     }
 }

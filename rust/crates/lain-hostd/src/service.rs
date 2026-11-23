@@ -51,6 +51,20 @@ pub trait Control: Send + Sync + 'static {
     /// The computer's sound on the iPad (v6).
     fn sound(&self) -> bool;
     fn set_sound(&self, on: bool);
+    /// True while connections are paused after "Return to Host Display".
+    fn is_paused(&self) -> bool {
+        false
+    }
+    /// True if "Return to Host Display" should be offered (connected, kept display, or hidden host displays).
+    fn can_restore_host_display(&self) -> bool {
+        false
+    }
+    /// Restores the host's physical display(s), clears any kept display, and pauses incoming connections.
+    fn restore_host_display(&self) -> BoxFuture<'_, ()> {
+        Box::pin(async {})
+    }
+    /// Resumes accepting incoming connections after `restore_host_display`.
+    fn resume_connections(&self) {}
     /// The scale setting (`None`: the iPad's own). Platforms without one say `None` and ignore changes.
     fn scale_setting(&self) -> Option<f64> {
         None
@@ -114,6 +128,18 @@ where
     }
     fn set_sound(&self, on: bool) {
         DaemonHandle::set_sound(self, on)
+    }
+    fn is_paused(&self) -> bool {
+        DaemonHandle::is_paused(self)
+    }
+    fn can_restore_host_display(&self) -> bool {
+        DaemonHandle::can_restore_host_display(self)
+    }
+    fn restore_host_display(&self) -> BoxFuture<'_, ()> {
+        Box::pin(DaemonHandle::restore_host_display(self))
+    }
+    fn resume_connections(&self) {
+        DaemonHandle::resume_connections(self)
     }
 }
 
@@ -328,6 +354,34 @@ impl HostService {
     async fn refresh_setup(&self) {
         self.control.refresh_setup().await;
     }
+
+    /// True while incoming connections are paused after "Return to Host Display".
+    #[zbus(property)]
+    fn is_paused(&self) -> bool {
+        self.control.is_paused()
+    }
+
+    /// True if "Return to Host Display" can be invoked (connected, kept display, or hidden host displays).
+    #[zbus(property)]
+    fn can_restore_host_display(&self) -> bool {
+        self.control.can_restore_host_display()
+    }
+
+    /// Immediately restores this computer's display configuration and pauses incoming connections.
+    async fn restore_host_display(&self, #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>) {
+        info!("Return to Host Display called over D-Bus");
+        self.control.restore_host_display().await;
+        let _ = self.is_paused_changed(&emitter).await;
+        let _ = self.can_restore_host_display_changed(&emitter).await;
+    }
+
+    /// Resumes dialing USB devices and accepting Wi-Fi sessions after `RestoreHostDisplay`.
+    async fn resume_connections(&self, #[zbus(signal_emitter)] emitter: zbus::object_server::SignalEmitter<'_>) {
+        info!("Resume Accepting Connections called over D-Bus");
+        self.control.resume_connections();
+        let _ = self.is_paused_changed(&emitter).await;
+        let _ = self.can_restore_host_display_changed(&emitter).await;
+    }
 }
 
 /// Serves the interface on `conn` (which owns [`crate::BUS_NAME`]) until the connection closes, with change
@@ -342,6 +396,7 @@ pub async fn serve(conn: &zbus::Connection, control: Arc<dyn Control>, config: O
         let mut tick = tokio::time::interval(Duration::from_secs(2));
         let mut last = (Vec::new(), String::new(), String::new());
         let mut last_scale = (None, Vec::new());
+        let mut last_restore = (control.is_paused(), control.can_restore_host_display());
         loop {
             #[derive(PartialEq)]
             enum Changed {
@@ -362,6 +417,12 @@ pub async fn serve(conn: &zbus::Connection, control: Arc<dyn Control>, config: O
             match changed {
                 Changed::Status => {
                     let _ = service.status_changed(emitter).await;
+                    let restore = (control.is_paused(), control.can_restore_host_display());
+                    if restore != last_restore {
+                        let _ = service.is_paused_changed(emitter).await;
+                        let _ = service.can_restore_host_display_changed(emitter).await;
+                        last_restore = restore;
+                    }
                 }
                 Changed::Wifi => {
                     let _ = service.wifi_status_changed(emitter).await;
@@ -372,6 +433,12 @@ pub async fn serve(conn: &zbus::Connection, control: Arc<dyn Control>, config: O
                 Changed::Tick => {
                     let now = (control.video_lines(), control.video_problem(), control.peer_version_note());
                     let scale = (control.applied_scale(), control.scale_options());
+                    let restore = (control.is_paused(), control.can_restore_host_display());
+                    if restore != last_restore {
+                        let _ = service.is_paused_changed(emitter).await;
+                        let _ = service.can_restore_host_display_changed(emitter).await;
+                        last_restore = restore;
+                    }
                     if scale != last_scale {
                         let _ = service.applied_scale_changed(emitter).await;
                         let _ = service.scale_options_changed(emitter).await;

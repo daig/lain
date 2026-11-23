@@ -111,11 +111,15 @@ fn every_sample_encodes_to_its_golden_bytes_at_every_version() {
             let want = golden.bytes.get(&v).and_then(|m| m.get(key)).unwrap_or_else(|| panic!("no golden v{v} {key}"));
             let got = MessageCodec::encode(message, 0, 0, None, Some(v));
             assert_eq!(hex::encode(&got), hex::encode(want), "v{v} {key} doesn't encode as recorded");
-            // Exact, or with only advisory fields of a newer version dropped (v7's scale fields below v7).
+            // Exact, or with only advisory fields of a newer version dropped (v7's scale fields below v7,
+            // v8's desiredDisplayMode below v8).
             match MessageCodec::lower(message, v, 0, 0, None) {
                 Lowered::Exact(_) => {}
                 Lowered::Projected { dropped, .. } => assert!(
-                    dropped.iter().all(|f| ["desiredScale", "displayScale", "displayScales"].contains(f)) && v < 7,
+                    dropped.iter().all(|f| {
+                        (["desiredScale", "displayScale", "displayScales"].contains(f) && v < 7)
+                            || (*f == "desiredDisplayMode" && v < 8)
+                    }),
                     "v{v} {key} dropped {dropped:?}"
                 ),
                 Lowered::Unrepresentable(why) => panic!("v{v} {key}: {why}"),
@@ -157,6 +161,9 @@ fn digests_are_computed_from_this_codec_and_equal_the_pinned_ones() {
     // The values the spec records (LINUX-HOST.md), in case the file and the codec ever drift together.
     assert_eq!(hex::encode(SchemaDigest::compute(4)), "50b787cf3ef02169");
     assert_eq!(hex::encode(SchemaDigest::compute(5)), "af02268a861c6df9");
+    assert_eq!(hex::encode(SchemaDigest::compute(6)), "2096e8fbf9e6d117");
+    assert_eq!(hex::encode(SchemaDigest::compute(7)), "3c196219dd2b9934");
+    assert_eq!(hex::encode(SchemaDigest::compute(8)), "14189eeedb236cc0");
     for e in VersionList::supported().entries() {
         assert_eq!(e.digest, SchemaDigest::compute(e.version));
     }

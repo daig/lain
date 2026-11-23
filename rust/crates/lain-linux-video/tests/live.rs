@@ -45,13 +45,19 @@ use lain_gnome::{
 };
 use lain_linux_video::{LinuxVideo, LinuxVideoConfig};
 use lain_platform::{
-    CursorImage, CursorSource, DisplayBackend, DisplaySpec, EncodeConfig, EncodeRequest, InputAction, InputBackend,
-    PointF, VideoBackend, VideoEvent, VideoSession,
+    CursorImage, CursorSource, DisplayBackend, DisplayMode, DisplaySpec, EncodeConfig, EncodeRequest, InputAction,
+    InputBackend, PointF, VideoBackend, VideoEvent, VideoSession,
 };
 use tokio::sync::{mpsc, watch};
 
-const IPAD: DisplaySpec =
-    DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, desired_scale: 0, refresh_hz: 120 };
+const IPAD: DisplaySpec = DisplaySpec {
+    pixel_width: 2752,
+    pixel_height: 2064,
+    scale: 2,
+    desired_scale: 0,
+    refresh_hz: 120,
+    mode: DisplayMode::Extend,
+};
 
 fn encode_config() -> EncodeConfig {
     EncodeConfig {

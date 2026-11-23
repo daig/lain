@@ -97,6 +97,7 @@ fn sample_hello() -> Hello {
         decode_capabilities: DecodeCapabilities::HEVC_MAIN,
         keyboard_type: KeyboardType::Ansi,
         desired_scale: 0,
+        desired_display_mode: DisplayMode::Extend,
     }
 }
 

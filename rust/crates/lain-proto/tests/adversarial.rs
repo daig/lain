@@ -72,11 +72,11 @@ fn header_check_order() {
         hdr(|b| b[20..24].copy_from_slice(&((32u32 << 20) + 1).to_le_bytes())),
         Err(ProtocolError::PayloadTooLarge((32 << 20) + 1))
     );
-    // the supported versions and 255 accepted; 3 (below the floor), 8, 254 rejected
-    for v in [4u8, 5, 6, 7, 255] {
+    // the supported versions and 255 accepted; 3 (below the floor), 9, 254 rejected
+    for v in [4u8, 5, 6, 7, 8, 255] {
         assert!(hdr(|b| b[2] = v).is_ok());
     }
-    for v in [3u8, 8, 254, 0x7F] {
+    for v in [3u8, 9, 254, 0x7F] {
         assert_eq!(hdr(|b| b[2] = v), Err(ProtocolError::VersionMismatch { remote: v }));
     }
     // reading beyond header bytes doesn't matter (slice longer than 24)

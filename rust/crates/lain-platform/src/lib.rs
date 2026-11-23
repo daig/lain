@@ -39,7 +39,9 @@ pub use advertise::{Advertiser, ServiceAd};
 pub use audio::{AUDIO_QUEUE_CHUNKS, AudioBackend, AudioChunk, AudioFormat};
 pub use clock::{Clock, MonotonicClock};
 pub use cursor::{CursorImage, CursorSource};
-pub use display::{DisplayBackend, DisplaySpec, Monitor, StreamedDisplay};
+pub use display::{
+    DisplayBackend, DisplayMode, DisplaySpec, MAX_CAPTURE_SIDE, Monitor, StreamedDisplay, capped_capture_size,
+};
 pub use error::{PlatformError, Result};
 pub use geometry::{PointF, RectF};
 pub use identity::HostIdentity;

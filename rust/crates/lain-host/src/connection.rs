@@ -14,7 +14,7 @@ use lain_platform::{
 };
 use lain_proto::{
     AudioConfig, AudioEncoding, AudioPacket, CursorWarp, DisplayLayout, HostSetup, HostStats, KeyboardType,
-    LayoutDisplay, Message, Pong, ProtocolFeature, SetupItem, SetupRequirement, SetupState, VersionList,
+    LayoutDisplay, Message, Pong, ProtocolFeature, ReleaseReason, SetupItem, SetupRequirement, SetupState, VersionList,
 };
 use tokio::sync::{Notify, watch};
 use tokio::task::AbortHandle;
@@ -157,15 +157,22 @@ impl<P: Platform> HostConnection<P> {
     }
 
     /// Takes the power assertion unless the connection has already been finished (a detach or stop raced
-    /// the handshake). Returns whether the session should go on.
+    /// the handshake). Returns whether the session should go on. Also declares user activity right away so a
+    /// host woken via WoL promotes out of idle/sleep before video starts.
     pub(crate) fn start(&self) -> bool {
-        let mut s = lock(&self.rt);
-        if s.finished {
-            return false;
+        let started = {
+            let mut s = lock(&self.rt);
+            if s.finished {
+                return false;
+            }
+            s.holds_power = true;
+            self.power.begin();
+            true
+        };
+        if started {
+            self.power.user_activity();
         }
-        s.holds_power = true;
-        self.power.begin();
-        true
+        started
     }
 
     /// `finish` has run: a takeover, detach or stop ended the session.
@@ -312,6 +319,13 @@ impl<P: Platform> HostConnection<P> {
             // D22: loss recovery (and the client coming back to the foreground) is a keyframe.
             Message::KeyframeRequest(_) => {
                 self.video.handle(message.clone());
+                return;
+            }
+            // Explicit client quit: skip DisplayKeeper so the host immediately restores its display.
+            Message::ReleaseAll(r) if r.reason == ReleaseReason::Disconnect => {
+                info!("client quit: ending session and restoring host display");
+                self.video.discard_display_on_stop();
+                self.finish();
                 return;
             }
             _ => {}

@@ -50,6 +50,7 @@ pub fn sample_hello() -> Hello {
         decode_capabilities: DecodeCapabilities::HEVC_MAIN | DecodeCapabilities::HEVC_MAIN_444_10_HARDWARE,
         keyboard_type: KeyboardType::Ansi,
         desired_scale: 0,
+        desired_display_mode: DisplayMode::Extend,
     }
 }
 

@@ -9,7 +9,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 
-use lain_platform::{DisplayBackend, DisplaySpec, InputAction, InputBackend, PointF};
+use lain_platform::{DisplayBackend, DisplayMode, DisplaySpec, InputAction, InputBackend, PointF};
 use zbus::object_server::SignalEmitter;
 use zbus::zvariant::{OwnedObjectPath, OwnedValue};
 
@@ -309,8 +309,14 @@ async fn client(bus: &Bus) -> zbus::Connection {
     zbus::connection::Builder::address(bus.address.as_str()).unwrap().build().await.unwrap()
 }
 
-const IPAD: DisplaySpec =
-    DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, desired_scale: 0, refresh_hz: 120 };
+const IPAD: DisplaySpec = DisplaySpec {
+    pixel_width: 2752,
+    pixel_height: 2064,
+    scale: 2,
+    desired_scale: 0,
+    refresh_hz: 120,
+    mode: DisplayMode::Extend,
+};
 const NO_LAIN: Layout = Layout { lain_scale: None, hdmi_x: 0, serial: 1 };
 
 async fn settle() {

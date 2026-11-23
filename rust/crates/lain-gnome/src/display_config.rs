@@ -369,6 +369,94 @@ pub fn config_with(
         .collect()
 }
 
+/// Snapshot of every currently active logical monitor that contains only physical (non-virtual) monitors, for
+/// restoring the desktop after `DisplayMode::Primary` temporarily hides them.
+pub fn physical_configs(state: &DisplayState) -> Vec<LogicalConfig> {
+    state
+        .logical
+        .iter()
+        .filter_map(|l| {
+            if l.monitors.is_empty() {
+                return None;
+            }
+            let monitors = l
+                .monitors
+                .iter()
+                .map(|s| {
+                    let info = state.monitor(&s.connector)?;
+                    if info.is_virtual() {
+                        return None;
+                    }
+                    Some((s.connector.clone(), info.current_mode()?.id.clone(), info.settings))
+                })
+                .collect::<Option<Vec<_>>>()?;
+            Some(LogicalConfig { x: l.x, y: l.y, scale: l.scale, transform: l.transform, primary: l.primary, monitors })
+        })
+        .collect()
+}
+
+/// Configuration with `connector` as the sole active (primary) logical monitor at `(0, 0)` with `scale`, used for
+/// `DisplayMode::Primary` on GNOME/Mutter.
+pub fn solo_config(state: &DisplayState, connector: &str, scale: f64) -> Option<Vec<LogicalConfig>> {
+    let info = state.monitor(connector)?;
+    let mode = info.current_mode()?;
+    Some(vec![LogicalConfig {
+        x: 0,
+        y: 0,
+        scale,
+        transform: 0,
+        primary: true,
+        monitors: vec![(connector.to_owned(), mode.id.clone(), info.settings)],
+    }])
+}
+
+/// Rebuilds a valid `ApplyMonitorsConfig` list from a saved physical snapshot against the current `state`
+/// (filtering out monitors that were unplugged meanwhile, falling back to a monitor's current/first mode if the
+/// saved mode id vanished, ensuring a primary monitor exists, and normalizing coordinates to `(0, 0)`).
+pub fn restore_config(state: &DisplayState, saved: &[LogicalConfig]) -> Option<Vec<LogicalConfig>> {
+    let mut restored: Vec<LogicalConfig> = saved
+        .iter()
+        .filter_map(|l| {
+            let monitors: Vec<(String, String, MonitorSettings)> = l
+                .monitors
+                .iter()
+                .filter_map(|(connector, mode_id, settings)| {
+                    let info = state.monitor(connector)?;
+                    if info.is_virtual() {
+                        return None;
+                    }
+                    let chosen_mode = info
+                        .modes
+                        .iter()
+                        .find(|m| m.id == *mode_id)
+                        .or_else(|| info.current_mode())
+                        .or_else(|| info.modes.first())?;
+                    Some((connector.clone(), chosen_mode.id.clone(), *settings))
+                })
+                .collect();
+            if monitors.is_empty() {
+                return None;
+            }
+            Some(LogicalConfig { x: l.x, y: l.y, scale: l.scale, transform: l.transform, primary: l.primary, monitors })
+        })
+        .collect();
+    if restored.is_empty() {
+        return None;
+    }
+    if !restored.iter().any(|l| l.primary) {
+        restored[0].primary = true;
+    }
+    let min_x = restored.iter().map(|l| l.x).min().unwrap_or(0);
+    let min_y = restored.iter().map(|l| l.y).min().unwrap_or(0);
+    if min_x != 0 || min_y != 0 {
+        for l in &mut restored {
+            l.x -= min_x;
+            l.y -= min_y;
+        }
+    }
+    Some(restored)
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -574,5 +662,25 @@ pub(crate) mod tests {
         assert!(!a.overlaps(&IRect::new(10, 0, 5, 5)));
         assert!(!a.overlaps(&IRect::new(0, 10, 5, 5)));
         assert!(a.overlaps(&IRect::new(9, 9, 5, 5)));
+    }
+
+    #[test]
+    fn solo_and_restore_configs_round_trip_physical_monitors() {
+        let s = parse_state(reference_raw(1.0));
+        let phys = physical_configs(&s);
+        assert_eq!(phys.len(), 1);
+        assert_eq!(phys[0].monitors[0].0, "HDMI-1");
+        assert!(phys[0].primary);
+
+        let solo = solo_config(&s, "Meta-0", 2.0).unwrap();
+        assert_eq!(solo.len(), 1);
+        assert_eq!((solo[0].x, solo[0].y, solo[0].scale, solo[0].primary), (0, 0, 2.0, true));
+        assert_eq!(solo[0].monitors[0].0, "Meta-0");
+
+        // When HDMI-1 is temporarily disabled (not in logical, still in monitors), restore_config brings it back.
+        let mut hidden = s.clone();
+        hidden.logical.remove(0);
+        let restored = restore_config(&hidden, &phys).unwrap();
+        assert_eq!(restored, phys);
     }
 }

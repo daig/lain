@@ -23,15 +23,22 @@ use crate::egl::{EglContext, EglImage};
 use crate::frame::{DmaBufPlane, Pixels, validate_dmabuf, validate_memory};
 use crate::va::Nv12Export;
 
-/// The compute shader of `e2e.c` (16×8, `texelFetch` input).
+/// The compute shader of `e2e.c` (16×8, `texelFetch` input when 1:1, bilinear `texture` when downscaling).
 pub const SHADER: &str = "#version 430
 layout(local_size_x = 16, local_size_y = 8) in;
 layout(binding = 0) uniform sampler2D src;
 layout(binding = 1, r8) writeonly uniform image2D ypl;
 layout(binding = 2, rg8) writeonly uniform image2D uvpl;
 uniform ivec2 blocks;
+uniform int scaled;
+uniform vec2 inv_dst;
 const vec3 K = vec3(0.2126, 0.7152, 0.0722);
-vec3 load(ivec2 p) { return texelFetch(src, p, 0).rgb; }
+vec3 load(ivec2 p) {
+    if (scaled == 0) {
+        return texelFetch(src, p, 0).rgb;
+    }
+    return texture(src, (vec2(p) + vec2(0.5)) * inv_dst).rgb;
+}
 void main() {
     ivec2 b = ivec2(gl_GlobalInvocationID.xy);
     if (b.x >= blocks.x || b.y >= blocks.y) return;
@@ -81,12 +88,17 @@ pub struct GlConverter {
     tex_storage: ImageTargetTexStorage,
     program: glow::NativeProgram,
     blocks: Option<glow::NativeUniformLocation>,
+    scaled_loc: Option<glow::NativeUniformLocation>,
+    inv_dst_loc: Option<glow::NativeUniformLocation>,
     targets: Vec<Target>,
     imports: Vec<Import>,
     staging: Option<glow::NativeTexture>,
     fence: Option<glow::NativeFence>,
     queries: [glow::NativeQuery; 2],
-    /// The pictures' size.
+    /// The incoming captured pictures' size.
+    src_width: u32,
+    src_height: u32,
+    /// The output encoded pictures' size.
     width: u32,
     height: u32,
     /// The target surfaces' size (the coded size: the picture's rounded up to VCN's 64 × 16; the rest is left unwritten and
@@ -105,19 +117,23 @@ fn gl_error(gl: &glow::Context, what: &str) -> Result<(), String> {
 }
 
 impl GlConverter {
-    /// Sets the converter up on `egl` (current on this thread) for `width × height` pictures at `modifier`
-    /// (the DMA-BUFs' negotiated modifier), writing into `exports` (the encoder's NV12 surfaces, in order, each
-    /// `surface_size`).
+    /// Sets the converter up on `egl` (current on this thread) for `source_size` captured pictures encoded at
+    /// `width × height` at `modifier` (the DMA-BUFs' negotiated modifier), writing into `exports` (the encoder's
+    /// NV12 surfaces, in order, each `surface_size`).
     pub fn new(
         egl: Rc<EglContext>,
         exports: &[Nv12Export],
         surface_size: (u32, u32),
+        source_size: (u32, u32),
         width: u32,
         height: u32,
         modifier: u64,
     ) -> Result<Self, String> {
         if !egl.is_current() {
             return Err("the EGL context isn't current on the converter's thread".into());
+        }
+        if source_size.0 == 0 || source_size.1 == 0 {
+            return Err(format!("{}×{}: invalid source size", source_size.0, source_size.1));
         }
         if !width.is_multiple_of(2) || !height.is_multiple_of(2) {
             return Err(format!("{width}×{height}: 4:2:0 needs an even size"));
@@ -140,7 +156,7 @@ impl GlConverter {
         // SAFETY: a non-null pointer to glEGLImageTargetTexStorageEXT, whose C type this is.
         let tex_storage = unsafe { std::mem::transmute::<*const c_void, ImageTargetTexStorage>(storage) };
         // SAFETY: the context is current; every object made here is owned by the converter and deleted on drop.
-        let (program, blocks, queries) = unsafe {
+        let (program, blocks, scaled_loc, inv_dst_loc, queries) = unsafe {
             let shader = gl.create_shader(glow::COMPUTE_SHADER)?;
             gl.shader_source(shader, SHADER);
             gl.compile_shader(shader);
@@ -159,7 +175,9 @@ impl GlConverter {
                 return Err(format!("linking the conversion shader: {log}"));
             }
             let blocks = gl.get_uniform_location(program, "blocks");
-            (program, blocks, [gl.create_query()?, gl.create_query()?])
+            let scaled_loc = gl.get_uniform_location(program, "scaled");
+            let inv_dst_loc = gl.get_uniform_location(program, "inv_dst");
+            (program, blocks, scaled_loc, inv_dst_loc, [gl.create_query()?, gl.create_query()?])
         };
         let mut conv = Self {
             gl,
@@ -167,11 +185,15 @@ impl GlConverter {
             tex_storage,
             program,
             blocks,
+            scaled_loc,
+            inv_dst_loc,
             targets: Vec::new(),
             imports: Vec::new(),
             staging: None,
             fence: None,
             queries,
+            src_width: source_size.0,
+            src_height: source_size.1,
             width,
             height,
             surface_width: surface_size.0,
@@ -187,19 +209,26 @@ impl GlConverter {
         Ok(conv)
     }
 
+    fn is_scaled(&self) -> bool {
+        (self.src_width, self.src_height) != (self.width, self.height)
+    }
+
     pub fn renderer(&self) -> &str {
         &self.renderer
     }
 
     /// A texture backed by `image`.
-    fn texture_of(&self, image: &EglImage, what: &str) -> Result<glow::NativeTexture, String> {
+    fn texture_of(&self, image: &EglImage, linear: bool, what: &str) -> Result<glow::NativeTexture, String> {
+        let filter = if linear { glow::LINEAR } else { glow::NEAREST } as i32;
         // SAFETY: the context is current; the image is live; the texture is owned by the caller.
         unsafe {
             let t = self.gl.create_texture()?;
             self.gl.bind_texture(glow::TEXTURE_2D, Some(t));
             (self.tex_storage)(glow::TEXTURE_2D, image.as_ptr(), std::ptr::null());
-            self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, glow::NEAREST as i32);
-            self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, glow::NEAREST as i32);
+            self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, filter);
+            self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, filter);
+            self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+            self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
             self.gl.bind_texture(glow::TEXTURE_2D, None);
             if let Err(e) = gl_error(&self.gl, what) {
                 self.gl.delete_texture(t);
@@ -229,8 +258,8 @@ impl GlConverter {
             images.push(self.egl.import(&plane, w, h)?);
         }
         let [y_image, uv_image]: [EglImage; 2] = images.try_into().map_err(|_| "two layers")?;
-        let y = self.texture_of(&y_image, "the NV12 surface's Y layer")?;
-        let uv = match self.texture_of(&uv_image, "the NV12 surface's CbCr layer") {
+        let y = self.texture_of(&y_image, false, "the NV12 surface's Y layer")?;
+        let uv = match self.texture_of(&uv_image, false, "the NV12 surface's CbCr layer") {
             Ok(t) => t,
             Err(e) => {
                 // SAFETY: the context is current; y is ours.
@@ -244,7 +273,7 @@ impl GlConverter {
     /// The texture of a DMA-BUF: imported once and cached by (inode, device, offset, stride, modifier), as
     /// PipeWire cycles through the same few buffers.
     fn dmabuf_texture(&mut self, plane: &DmaBufPlane) -> Result<glow::NativeTexture, String> {
-        validate_dmabuf(plane, self.width, self.height, self.modifier)?;
+        validate_dmabuf(plane, self.src_width, self.src_height, self.modifier)?;
         let st = rustix::fs::fstat(&plane.fd).map_err(|e| format!("fstat of the DMA-BUF: {e}"))?;
         let key = (st.st_ino, st.st_dev, plane.offset, plane.stride, plane.modifier);
         self.uses += 1;
@@ -252,8 +281,8 @@ impl GlConverter {
             hit.last_used = self.uses;
             return Ok(hit.texture);
         }
-        let image = self.egl.import(plane, self.width, self.height)?;
-        let texture = self.texture_of(&image, "the captured DMA-BUF")?;
+        let image = self.egl.import(plane, self.src_width, self.src_height)?;
+        let texture = self.texture_of(&image, self.is_scaled(), "the captured DMA-BUF")?;
         if self.imports.len() >= IMPORT_CACHE
             && let Some(oldest) = self.imports.iter().enumerate().min_by_key(|(_, i)| i.last_used).map(|(n, _)| n)
         {
@@ -268,9 +297,10 @@ impl GlConverter {
 
     /// The staging texture for shared-memory pictures, uploaded from the CPU (spike A: +6 ms against DMA-BUF).
     fn memory_texture(&mut self, data: &[u8], stride: u32) -> Result<glow::NativeTexture, String> {
-        validate_memory(data, stride, self.width, self.height)?;
-        let (w, h) = (self.width as i32, self.height as i32);
-        // SAFETY: the context is current; the texture is ours; `data` holds `height` rows of `stride` bytes
+        validate_memory(data, stride, self.src_width, self.src_height)?;
+        let (w, h) = (self.src_width as i32, self.src_height as i32);
+        let filter = if self.is_scaled() { glow::LINEAR } else { glow::NEAREST } as i32;
+        // SAFETY: the context is current; the texture is ours; `data` holds `src_height` rows of `stride` bytes
         // (validated), which GL reads with UNPACK_ROW_LENGTH = stride / 4.
         unsafe {
             let texture = match self.staging {
@@ -279,6 +309,10 @@ impl GlConverter {
                     let t = self.gl.create_texture()?;
                     self.gl.bind_texture(glow::TEXTURE_2D, Some(t));
                     self.gl.tex_storage_2d(glow::TEXTURE_2D, 1, glow::RGBA8, w, h);
+                    self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MIN_FILTER, filter);
+                    self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_MAG_FILTER, filter);
+                    self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_S, glow::CLAMP_TO_EDGE as i32);
+                    self.gl.tex_parameter_i32(glow::TEXTURE_2D, glow::TEXTURE_WRAP_T, glow::CLAMP_TO_EDGE as i32);
                     self.staging = Some(t);
                     t
                 }
@@ -317,12 +351,16 @@ impl GlConverter {
             Pixels::Memory { data, stride } => self.memory_texture(data, *stride)?,
         };
         let (bx, by) = (self.width / 2, self.height / 2);
+        let scaled = i32::from(self.is_scaled());
+        let (inv_w, inv_h) = (1.0 / self.width as f32, 1.0 / self.height as f32);
         // SAFETY: the context is current; every object is ours and live; the dispatch covers the blocks and the
         // shader bounds-checks the rest.
         unsafe {
             let gl = &self.gl;
             gl.use_program(Some(self.program));
             gl.uniform_2_i32(self.blocks.as_ref(), bx as i32, by as i32);
+            gl.uniform_1_i32(self.scaled_loc.as_ref(), scaled);
+            gl.uniform_2_f32(self.inv_dst_loc.as_ref(), inv_w, inv_h);
             gl.active_texture(glow::TEXTURE0);
             gl.bind_texture(glow::TEXTURE_2D, Some(src));
             gl.bind_image_texture(1, Some(out.0), 0, false, 0, glow::WRITE_ONLY, glow::R8);
@@ -399,10 +437,10 @@ impl GlConverter {
     /// input ring: upload to an RGBA8 texture, then blit into the imported buffer (GL refuses
     /// `glCopyImageSubData` from RGBA8 into the XR24 import, which is `GL_RGB8`). For the GPU tests.
     pub fn fill_dmabuf(&mut self, plane: &DmaBufPlane, bgrx: &[u8]) -> Result<(), String> {
-        let stride = self.width * 4;
+        let stride = self.src_width * 4;
         let staging = self.memory_texture(bgrx, stride)?;
         let dst = self.dmabuf_texture(plane)?;
-        let (w, h) = (self.width as i32, self.height as i32);
+        let (w, h) = (self.src_width as i32, self.src_height as i32);
         // SAFETY: the context is current; both textures are ours; the framebuffers are made and deleted here.
         unsafe {
             let gl = &self.gl;

@@ -5,7 +5,7 @@ use std::time::Duration;
 
 use lain_host::HostStatus;
 use lain_media::HostVideoStats;
-use lain_platform::Platform;
+use lain_platform::{DisplayMode, Platform};
 use lain_proto::ChromaFormat;
 use tokio::sync::broadcast::error::RecvError;
 use tracing::{info, warn};
@@ -13,7 +13,12 @@ use tracing::{info, warn};
 use crate::DaemonHandle;
 
 /// Swift: `HostController.videoLines`. `None` unless connected; without numbers, why there's no video.
-pub fn video_lines(status: &HostStatus, stats: Option<HostVideoStats>, error: Option<String>) -> Option<Vec<String>> {
+pub fn video_lines(
+    status: &HostStatus,
+    stats: Option<HostVideoStats>,
+    error: Option<String>,
+    display_mode: Option<DisplayMode>,
+) -> Option<Vec<String>> {
     if !status.is_connected() {
         return None;
     }
@@ -22,9 +27,14 @@ pub fn video_lines(status: &HostStatus, stats: Option<HostVideoStats>, error: Op
     };
     let ms = |x: Option<f64>| x.map_or_else(|| "–".to_owned(), |x| format!("{x:.1}"));
     let chroma = if v.chroma == Some(ChromaFormat::Yuv444) { "4:4:4 10-bit" } else { "4:2:0" };
+    let mode_note = match display_mode.unwrap_or(DisplayMode::Extend) {
+        DisplayMode::Extend => "",
+        DisplayMode::Primary => " · mirrored",
+        DisplayMode::CaptureExisting => " · mirrored native",
+    };
     let mbps = |bps: f64| format!("{:.1}", bps / 1e6);
     let mut lines = vec![
-        format!("Video {}×{} {chroma}", v.pixel_width, v.pixel_height),
+        format!("Video {}×{} {chroma}{mode_note}", v.pixel_width, v.pixel_height),
         format!(
             "{:.1} Mb/s, {} sent, {} keyframes, {} refinements",
             v.bytes_per_second * 8.0 / 1e6,
@@ -106,10 +116,13 @@ mod tests {
 
     #[test]
     fn video_lines_as_swift() {
-        assert_eq!(video_lines(&HostStatus::WaitingForIPad, None, None), None);
+        assert_eq!(video_lines(&HostStatus::WaitingForIPad, None, None, None), None);
         let connected = HostStatus::connected_usb("iPad16,6");
-        assert_eq!(video_lines(&connected, None, None), Some(vec!["No video: starting".to_owned()]));
-        assert_eq!(video_lines(&connected, None, Some("no GPU".into())), Some(vec!["No video: no GPU".to_owned()]));
+        assert_eq!(video_lines(&connected, None, None, None), Some(vec!["No video: starting".to_owned()]));
+        assert_eq!(
+            video_lines(&connected, None, Some("no GPU".into()), None),
+            Some(vec!["No video: no GPU".to_owned()])
+        );
         let stats = HostVideoStats {
             chroma: Some(ChromaFormat::Yuv420),
             pixel_width: 2752,
@@ -130,7 +143,7 @@ mod tests {
             ..HostVideoStats::default()
         };
         assert_eq!(
-            video_lines(&connected, Some(stats), None).unwrap(),
+            video_lines(&connected, Some(stats.clone()), None, None).unwrap(),
             [
                 "Video 2752×2064 4:2:0",
                 "60.0 Mb/s, 120 sent, 2 keyframes, 1 refinements",
@@ -138,6 +151,14 @@ mod tests {
                 "Dropped before encode 3 (2 for the link), in flight 1 (peak 2)",
                 "Target 20.0 Mb/s (adaptive), delivered 12.3 Mb/s",
             ]
+        );
+        assert_eq!(
+            video_lines(&connected, Some(stats.clone()), None, Some(DisplayMode::Primary)).unwrap()[0],
+            "Video 2752×2064 4:2:0 · mirrored"
+        );
+        assert_eq!(
+            video_lines(&connected, Some(stats), None, Some(DisplayMode::CaptureExisting)).unwrap()[0],
+            "Video 2752×2064 4:2:0 · mirrored native"
         );
     }
 }

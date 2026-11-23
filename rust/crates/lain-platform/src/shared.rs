@@ -59,6 +59,14 @@ impl<T: DisplayBackend> DisplayBackend for Arc<T> {
     fn applied_scale(&self) -> Option<f64> {
         (**self).applied_scale()
     }
+
+    fn restore_host_displays(&self) -> impl Future<Output = ()> + Send {
+        (**self).restore_host_displays()
+    }
+
+    fn has_hidden_host_displays(&self) -> bool {
+        (**self).has_hidden_host_displays()
+    }
 }
 
 impl<T: InputBackend + ?Sized> InputBackend for Arc<T> {

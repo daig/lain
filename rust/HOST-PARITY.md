@@ -87,16 +87,29 @@ changes a display a device chose the scale of. Code: `lain-host` `video.rs` (`di
 `StreamedDisplayProvider.scales`, `HostVideoPipeline.displayScale`; tests `DisplayScaleTests`,
 `VersioningTests.displayScalesAreVersionSevenFields`, `DisplayScaleSettingTests`.
 
-**Since protocol v8 the display mode is the client's** (Mac host: done; Linux: to do). The device asks for one in
+**Since protocol v8 the display mode is the client's** (Mac host: done; Linux: done, not yet on hardware). The device asks for one in
 `Hello.desiredDisplayMode` (advisory `u8` `DisplayMode`: `0 = extend`, `1 = primary` to mirror the computer's screen
 onto lain's requested virtual display, `2 = captureExisting` to mirror the computer's own configured display as-is;
 default on the client is mirror with this device's display). The host applies it (falling back to extend when
 headless) and reports the applied mode in `HelloAck.displayMode`. Mac host: `primary` mirrors active physical
 displays onto lain's `VirtualDisplay` via `CGConfigureDisplayMirrorOfDisplay`, unmirroring synchronously on teardown,
 app quit, or the menu bar's **Return to Host Display** action (which also pauses incoming connections until resumed).
+Linux host: `lain-proto` is at [4, 5, 6, 7, 8] (golden bytes and v8 digest `14189eeedb236cc0` pass). Because Mutter
+doesn't support mirroring monitors of differing resolutions, `primary` creates lain's virtual display at the client's
+exact resolution and scale and temporarily disables physical monitors via `ApplyMonitorsConfig` (method 1), saving
+and restoring the physical layout on teardown, explicit client quit (`ReleaseAll(.disconnect)`, skipping
+`DisplayKeeper`), daemon shutdown, GNOME "Stop sharing", or **Return to Host Display** (tray, D-Bus
+`RestoreHostDisplay`/`ResumeConnections`, `lain restore`/`lain resume-connections`, which pauses USB/Wi-Fi
+reconnects until resumed). `captureExisting` captures the primary physical monitor directly via `RecordMonitor`
+(falling back to `extend` when headless), capping encode dimensions to 3840 px via bilinear downscaling in
+`lain-linux-video`'s GL compute pass when needed, and skipping `DisplayKeeper`. `DisplayKeeper` holds the power
+assertion continuously across disconnect/keep-alive, and `lain-wifi`/`lain-hostd` advertise local hardware MACs in
+Avahi TXT `mac` for Wake-on-LAN.
 Code: `VirtualDisplay.mirror`/`restoreHostDisplays`, `VirtualStreamedDisplayProvider`, `HostSession.restoreHostDisplay`,
-`ControlPanel.Row.displayMode`/`mirrorSource`; tests `VersioningTests.desiredDisplayModeIsAVersionEightField`,
-`DisplayModeSettingTests`.
+`ControlPanel.Row.displayMode`/`mirrorSource`; Linux: `lain-gnome` `display_config.rs`/`monitors.rs`/`display.rs`,
+`lain-linux-video` `gl.rs`/`gpu.rs`/`backend.rs`, `lain-host` `session.rs`/`keeper.rs`/`connection.rs`, `lain-wifi`
+`txt.rs`/`ifaddrs.rs`, `lain-hostd` `service.rs`/`tray.rs`/`bin/lain.rs`; tests `VersioningTests.desiredDisplayModeIsAVersionEightField`,
+`DisplayModeSettingTests`, `crates/lain-host/tests/display_mode.rs`.
 
 ## 4. Keyboard: Right Option is the system key (Linux host: done; client and Mac host: to do)
 

@@ -47,6 +47,7 @@ pub fn hello() -> Hello {
         decode_capabilities: DecodeCapabilities::HEVC_MAIN | DecodeCapabilities::HEVC_MAIN_444_10_HARDWARE,
         keyboard_type: KeyboardType::Iso,
         desired_scale: 0,
+        desired_display_mode: DisplayMode::Extend,
     }
 }
 
@@ -205,6 +206,14 @@ impl DisplayBackend for TestDisplay {
 
     fn applied_scale(&self) -> Option<f64> {
         self.fake.applied_scale()
+    }
+
+    async fn restore_host_displays(&self) {
+        self.fake.restore_host_displays().await;
+    }
+
+    fn has_hidden_host_displays(&self) -> bool {
+        self.fake.has_hidden_host_displays()
     }
 }
 

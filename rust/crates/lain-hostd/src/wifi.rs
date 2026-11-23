@@ -45,6 +45,8 @@ pub(crate) struct WifiActor<S, A> {
     pub intake: mpsc::Sender<Box<dyn ByteStream>>,
     pub identity: Option<HostIdentity>,
     pub versions: Vec<u8>,
+    /// Hardware MAC addresses advertised in Bonjour TXT (`mac`), for Wake-on-LAN.
+    pub macs: Vec<String>,
     pub advertiser: Option<A>,
     pub status: watch::Sender<WiFiStatus>,
     pub enabled: watch::Sender<bool>,
@@ -178,7 +180,8 @@ impl<S: SecretStore + Clone, A: Advertiser> WifiActor<S, A> {
         self.publish(status.clone());
         match (status.port(), &self.identity) {
             (Some(port), Some(identity)) => {
-                let ad = LainTxt::service_ad(&identity.name, port, &identity.id, Some(&self.versions));
+                let ad =
+                    LainTxt::service_ad_with_macs(&identity.name, port, &identity.id, Some(&self.versions), &self.macs);
                 self.advertise(ad).await;
             }
             _ => self.withdraw().await,

@@ -183,6 +183,9 @@ pub struct Hello {
     /// preference, the host's own. The host applies the nearest scale it supports and says which in
     /// [`HelloAck::display_scale`]. Advisory: dropped for an older peer.
     pub desired_scale: u16,
+    /// v8: how the host places the streamed display (`Extend`, `Primary` = mirror onto lain's display,
+    /// `CaptureExisting` = mirror the computer's own display as configured). Advisory: dropped for an older peer.
+    pub desired_display_mode: DisplayMode,
 }
 
 impl WireMessage for Hello {
@@ -196,6 +199,9 @@ impl WireMessage for Hello {
         w.u32(self.decode_capabilities.0);
         w.u8(self.keyboard_type.raw());
         w.since(7, "desiredScale", &self.desired_scale, &0, Lowering::Drop, |w, v| w.u16(*v));
+        w.since(8, "desiredDisplayMode", &self.desired_display_mode, &DisplayMode::Extend, Lowering::Drop, |w, v| {
+            w.u8(v.raw())
+        });
     }
     fn decode(r: &mut ByteReader<'_>) -> Result<Self> {
         Ok(Self {
@@ -207,6 +213,7 @@ impl WireMessage for Hello {
             decode_capabilities: DecodeCapabilities(r.u32()?),
             keyboard_type: r.enum_value()?,
             desired_scale: r.since(7, 0, |r| r.u16())?,
+            desired_display_mode: r.since(8, DisplayMode::Extend, |r| r.enum_value())?,
         })
     }
 }

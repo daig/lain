@@ -42,6 +42,7 @@ pub fn hello() -> Hello {
         decode_capabilities: DecodeCapabilities::HEVC_MAIN | DecodeCapabilities::HEVC_MAIN_444_10_HARDWARE,
         keyboard_type: KeyboardType::Ansi,
         desired_scale: 0,
+        desired_display_mode: DisplayMode::Extend,
     }
 }
 
@@ -376,10 +377,9 @@ pub fn lo() -> LinkTransport {
     LinkTransport::Network { interface: Some("lo".into()), peer_to_peer: false }
 }
 
-/// The ad the daemon must publish while listening on `port` (the brief: `LainTxt::service_ad(name, port, id,
-/// None)`).
+/// The ad the daemon must publish while listening on `port` (including local WoL MACs).
 pub fn expected_ad(port: u16) -> ServiceAd {
-    LainTxt::service_ad(&identity().name, port, &identity().id, None)
+    LainTxt::service_ad_with_macs(&identity().name, port, &identity().id, None, &lain_wifi::local_macs())
 }
 
 // MARK: The rig

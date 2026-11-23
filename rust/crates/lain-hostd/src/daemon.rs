@@ -161,9 +161,39 @@ impl<P: Platform> DaemonHandle<P> {
         self.session.peer_version_note()
     }
 
+    /// The live session's display mode (v8: extend, primary/mirror, or captureExisting).
+    pub fn display_mode(&self) -> Option<lain_platform::DisplayMode> {
+        self.session.display_mode()
+    }
+
+    /// True while incoming connections are paused after [`restore_host_display`](Self::restore_host_display).
+    pub fn is_paused(&self) -> bool {
+        self.session.is_paused()
+    }
+
+    /// True if "Return to Host Display" should be offered (connected, kept display, or hidden host displays).
+    pub fn can_restore_host_display(&self) -> bool {
+        self.session.can_restore_host_display()
+    }
+
+    /// Immediately restores this computer's display configuration and pauses incoming connections.
+    pub async fn restore_host_display(&self) {
+        self.session.restore_host_display().await;
+    }
+
+    /// Resumes dialing USB devices and accepting Wi-Fi sessions after `restore_host_display`.
+    pub fn resume_connections(&self) {
+        self.session.resume_connections();
+    }
+
     /// Swift's `HostController.videoLines`: `None` unless connected.
     pub fn video_lines(&self) -> Option<Vec<String>> {
-        video_lines(&self.session.status(), self.session.video_stats(), self.session.video_error())
+        video_lines(
+            &self.session.status(),
+            self.session.video_stats(),
+            self.session.video_error(),
+            self.session.display_mode(),
+        )
     }
 
     /// Resends the setup as it is cached now (Swift: `HostSession.setupChanged`). The Start at Login item is a
@@ -238,6 +268,7 @@ where
             intake,
             identity: identity.clone(),
             versions,
+            macs: lain_wifi::local_macs(),
             advertiser,
             status: status_tx,
             enabled: enabled_tx,

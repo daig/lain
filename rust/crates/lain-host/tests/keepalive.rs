@@ -17,10 +17,14 @@ fn rig(keep: Duration) -> (WifiRig, Vec<u8>) {
     (WifiRig::new(vec![(SERIAL.to_owned(), secret.clone())], config), secret)
 }
 
-/// The iPad's app leaving the screen: its link closes. The display stays, without video.
+/// The iPad's app leaving the screen: its link closes. The display stays (with power still held), without video.
 async fn leave(rig: &WifiRig, ipad: WifiIPad) {
     ipad.link.close();
-    assert!(eventually(T, || rig.platform.power().transitions().last() == Some(&false)).await, "power released");
+    assert!(
+        eventually(T, || !rig.session.status().is_connected() && rig.session.has_kept_display()).await,
+        "session ended and display kept"
+    );
+    assert!(rig.platform.power().is_awake(), "power stays held while display is kept");
 }
 
 #[tokio::test(start_paused = true)]

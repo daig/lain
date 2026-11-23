@@ -9,7 +9,7 @@ use std::time::Duration;
 use lain_link::ChannelSender;
 use lain_media::{Connection, CursorMonitor, HostVideoStats, Outbound, PipelineOptions, VideoEnd, VideoPipeline};
 use lain_platform::{
-    Clock, DisplayBackend, DisplaySpec, Platform, PlatformError, StreamedDisplay, VideoBackend, VideoEvent,
+    Clock, DisplayBackend, DisplayMode, DisplaySpec, Platform, PlatformError, StreamedDisplay, VideoBackend, VideoEvent,
 };
 use lain_proto::{ChromaFormat, Hello, Message};
 use tokio::sync::{Notify, mpsc, watch};
@@ -22,13 +22,31 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
 }
 
-/// The display a client's `Hello` asks for: its pixel size (long side first), the scale it chose (v7), and its
-/// maximum refresh rate (0: 120 Hz). Swift: `VirtualDisplay.Spec.sized(pixelWidth:pixelHeight:)` and
+/// Maps the wire `lain_proto::DisplayMode` to the platform `DisplayMode`.
+pub fn platform_display_mode(mode: lain_proto::DisplayMode) -> DisplayMode {
+    match mode {
+        lain_proto::DisplayMode::Extend => DisplayMode::Extend,
+        lain_proto::DisplayMode::Primary => DisplayMode::Primary,
+        lain_proto::DisplayMode::CaptureExisting => DisplayMode::CaptureExisting,
+    }
+}
+
+/// Maps the platform `DisplayMode` back to the wire `lain_proto::DisplayMode`.
+pub fn wire_display_mode(mode: DisplayMode) -> lain_proto::DisplayMode {
+    match mode {
+        DisplayMode::Extend => lain_proto::DisplayMode::Extend,
+        DisplayMode::Primary => lain_proto::DisplayMode::Primary,
+        DisplayMode::CaptureExisting => lain_proto::DisplayMode::CaptureExisting,
+    }
+}
+
+/// The display a client's `Hello` asks for: its pixel size, the scale it chose (v7), its display mode (v8), and
+/// its maximum refresh rate (0: 120 Hz). Swift: `VirtualDisplay.Spec.sized(pixelWidth:pixelHeight:)` and
 /// `DisplayScaleChoice`.
 ///
-/// - **The size** is the client's own: the 13-inch iPad Pro's 2752×2064, or another shape (an iPhone Duo asks
-///   for its inner display, 2853×2007). A size that makes no display (nothing, absurd, or portrait) falls back
-///   to the iPad's, as in Swift. An odd side is rounded down to even, since 4:2:0 video needs even sides.
+/// - **The size** is the client's own: the 13-inch iPad Pro's 2752×2064, or another shape (an iPhone Duo or an
+///   iPhone in landscape or portrait). A size that makes no display (nothing, or absurd) falls back to the
+///   iPad's, as in Swift. An odd side is rounded down to even, since 4:2:0 video needs even sides.
 /// - **The scale** the client chose (`Hello.desired_scale`), brought to the nearest of [`OFFERED_SCALES`] (on a
 ///   tie, the larger, as in Swift); none chosen (a v6 client), 2, which the owner's `scale` setting replaces in
 ///   `lain-gnome`, as the Mac host's own scale.
@@ -40,8 +58,7 @@ fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
 /// - Intended difference from Swift, whose Mac host is fixed at 120 Hz: the refresh rate follows the client.
 pub fn display_spec(hello: &Hello) -> DisplaySpec {
     let (w, h) = (hello.pixel_width, hello.pixel_height);
-    let (w, h) =
-        if (480..=4096).contains(&w) && (480..=4096).contains(&h) { (w & !1, h & !1) } else { IPAD_PIXELS };
+    let (w, h) = if (480..=4096).contains(&w) && (480..=4096).contains(&h) { (w & !1, h & !1) } else { IPAD_PIXELS };
     let desired_scale = choose_scale(hello.desired_scale);
     let (pixel_width, pixel_height) = size_for_scale(w, h, desired_scale);
     DisplaySpec {
@@ -50,6 +67,7 @@ pub fn display_spec(hello: &Hello) -> DisplaySpec {
         scale: 2,
         desired_scale,
         refresh_hz: if hello.max_refresh_rate == 0 { 120 } else { u32::from(hello.max_refresh_rate) },
+        mode: platform_display_mode(hello.desired_display_mode),
     }
 }
 
@@ -125,6 +143,8 @@ pub(crate) struct SessionVideo {
     done: watch::Sender<bool>,
     /// Messages may still go out.
     sending: Arc<AtomicBool>,
+    /// Skip `DisplayKeeper` on stop (explicit client quit via `ReleaseAll(.disconnect)` or host restore).
+    discard_display: AtomicBool,
     shared: Mutex<Shared>,
     /// Told whenever the streamed display appears or goes, so the layout is re-sent.
     changed: Arc<Notify>,
@@ -136,9 +156,16 @@ impl SessionVideo {
             stop: Cancel::new(),
             done: watch::Sender::new(true),
             sending: Arc::new(AtomicBool::new(true)),
+            discard_display: AtomicBool::new(false),
             shared: Mutex::new(Shared::default()),
             changed,
         })
+    }
+
+    /// Marks the display to be removed immediately rather than handed to `DisplayKeeper` when stopped
+    /// (Swift: `HostVideoPipeline.discardDisplayOnStop`).
+    pub(crate) fn discard_display_on_stop(&self) {
+        self.discard_display.store(true, Ordering::Release);
     }
 
     /// The stream while it runs (Swift: `streamedDisplay`, nil before and once stopped or failed).
@@ -192,7 +219,7 @@ impl SessionVideo {
         realtime: ChannelSender,
         video: ChannelSender,
         on_end: impl FnOnce(VideoEnd) + Send + 'static,
-        keeper: &Arc<DisplayKeeper<P::Display>>,
+        keeper: &Arc<DisplayKeeper<P::Display, P::Power>>,
     ) -> Result<Streaming, StartError> {
         // Marked started before the stop check: a waiter that saw `done` had the stop come first, and the check
         // then sees it, so no display is made after `wait_until_stopped` returned.
@@ -217,7 +244,7 @@ impl SessionVideo {
         realtime: ChannelSender,
         video: ChannelSender,
         on_end: impl FnOnce(VideoEnd) + Send + 'static,
-        keeper: &Arc<DisplayKeeper<P::Display>>,
+        keeper: &Arc<DisplayKeeper<P::Display, P::Power>>,
     ) -> Result<Streaming, StartError> {
         let display = platform.display().clone();
         let spec = display_spec(hello);
@@ -333,9 +360,12 @@ impl SessionVideo {
             }
             cursor.stop();
             pipeline.stop().await;
-            // Stopped (the link went away, or a takeover): kept for the next session. Capture that ended on its
+            // Stopped (the link went away, or a takeover): kept for the next session unless explicitly discarded
+            // (client quit / host restore) or streaming an existing physical display. Capture that ended on its
             // own (`StoppedByUser`, `Failed`) takes its display with it.
-            if ended_on_its_own || !keeper.keep(spec, streamed, source).await {
+            let discard = this.discard_display.load(Ordering::Acquire);
+            let keepable = streamed.mode != DisplayMode::CaptureExisting;
+            if ended_on_its_own || discard || !keepable || !keeper.keep(spec, streamed, source).await {
                 display.destroy().await;
             }
             this.done.send_replace(true);
@@ -416,6 +446,7 @@ mod spec_tests {
             decode_capabilities: lain_proto::DecodeCapabilities::HEVC_MAIN,
             keyboard_type: lain_proto::KeyboardType::Unknown,
             desired_scale: 0,
+            desired_display_mode: lain_proto::DisplayMode::Extend,
         }
     }
 
@@ -426,7 +457,14 @@ mod spec_tests {
         assert_eq!((duo.pixel_width, duo.pixel_height, duo.scale, duo.refresh_hz), (2852, 2006, 2, 120));
         assert_eq!(
             display_spec(&hello(2752, 2064, 2)),
-            DisplaySpec { pixel_width: 2752, pixel_height: 2064, scale: 2, desired_scale: 0, refresh_hz: 120 }
+            DisplaySpec {
+                pixel_width: 2752,
+                pixel_height: 2064,
+                scale: 2,
+                desired_scale: 0,
+                refresh_hz: 120,
+                mode: DisplayMode::Extend,
+            }
         );
         // Portrait displays (e.g. iPhone 18 Pro Max above the portrait keyboard) are supported too.
         let portrait = display_spec(&hello(1320, 1584, 3));

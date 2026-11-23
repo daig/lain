@@ -232,7 +232,10 @@ fn features_follow_their_versions() {
     );
     assert_eq!(ProtocolFeature::missing(5, Some(6)), [ProtocolFeature::TextInput, ProtocolFeature::Audio]);
     assert_eq!(ProtocolFeature::missing(6, Some(7)), [ProtocolFeature::DisplayScale]);
+    assert_eq!(ProtocolFeature::missing(7, Some(8)), [ProtocolFeature::DisplayMode]);
+    assert_eq!(ProtocolFeature::missing(6, Some(8)), [ProtocolFeature::DisplayScale, ProtocolFeature::DisplayMode]);
     assert!(ProtocolFeature::DisplayScale.is_supported(7) && !ProtocolFeature::DisplayScale.is_supported(6));
+    assert!(ProtocolFeature::DisplayMode.is_supported(8) && !ProtocolFeature::DisplayMode.is_supported(7));
     assert!(ProtocolFeature::missing(NEWEST_VERSION, Some(NEWEST_VERSION)).is_empty());
     assert!(ProtocolFeature::missing(4, Some(4)).is_empty());
     // Without a newest, the offered list's newest (a LAIN_PROTOCOL_MAX cap lowers it).
@@ -273,14 +276,15 @@ fn display_scales_are_version_seven_fields() {
     let Some(Message::Hello(hello)) = all.iter().find(|m| m.ty() == MessageType::Hello).cloned() else { panic!() };
     let Some(Message::HelloAck(ack)) = all.iter().find(|m| m.ty() == MessageType::HelloAck).cloned() else { panic!() };
     let at = |m: &Message, v: u8| MessageCodec::lower(m, v, 0, 0, None);
+    let hello_v7 = Hello { desired_display_mode: DisplayMode::Extend, ..hello.clone() };
     for (m, dropped) in [
-        (Message::Hello(hello.clone()), vec!["desiredScale"]),
+        (Message::Hello(hello_v7.clone()), vec!["desiredScale"]),
         (Message::HelloAck(ack.clone()), vec!["displayScale", "displayScales"]),
     ] {
         let Lowered::Projected { bytes, dropped: d } = at(&m, 6) else { panic!("{m:?} isn't projected at v6") };
         assert_eq!(d, dropped);
         match MessageCodec::decode(&bytes).unwrap().message {
-            Message::Hello(h) => assert_eq!(h, Hello { desired_scale: 0, ..hello.clone() }),
+            Message::Hello(h) => assert_eq!(h, Hello { desired_scale: 0, ..hello_v7.clone() }),
             Message::HelloAck(a) => assert_eq!(a, HelloAck { display_scale: 0, display_scales: vec![], ..ack.clone() }),
             other => panic!("{other:?}"),
         }
@@ -297,4 +301,33 @@ fn display_scales_are_version_seven_fields() {
         panic!()
     };
     assert_eq!(back.display_scales.len(), HelloAck::MAX_DISPLAY_SCALES);
+}
+
+/// v8: the client asks for extend or mirror (`Hello.desiredDisplayMode`); advisory, dropped for v7 and older.
+/// Swift: `desiredDisplayModeIsAVersionEightField`.
+#[test]
+fn desired_display_mode_is_a_version_eight_field() {
+    let hello = Hello {
+        device_model: "iPhone19,3".into(),
+        pixel_width: 2868,
+        pixel_height: 1320,
+        scale: 3,
+        max_refresh_rate: 120,
+        decode_capabilities: DecodeCapabilities::HEVC_MAIN,
+        keyboard_type: KeyboardType::Unknown,
+        desired_scale: 300,
+        desired_display_mode: DisplayMode::Primary,
+    };
+    let mut w8 = ByteWriter::new(8);
+    hello.encode(&mut w8);
+    let decoded8 = Hello::decode(&mut ByteReader::new(w8.bytes(), 8)).unwrap();
+    assert_eq!(decoded8.desired_display_mode, DisplayMode::Primary);
+    let mut w7 = ByteWriter::new(7);
+    hello.encode(&mut w7);
+    assert_eq!(w7.dropped(), ["desiredDisplayMode"]);
+    assert!(w7.refused().is_none());
+    assert_eq!(w7.bytes().len(), w8.bytes().len() - 1);
+    let decoded7 = Hello::decode(&mut ByteReader::new(w7.bytes(), 7)).unwrap();
+    assert_eq!(decoded7.desired_display_mode, DisplayMode::Extend);
+    assert!(!ProtocolFeature::DisplayMode.is_supported(7) && ProtocolFeature::DisplayMode.is_supported(8));
 }

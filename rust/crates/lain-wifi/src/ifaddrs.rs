@@ -3,8 +3,126 @@
 //! `NetworkPath` reads.
 #![allow(unsafe_code)]
 
+use std::collections::HashSet;
 use std::ffi::CStr;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::path::Path;
+
+use crate::txt::normalize_mac;
+
+/// Returns up to 3 hardware Ethernet/Wi-Fi MAC addresses on this host as canonical 12-char lowercase hex strings,
+/// for Wake-on-LAN (`LainTxt::MACS_KEY`). Prefers real hardware interfaces (`/sys/class/net/<name>/device`),
+/// wired Ethernet (`en*`/`eth*`) over Wi-Fi (`wl*`), globally-unique hardware MACs, and active interfaces with an
+/// IP address. Swift: `WakeOnLAN.localMACs`.
+pub fn local_macs() -> Vec<String> {
+    let mut head: *mut libc::ifaddrs = std::ptr::null_mut();
+    // SAFETY: `getifaddrs` writes a list head into `head`, which we free with `freeifaddrs` below.
+    if unsafe { libc::getifaddrs(&mut head) } != 0 {
+        return Vec::new();
+    }
+    let mut has_ip = HashSet::new();
+    let mut cursor = head;
+    while !cursor.is_null() {
+        // SAFETY: `cursor` is a node of the list `getifaddrs` returned, valid until `freeifaddrs`.
+        let entry = unsafe { &*cursor };
+        cursor = entry.ifa_next;
+        if entry.ifa_addr.is_null() || entry.ifa_name.is_null() {
+            continue;
+        }
+        let flags = entry.ifa_flags as i32;
+        if (flags & libc::IFF_UP) == 0 || (flags & libc::IFF_LOOPBACK) != 0 {
+            continue;
+        }
+        // SAFETY: `ifa_addr` is non-null.
+        let family = i32::from(unsafe { (*entry.ifa_addr).sa_family });
+        if family == libc::AF_INET || family == libc::AF_INET6 {
+            // SAFETY: `ifa_name` is a NUL-terminated string owned by the list.
+            let name = unsafe { CStr::from_ptr(entry.ifa_name) }.to_string_lossy().into_owned();
+            has_ip.insert(name);
+        }
+    }
+
+    struct Candidate {
+        name: String,
+        is_hardware: bool,
+        is_wired: bool,
+        locally_administered: bool,
+        has_ip: bool,
+        mac: String,
+    }
+    let mut candidates = Vec::new();
+    cursor = head;
+    while !cursor.is_null() {
+        // SAFETY: `cursor` is a node of the list `getifaddrs` returned, valid until `freeifaddrs`.
+        let entry = unsafe { &*cursor };
+        cursor = entry.ifa_next;
+        if entry.ifa_addr.is_null() || entry.ifa_name.is_null() {
+            continue;
+        }
+        let flags = entry.ifa_flags as i32;
+        if (flags & libc::IFF_LOOPBACK) != 0 {
+            continue;
+        }
+        // SAFETY: `ifa_addr` is non-null.
+        let family = i32::from(unsafe { (*entry.ifa_addr).sa_family });
+        if family != libc::AF_PACKET {
+            continue;
+        }
+        // SAFETY: an `AF_PACKET` address is a `sockaddr_ll`.
+        let sll = unsafe { &*(entry.ifa_addr as *const libc::sockaddr_ll) };
+        if sll.sll_hatype != libc::ARPHRD_ETHER || sll.sll_halen != 6 {
+            continue;
+        }
+        // SAFETY: `ifa_name` is a NUL-terminated string owned by the list.
+        let name = unsafe { CStr::from_ptr(entry.ifa_name) }.to_string_lossy().into_owned();
+        let is_hardware = Path::new("/sys/class/net").join(&name).join("device").exists();
+        if !is_hardware {
+            continue;
+        }
+        let raw: String = sll.sll_addr[..6].iter().map(|b| format!("{b:02x}")).collect();
+        let Some(mac) = normalize_mac(&raw) else { continue };
+        let iface_has_ip = has_ip.contains(&name);
+        let is_wired = name.starts_with("en") || name.starts_with("eth");
+        candidates.push(Candidate {
+            is_hardware,
+            is_wired,
+            locally_administered: (sll.sll_addr[0] & 0x02) != 0,
+            has_ip: iface_has_ip,
+            name,
+            mac,
+        });
+    }
+    // SAFETY: `head` came from a successful `getifaddrs` and is freed once.
+    unsafe { libc::freeifaddrs(head) };
+
+    candidates.sort_by(|a, b| {
+        (
+            u8::from(!a.is_hardware),
+            u8::from(!a.has_ip),
+            u8::from(!a.is_wired),
+            u8::from(a.locally_administered),
+            a.name.as_str(),
+        )
+            .cmp(&(
+                u8::from(!b.is_hardware),
+                u8::from(!b.has_ip),
+                u8::from(!b.is_wired),
+                u8::from(b.locally_administered),
+                b.name.as_str(),
+            ))
+    });
+    let mut seen = HashSet::new();
+    let mut out = Vec::new();
+    for c in candidates {
+        if seen.insert(c.mac.clone()) {
+            out.push(c.mac);
+            if out.len() == 3 {
+                break;
+            }
+        }
+    }
+    out
+}
 
 /// The interface whose address is `local`'s (an accepted or dialed socket's local address), `None` if no
 /// interface has it. An IPv4-mapped IPv6 address (a dual-stack socket's IPv4 peer) is looked up as IPv4. A

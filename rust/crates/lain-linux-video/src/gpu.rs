@@ -23,6 +23,8 @@ pub const SURFACES: usize = 4;
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct GpuSettings {
     pub encoder: EncoderSettings,
+    /// The captured pictures' size (may exceed `encoder`'s size when downscaling a large physical display).
+    pub source_size: (u32, u32),
     /// The DMA-BUF modifier of the captured pictures.
     pub modifier: u64,
 }
@@ -73,7 +75,15 @@ impl GpuPipeline {
         let setup = || -> Result<(Rc<GbmDevice>, Rc<EglContext>, GlConverter), String> {
             let gbm = GbmDevice::new(fd.clone())?;
             let egl = EglContext::new(gbm.clone())?;
-            let converter = GlConverter::new(egl.clone(), &exports, (cw, ch), s.width, s.height, settings.modifier)?;
+            let converter = GlConverter::new(
+                egl.clone(),
+                &exports,
+                (cw, ch),
+                settings.source_size,
+                s.width,
+                s.height,
+                settings.modifier,
+            )?;
             Ok((gbm, egl, converter))
         };
         let (gbm, egl, converter) = match setup() {
@@ -143,7 +153,7 @@ impl Gpu for GpuPipeline {
     }
 
     fn start_conversion(&mut self, picture: &Picture, surface: usize) -> Result<(), String> {
-        let (w, h) = (self.settings.encoder.width, self.settings.encoder.height);
+        let (w, h) = self.settings.source_size;
         if (picture.width, picture.height) != (w, h) {
             return Err(format!("a {}×{} picture for a {w}×{h} stream", picture.width, picture.height));
         }

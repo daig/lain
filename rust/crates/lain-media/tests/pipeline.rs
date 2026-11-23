@@ -375,7 +375,13 @@ fn startup_request_restarts_the_ack_window() {
 fn the_config_follows_what_the_encoder_produces() {
     // Swift: `fourTwoZeroWhenClientLacksHardware444`. On Linux the host always asks for 4:2:0 (L3); the
     // config says what the encoder actually produces.
-    let display = StreamedDisplay { id: 100, pixel_width: 2752, pixel_height: 2064, refresh_hz: 120 };
+    let display = StreamedDisplay {
+        id: 100,
+        pixel_width: 2752,
+        pixel_height: 2064,
+        refresh_hz: 120,
+        mode: lain_platform::DisplayMode::Extend,
+    };
     let options = PipelineOptions::default();
     let asked = encode_config(&display, 120, &options);
     assert_eq!(
@@ -392,6 +398,8 @@ fn the_config_follows_what_the_encoder_produces() {
     assert_eq!(encode_config(&display, 60, &options).frame_rate, 60, "capped by the client");
     assert_eq!(encode_config(&display, 0, &options).frame_rate, 120, "0: the client didn't say");
     assert_eq!(encode_config(&display, 240, &options).frame_rate, 120);
+    let display60 = StreamedDisplay { refresh_hz: 60, ..display };
+    assert_eq!(encode_config(&display60, 120, &options).frame_rate, 60, "capped by the streamed display");
 
     let mut rig = Rig::new(no_refinement(), EncodeMode::Immediate, Some(Chroma::Yuv444));
     assert_eq!(rig.pipeline.chroma(), ChromaFormat::Yuv444);

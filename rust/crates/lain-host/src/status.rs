@@ -12,6 +12,8 @@ pub enum HostStatus {
     Connecting,
     /// A session is up, over USB or the network (§7.7).
     Connected { device_model: String, via: LinkTransport },
+    /// Paused by the owner ("Return to Host Display"): no sessions accepted or dialed until resumed.
+    Paused,
     /// usbmuxd failed, lain on the iPad speaks another protocol, or similar; the session retries on its own.
     Error(String),
 }
@@ -67,6 +69,7 @@ impl HostStatus {
             Self::WaitingForIPad => "Waiting for iPad".into(),
             Self::Connecting => "iPad attached: open lain on the iPad".into(),
             Self::Connected { device_model, via } => format!("Connected to {device_model} over {}", menu_name(via)),
+            Self::Paused => "Paused — host display restored".into(),
             Self::Error(why) => format!("Error: {why}"),
         }
     }

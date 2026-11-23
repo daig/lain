@@ -61,13 +61,17 @@ pub fn stream_info(config: &EncodeConfig) -> StreamInfo {
     }
 }
 
-/// Checks a start request against its source: the encode size is the display's (no scaling), even, and at least
-/// [`MIN_SIZE`]; the frame rate and bitrate are set.
+/// Checks a start request against its source: the encode size is even, at least [`MIN_SIZE`], and no larger than
+/// the source (the GL converter downscales large physical displays, never upscales); the frame rate and bitrate
+/// are set.
 pub fn check_config(source_size: (u32, u32), config: &EncodeConfig) -> Result<()> {
     let size = (config.width, config.height);
-    if size != source_size {
+    if source_size.0 == 0 || source_size.1 == 0 {
+        return Err(PlatformError::Failed(format!("invalid source size {}×{}", source_size.0, source_size.1)));
+    }
+    if size.0 > source_size.0 || size.1 > source_size.1 {
         return Err(PlatformError::Failed(format!(
-            "the encode size {}×{} isn't lain's display's {}×{} (video doesn't scale)",
+            "the encode size {}×{} exceeds the display's {}×{} (video doesn't upscale)",
             size.0, size.1, source_size.0, source_size.1
         )));
     }
@@ -103,6 +107,7 @@ impl VideoBackend for LinuxVideo {
                 fps: config.frame_rate,
                 bitrate: config.bitrate,
             },
+            source_size: (source.pixel_width, source.pixel_height),
             modifier: MUTTER_MODIFIER,
         };
         let capture = CaptureConfig::new(
@@ -263,7 +268,8 @@ mod tests {
     #[test]
     fn config_checks_and_info() {
         assert_eq!(check_config((2752, 2064), &config(2752, 2064)), Ok(()));
-        assert!(check_config((2752, 2064), &config(2064, 1548)).unwrap_err().to_string().contains("doesn't scale"));
+        assert_eq!(check_config((7680, 2160), &config(3840, 1080)), Ok(()), "downscaling large displays is allowed");
+        assert!(check_config((1920, 1080), &config(2752, 2064)).unwrap_err().to_string().contains("doesn't upscale"));
         assert!(check_config((191, 128), &config(191, 128)).is_err());
         assert!(check_config((190, 128), &config(190, 128)).is_err(), "below 192 wide");
         assert!(check_config((192, 128), &config(192, 128)).is_ok());
@@ -385,7 +391,7 @@ mod tests {
             cursor: lain_gnome::CursorState::new(),
             ended,
         };
-        let err = LinuxVideo::default().start(&source, config(1376, 1032)).await.err().unwrap();
-        assert!(err.to_string().contains("doesn't scale"), "{err}");
+        let err = LinuxVideo::default().start(&source, config(3840, 2160)).await.err().unwrap();
+        assert!(err.to_string().contains("doesn't upscale"), "{err}");
     }
 }

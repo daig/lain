@@ -51,6 +51,10 @@ enum Command {
     RadioPriority { priority: Option<Priority> },
     /// Bring video back after "Stop sharing" in GNOME's top bar (the iPad reconnects).
     Resume,
+    /// Return immediately to this computer's own display and pause incoming connections until resumed.
+    Restore,
+    /// Resume accepting incoming USB and Wi-Fi connections after `lain restore`.
+    ResumeConnections,
     /// Show or set whether video comes back by itself after "Stop sharing".
     AutoResume { state: Option<OnOff> },
     /// Show or set whether the computer's sound plays on the iPad.
@@ -203,6 +207,22 @@ async fn run(command: Command) -> Result<(), String> {
                 "{}",
                 if resumed { "resuming: the iPad reconnects" } else { "nothing to resume: video isn't stopped" }
             );
+            Ok(())
+        }
+        Command::Restore => {
+            let host = host(&conn).await?.ok_or("lain-hostd isn't running")?;
+            host.call_method("RestoreHostDisplay", &()).await.map_err(|e| e.to_string())?;
+            let paused: bool = host.get_property("IsPaused").await.unwrap_or(false);
+            println!(
+                "host display restored{}",
+                if paused { " (connections paused; run `lain resume-connections` to resume)" } else { "" }
+            );
+            Ok(())
+        }
+        Command::ResumeConnections => {
+            let host = host(&conn).await?.ok_or("lain-hostd isn't running")?;
+            host.call_method("ResumeConnections", &()).await.map_err(|e| e.to_string())?;
+            println!("resumed accepting connections");
             Ok(())
         }
         Command::AutoResume { state } => {

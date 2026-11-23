@@ -9,7 +9,7 @@ use lain_link::{
     VersionGap,
 };
 use lain_media::{HostVideoStats, VideoEnd};
-use lain_platform::{Platform, SettingsSource, SetupSource};
+use lain_platform::{DisplayBackend, Platform, SettingsSource, SetupSource};
 use lain_proto::{
     AudioEncoding, ChromaFormat, DisplayMode, ErrorCode, ErrorMessage, Hello, HelloAck, Message, ProtocolFeature,
     VideoCodec,
@@ -24,7 +24,7 @@ use crate::connection::{HostConnection, host_setup};
 use crate::keeper::DisplayKeeper;
 use crate::status::HostStatus;
 use crate::util::{Cancel, Power, UsbMuxDialer};
-use crate::video::{SessionVideo, StartError, Streaming, display_spec};
+use crate::video::{SessionVideo, StartError, Streaming, display_spec, wire_display_mode};
 
 fn lock<T>(m: &Mutex<T>) -> MutexGuard<'_, T> {
     m.lock().unwrap_or_else(|e| e.into_inner())
@@ -64,6 +64,8 @@ type Claimed<P> = (Option<Arc<HostConnection<P>>>, Vec<Arc<SessionVideo>>);
 struct State<P: Platform> {
     status: HostStatus,
     stopped: bool,
+    /// Set by `restore_host_display()` while a session was live: blocks automatic reconnects until resumed.
+    paused: bool,
     /// The USB device being dialed or connected; its generation identifies its connect loop.
     device: Option<DeviceLoop>,
     /// The one counter behind USB connect loops and accepted network links.
@@ -102,6 +104,7 @@ impl<P: Platform> State<P> {
         Self {
             status: HostStatus::WaitingForIPad,
             stopped: false,
+            paused: false,
             device: None,
             generation: 0,
             attached: Vec::new(),
@@ -125,6 +128,9 @@ impl<P: Platform> State<P> {
     /// The status is derived, never pushed (decision 8): connected only while the session whose `HelloAck`
     /// went out is live; otherwise what the USB side is doing.
     fn derived_status(&self, config: &HostConfig) -> HostStatus {
+        if self.paused {
+            return HostStatus::Paused;
+        }
         if let (Some(live), Some(model)) = (&self.live, &self.live_model) {
             return HostStatus::Connected { device_model: model.clone(), via: live.transport.clone() };
         }
@@ -195,6 +201,9 @@ impl<P: Platform> State<P> {
     /// Why a network link from `peer` may not start a session now (answered `Error(busy)`), or `None`
     /// (Swift: `State.wifiBusy`). USB wins; the capture backoff holds every transport; one iPad at a time.
     fn wifi_busy(&self, peer: &str, now: Instant, preference: std::time::Duration) -> Option<&'static str> {
+        if self.paused {
+            return Some("paused on the host");
+        }
         if matches!(self.live.as_ref().map(|l| l.owner), Some(Owner::Usb(_))) {
             return Some("a USB session is live");
         }
@@ -270,7 +279,7 @@ struct Inner<P: Platform> {
     /// Ends the usbmuxd watcher and the network intake.
     run: Cancel,
     /// lain's display between sessions ([`HostConfig::display_keep_alive`]).
-    keeper: Arc<DisplayKeeper<P::Display>>,
+    keeper: Arc<DisplayKeeper<P::Display, P::Power>>,
     /// [`HostConfig::resume_after_stop`], changeable at run time.
     resume_after_stop: std::sync::atomic::AtomicBool,
     /// [`HostConfig::sound`], changeable at run time: shared with each connection, read with each packet.
@@ -325,7 +334,7 @@ impl<P: Platform> HostSession<P> {
     pub fn start(platform: P, config: HostConfig, usbmux: UsbMuxClient, wifi: Option<WifiStreams>) -> Self {
         let power = Arc::new(Power::new(platform.power().clone()));
         let (statuses, _) = broadcast::channel(256);
-        let keeper = DisplayKeeper::new(platform.display().clone(), config.display_keep_alive);
+        let keeper = DisplayKeeper::new(platform.display().clone(), power.clone(), config.display_keep_alive);
         let resume_after_stop = std::sync::atomic::AtomicBool::new(config.resume_after_stop);
         let inner = Arc::new(Inner {
             keeper,
@@ -378,6 +387,96 @@ impl<P: Platform> HostSession<P> {
         let s = lock(&self.inner.state);
         s.live.as_ref()?;
         s.video.as_ref()?.stats()
+    }
+
+    /// How the live session's display is placed (v8: extend, mirror onto lain, or mirror host native).
+    pub fn display_mode(&self) -> Option<lain_platform::DisplayMode> {
+        let s = lock(&self.inner.state);
+        s.live.as_ref()?;
+        s.video.as_ref()?.streaming().map(|st| st.display.mode)
+    }
+
+    /// True while connections are paused after [`restore_host_display`](Self::restore_host_display).
+    pub fn is_paused(&self) -> bool {
+        lock(&self.inner.state).paused
+    }
+
+    /// True while a virtual display is held in `DisplayKeeper` after a disconnect.
+    pub fn has_kept_display(&self) -> bool {
+        self.inner.keeper.is_holding()
+    }
+
+    /// True if "Return to Host Display" should be offered (connected, kept display, or hidden host displays).
+    pub fn can_restore_host_display(&self) -> bool {
+        self.status().is_connected()
+            || self.has_kept_display()
+            || self.inner.platform.display().has_hidden_host_displays()
+    }
+
+    /// Immediately returns this computer to its own display configuration: restores any hidden/mirrored host
+    /// displays, clears any kept display in `DisplayKeeper`, and if a client is connected, disconnects and pauses
+    /// incoming connections so the remote device doesn't immediately reconnect and take over again.
+    /// Swift: `HostSession.restoreHostDisplay`.
+    pub async fn restore_host_display(&self) {
+        let (device, wifi, connection, videos, paused_now) = {
+            let mut s = lock(&self.inner.state);
+            let had_session = s.live.is_some() || s.wifi.is_some() || s.device.is_some();
+            if had_session {
+                s.paused = true;
+            }
+            let device = if had_session { s.device.take() } else { None };
+            let wifi = if had_session { s.wifi.take() } else { None };
+            let connection = if had_session {
+                s.live_model = None;
+                s.live.take().map(|l| l.connection)
+            } else {
+                None
+            };
+            let videos = s.retiring.clone();
+            self.inner.refresh_status(&mut s);
+            (device, wifi, connection, videos, had_session)
+        };
+        if let Some(d) = device {
+            d.cancel.cancel();
+        }
+        if let Some((_, cancel)) = wifi {
+            cancel.cancel();
+        }
+        if let Some(connection) = connection {
+            connection.video.discard_display_on_stop();
+            connection.finish();
+        }
+        for video in videos {
+            video.discard_display_on_stop();
+            video.stop();
+            video.wait_until_stopped().await;
+        }
+        self.inner.keeper.clear().await;
+        self.inner.platform.display().restore_host_displays().await;
+        info!("restored host display{}", if paused_now { " (connections paused)" } else { "" });
+    }
+
+    /// Resumes dialing USB devices and accepting Wi-Fi sessions after
+    /// [`restore_host_display`](Self::restore_host_display) paused them. Swift: `HostSession.resumeConnections`.
+    pub fn resume_connections(&self) {
+        let resumed = {
+            let mut s = lock(&self.inner.state);
+            if !s.paused || s.stopped {
+                false
+            } else {
+                s.paused = false;
+                if s.device.is_none()
+                    && let Some(first) = s.attached.first().cloned()
+                {
+                    self.inner.dial(&first, &mut s);
+                }
+                self.inner.refresh_status(&mut s);
+                true
+            }
+        };
+        if resumed {
+            info!("resumed accepting connections");
+        }
     }
 
     /// Why the latest session streams no video, if it failed to start or the owner stopped it.
@@ -466,11 +565,13 @@ impl<P: Platform> HostSession<P> {
     pub fn stop(&self) -> impl Future<Output = ()> + Send + 'static {
         let videos = self.inner.stop_now();
         let keeper = self.inner.keeper.clone();
+        let display = self.inner.platform.display().clone();
         async move {
             for video in videos {
                 video.wait_until_stopped().await;
             }
             keeper.clear().await;
+            display.restore_host_displays().await;
         }
     }
 }
@@ -638,6 +739,10 @@ impl<P: Platform> Inner<P> {
             if owners_reset {
                 s.reset_capture_backoff();
             }
+            if s.paused {
+                self.refresh_status(&mut s);
+                return;
+            }
             // One iPad at a time: another device waits its turn; the same one re-attaching replaces itself. The
             // owner's reset goes ahead of a device whose loop is only waiting the backoff out.
             let mut ahead = None;
@@ -687,6 +792,7 @@ impl<P: Platform> Inner<P> {
             s.peer_gap = None;
             let mut next = None;
             if !s.stopped
+                && !s.paused
                 && let Some(first) = s.attached.first().cloned()
             {
                 self.dial(&first, &mut s);
@@ -725,6 +831,7 @@ impl<P: Platform> Inner<P> {
     fn hand_off(self: &Arc<Self>, device: &UsbMuxDevice, generation: u64) -> bool {
         let mut s = lock(&self.state);
         if s.stopped
+            || s.paused
             || s.device.as_ref().map(|d| d.generation) != Some(generation)
             || s.attached.len() < 2
             || !s.attached.iter().any(|d| d.device_id == device.device_id)
@@ -1123,6 +1230,12 @@ impl<P: Platform> Inner<P> {
             });
             connection.run().await;
         }
+        // Bridge the power assertion across async video retirement so DisplayKeeper takes over without a gap
+        // (on explicit disconnect/quit, the display isn't kept and power drops as soon as teardown finishes).
+        let bridge_power = connection.video.streaming().is_some();
+        if bridge_power {
+            self.power.begin();
+        }
         connection.finish();
         let capture_failed = connection.capture_failed.load(Ordering::SeqCst);
         let retry = self.config.tuning.capture_retry_interval;
@@ -1146,6 +1259,9 @@ impl<P: Platform> Inner<P> {
         });
         connection.video.wait_until_stopped().await;
         lock(&self.state).retiring.retain(|v| !Arc::ptr_eq(v, &connection.video));
+        if bridge_power {
+            self.power.end();
+        }
         info!("session ended");
     }
 
@@ -1252,11 +1368,12 @@ impl<P: Platform> Inner<P> {
         let applied = streaming.and_then(|_| lain_platform::DisplayBackend::applied_scale(self.platform.display()));
         let display_scale = applied.map_or(0, |s| (s * 100.0).round().clamp(0.0, f64::from(u16::MAX)) as u16);
         let display_scales = if applied.is_some() { crate::video::OFFERED_SCALES.to_vec() } else { Vec::new() };
+        let display_mode = streaming.map(|s| wire_display_mode(s.display.mode)).unwrap_or(DisplayMode::Extend);
         HelloAck {
             codec: VideoCodec::Hevc,
             chroma,
             bit_depth,
-            display_mode: DisplayMode::Extend,
+            display_mode,
             bitrate: self.config.video.average_bit_rate,
             refresh_rate: u16::try_from(refresh).unwrap_or(u16::MAX),
             display_point_width: points(width),

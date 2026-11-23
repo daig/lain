@@ -145,6 +145,18 @@ impl crate::Control for LinuxControl {
     fn set_sound(&self, on: bool) {
         crate::Control::set_sound(&self.handle, on)
     }
+    fn is_paused(&self) -> bool {
+        crate::Control::is_paused(&self.handle)
+    }
+    fn can_restore_host_display(&self) -> bool {
+        crate::Control::can_restore_host_display(&self.handle)
+    }
+    fn restore_host_display(&self) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send + '_>> {
+        crate::Control::restore_host_display(&self.handle)
+    }
+    fn resume_connections(&self) {
+        crate::Control::resume_connections(&self.handle)
+    }
     fn scale_setting(&self) -> Option<f64> {
         self.display.scale_setting()
     }

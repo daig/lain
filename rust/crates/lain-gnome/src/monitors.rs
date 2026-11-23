@@ -3,12 +3,13 @@
 //! re-scale, record), applying with method 1 only. Swift's counterpart is `DisplayLayoutProvider` over
 //! `CGGetActiveDisplayList`, which never applies anything.
 
-use std::collections::HashSet;
+use std::collections::{BTreeSet, HashSet};
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
 
 use futures::StreamExt;
 use lain_platform::{Monitor, PlatformError};
-use tokio::sync::{mpsc, watch};
+use tokio::sync::{mpsc, oneshot, watch};
 use tokio::time::Instant;
 use zbus::{Connection, Proxy};
 
@@ -17,7 +18,8 @@ use crate::bus;
 use crate::cursor::{CursorState, StreamGeometry};
 use crate::desktop::{self, Desktop, IdMap};
 use crate::display_config::{
-    self, DisplayState, MonitorSpec, RawState, apply_args, config_with, logical_size, parse_state,
+    self, DisplayState, LogicalConfig, MonitorSpec, RawState, apply_args, config_with, logical_size, parse_state,
+    physical_configs, restore_config, solo_config,
 };
 
 /// What the display tells the desktop task.
@@ -28,11 +30,19 @@ pub enum Command {
     /// it is marked as lain's (review A5).
     Creating { known: HashSet<MonitorSpec> },
     /// lain's display is `connector`, to be kept at the supported scale closest to `scale`: mark it, and
-    /// arrange it now.
-    SetLain { connector: String, scale: f64 },
+    /// arrange it now. When `solo` is true (`DisplayMode::Primary`), physical monitors are temporarily disabled
+    /// and saved so all windows move to `connector` until [`RestorePhysical`](Self::RestorePhysical).
+    SetLain { connector: String, scale: f64, solo: bool },
     /// lain's display is gone (destroyed, ended by Mutter, or its creation given up): its entry leaves
     /// `monitors()` at once, and stays out while Mutter still lists that monitor.
     ClearLain,
+    /// Capturing an existing physical monitor (`DisplayMode::CaptureExisting`): track its cursor geometry
+    /// without altering the desktop layout or `monitors()`.
+    SetCapture { connector: String },
+    /// Stopped capturing an existing physical monitor.
+    ClearCapture,
+    /// Re-applies the saved physical monitor configuration (after `solo` / `DisplayMode::Primary`), if any.
+    RestorePhysical { reply: oneshot::Sender<()> },
 }
 
 /// The desktop as published, and the way to tell the task about lain's display.
@@ -40,6 +50,7 @@ pub enum Command {
 pub struct DesktopHandle {
     pub desktop: watch::Receiver<Arc<Desktop>>,
     pub monitors: watch::Receiver<Vec<Monitor>>,
+    has_hidden_physical: Arc<AtomicBool>,
     commands: mpsc::UnboundedSender<Command>,
 }
 
@@ -47,12 +58,26 @@ impl DesktopHandle {
     pub fn send(&self, command: Command) {
         let _ = self.commands.send(command);
     }
+
+    pub fn has_hidden_physical(&self) -> bool {
+        self.has_hidden_physical.load(Ordering::Acquire)
+    }
+
+    /// Restores any physical monitors hidden for `DisplayMode::Primary` and waits until the apply completes.
+    pub async fn restore_physical(&self) {
+        let (reply, done) = oneshot::channel();
+        if self.commands.send(Command::RestorePhysical { reply }).is_ok() {
+            let _ = done.await;
+        }
+    }
 }
 
 struct Lain {
     connector: String,
     /// The scale asked for; the one applied is the closest Mutter supports for the current mode.
     wanted: f64,
+    /// `DisplayMode::Primary`: disable physical monitors so `connector` is the sole active display.
+    solo: bool,
 }
 
 impl Lain {
@@ -69,6 +94,13 @@ struct Task {
     tracker: Tracker,
     store: Option<Store>,
     lain: Option<Lain>,
+    /// Existing physical monitor currently captured (`DisplayMode::CaptureExisting`), for cursor geometry.
+    capture: Option<String>,
+    /// Physical monitor layout saved before entering `solo` (`DisplayMode::Primary`), restored on teardown.
+    saved_physical: Option<Vec<LogicalConfig>>,
+    has_hidden_physical: Arc<AtomicBool>,
+    /// Monitor set we already attempted `apply_solo` for, to avoid looping on refusal.
+    solo_applied_set: Option<BTreeSet<MonitorSpec>>,
     /// While lain's display is being created: the monitors there before.
     creating: Option<HashSet<MonitorSpec>>,
     /// lain's former displays, kept out of `monitors()` until Mutter drops them.
@@ -111,12 +143,17 @@ pub async fn spawn(
     let (desktop_tx, desktop_rx) = watch::channel(Arc::new(first.clone()));
     let (monitors_tx, monitors_rx) = watch::channel(first.contract_monitors());
     let (commands, rx) = mpsc::unbounded_channel();
+    let has_hidden_physical = Arc::new(AtomicBool::new(false));
     let task = Task {
         config,
         ids,
         tracker: Tracker::new(stored),
         store,
         lain: None,
+        capture: None,
+        saved_physical: None,
+        has_hidden_physical: has_hidden_physical.clone(),
+        solo_applied_set: None,
         creating: None,
         gone: HashSet::new(),
         state: Some(state),
@@ -126,7 +163,7 @@ pub async fn spawn(
         monitors: monitors_tx,
     };
     tokio::spawn(task.run(changed, rx));
-    Ok(DesktopHandle { desktop: desktop_rx, monitors: monitors_rx, commands })
+    Ok(DesktopHandle { desktop: desktop_rx, monitors: monitors_rx, has_hidden_physical, commands })
 }
 
 impl Task {
@@ -151,16 +188,19 @@ impl Task {
                         self.creating = Some(known);
                         self.publish();
                     }
-                    Some(Command::SetLain { connector, scale }) => {
+                    Some(Command::SetLain { connector, scale, solo }) => {
                         self.creating = None;
+                        self.capture = None;
                         let wanted = if scale > 0.0 { scale } else { 1.0 };
-                        self.lain = Some(Lain { connector, wanted });
+                        self.lain = Some(Lain { connector, wanted, solo });
                         self.tracker.reset();
+                        self.solo_applied_set = None;
                         self.wake = None;
                         self.refresh().await;
                     }
                     Some(Command::ClearLain) => {
                         self.creating = None;
+                        self.solo_applied_set = None;
                         if let Some(lain) = self.lain.take()
                             && let Some(m) = self.state.as_ref().and_then(|s| s.monitor(&lain.connector))
                         {
@@ -168,6 +208,18 @@ impl Task {
                         }
                         self.wake = None;
                         self.publish();
+                    }
+                    Some(Command::SetCapture { connector }) => {
+                        self.capture = Some(connector);
+                        self.publish();
+                    }
+                    Some(Command::ClearCapture) => {
+                        self.capture = None;
+                        self.publish();
+                    }
+                    Some(Command::RestorePhysical { reply }) => {
+                        self.restore_physical().await;
+                        let _ = reply.send(());
                     }
                 },
                 _ = tokio::time::sleep_until(wake.unwrap_or_else(Instant::now)), if wake.is_some() => {
@@ -189,6 +241,10 @@ impl Task {
             }
         }
         self.publish();
+        if self.lain.as_ref().is_some_and(|l| l.solo) {
+            self.maybe_apply_solo().await;
+            return;
+        }
         let Some(view) = self.view() else { return };
         let decision = self.tracker.on_layout(Instant::now(), view);
         self.decide(decision).await;
@@ -205,7 +261,10 @@ impl Task {
         self.gone.retain(|s| state.monitors.iter().any(|m| m.spec == *s));
         let lain = self.lain_connector().map(str::to_owned);
         let desktop = desktop::build(state, lain.as_deref(), &mut self.ids);
-        let geometry = desktop.lain().map(|m| StreamGeometry { bounds: m.monitor.bounds, scale: m.scale });
+        let geometry = desktop
+            .lain()
+            .or_else(|| self.capture.as_deref().and_then(|c| desktop.by_connector(c)))
+            .map(|m| StreamGeometry { bounds: m.monitor.bounds, scale: m.scale });
         self.cursor.set_geometry(geometry);
         let monitors = listed(&desktop, self.creating.as_ref(), &self.gone);
         self.monitors.send_if_modified(|m| {
@@ -216,6 +275,100 @@ impl Task {
             changed
         });
         self.desktop.send_replace(Arc::new(desktop));
+    }
+
+    /// For `DisplayMode::Primary`: snapshots active physical monitors once, then makes lain's virtual display the
+    /// sole active logical monitor at the requested scale.
+    async fn maybe_apply_solo(&mut self) {
+        let (Some(lain), Some(state)) = (self.lain.as_ref(), self.state.as_ref()) else { return };
+        let Some(logical) = state.logical_of(&lain.connector) else { return };
+        let spec_scale = lain.target(state);
+        let set = state.monitor_set();
+        let has_other_active = state.logical.len() > 1;
+        let wrong_scale = (logical.scale - spec_scale).abs() > 1e-3;
+        if !has_other_active && !wrong_scale {
+            self.solo_applied_set = Some(set);
+            return;
+        }
+        if self.solo_applied_set.as_ref() == Some(&set) && !wrong_scale {
+            return;
+        }
+        if self.saved_physical.is_none() {
+            let phys = physical_configs(state);
+            if !phys.is_empty() {
+                self.saved_physical = Some(phys);
+                self.has_hidden_physical.store(true, Ordering::Release);
+            }
+        }
+        for attempt in 0..2 {
+            let (Some(lain), Some(state)) = (self.lain.as_ref(), self.state.as_ref()) else { return };
+            let spec_scale = lain.target(state);
+            let Some(config) = solo_config(state, &lain.connector, spec_scale) else {
+                tracing::warn!(connector = lain.connector, "can't build solo config for lain's display");
+                self.solo_applied_set = Some(state.monitor_set());
+                return;
+            };
+            let args = apply_args(state, &config);
+            tracing::debug!(connector = lain.connector, scale = spec_scale, "ApplyMonitorsConfig (solo, temporary)");
+            match self.config.call::<_, _, ()>("ApplyMonitorsConfig", &args).await {
+                Ok(()) => {
+                    self.solo_applied_set = Some(state.monitor_set());
+                    return;
+                }
+                Err(e) if attempt == 0 && is_stale(&e) => {
+                    if let Ok(state) = current_state(&self.config).await {
+                        self.state = Some(state);
+                        self.publish();
+                    } else {
+                        return;
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!("ApplyMonitorsConfig (solo) refused: {e}");
+                    self.solo_applied_set = Some(state.monitor_set());
+                    return;
+                }
+            }
+        }
+    }
+
+    /// Re-applies the physical monitor configuration saved before `DisplayMode::Primary`.
+    async fn restore_physical(&mut self) {
+        let Some(saved) = self.saved_physical.take() else {
+            self.has_hidden_physical.store(false, Ordering::Release);
+            return;
+        };
+        self.has_hidden_physical.store(false, Ordering::Release);
+        for attempt in 0..2 {
+            match current_state(&self.config).await {
+                Ok(state) => self.state = Some(state),
+                Err(e) => {
+                    tracing::warn!("DisplayConfig.GetCurrentState (restore): {e}");
+                    return;
+                }
+            }
+            let Some(state) = self.state.as_ref() else { return };
+            let Some(config) = restore_config(state, &saved) else {
+                tracing::info!("no saved physical monitors remain connected to restore");
+                return;
+            };
+            let args = apply_args(state, &config);
+            tracing::info!(monitors = config.len(), "restoring physical host display configuration");
+            match self.config.call::<_, _, ()>("ApplyMonitorsConfig", &args).await {
+                Ok(()) => {
+                    if let Ok(state) = current_state(&self.config).await {
+                        self.state = Some(state);
+                        self.publish();
+                    }
+                    return;
+                }
+                Err(e) if attempt == 0 && is_stale(&e) => continue,
+                Err(e) => {
+                    tracing::warn!("ApplyMonitorsConfig (restore) refused: {e}");
+                    return;
+                }
+            }
+        }
     }
 
     fn view(&self) -> Option<View> {
