@@ -1,5 +1,6 @@
 #if os(macOS)
 import AppKit
+import ApplicationServices
 import Carbon
 import CoreGraphics
 import LainInput
@@ -13,9 +14,16 @@ import Synchronization
 /// Positions arrive in global display points (the client's cursor roams the whole desktop) and are
 /// posted as they are.
 public final class InputInjector: InputSink, @unchecked Sendable {
-    public static var hasAccess: Bool { CGPreflightPostEventAccess() }
+    /// Checks both `kTCCServicePostEvent` (required by `CGEvent.post`) and `AXIsProcessTrusted()`
+    /// (`kTCCServiceAccessibility`, which reflects live toggles in System Settings › Accessibility).
+    public static var hasAccess: Bool { CGPreflightPostEventAccess() && AXIsProcessTrusted() }
     /// Shows the Accessibility prompt the first time (§2). Returns the current state.
-    @discardableResult public static func requestAccess() -> Bool { CGRequestPostEventAccess() }
+    @discardableResult public static func requestAccess() -> Bool {
+        let promptKey = "AXTrustedCheckOptionPrompt" as CFString
+        let ax = AXIsProcessTrustedWithOptions([promptKey: true] as CFDictionary)
+        let post = CGRequestPostEventAccess()
+        return ax && post
+    }
 
     private let source: CGEventSource?
     private struct State {
