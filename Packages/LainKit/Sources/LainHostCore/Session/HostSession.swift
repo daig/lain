@@ -534,6 +534,27 @@ public final class HostSession: Sendable {
         listener.setOptions(options)
     }
 
+    /// Errors thrown by `createPairingCode()`.
+    public enum PairingCodeError: Error, Equatable {
+        case missingHostIdentity
+    }
+
+    /// Generates an out-of-band `lain1:...` pairing code for a non-USB client (macOS, Apple TV):
+    /// stores a fresh 32-byte secret in `deps.secrets`, refreshes the Wi-Fi TLS-PSK listener immediately,
+    /// and returns the encoded code containing this host's id, name and secret.
+    public func createPairingCode() throws -> String {
+        guard let identity = deps.identity else { throw PairingCodeError.missingHostIdentity }
+        let secret = ChannelAuth.randomBytes(Pair.secretSize)
+        let code = try PairingCode(hostId: identity.id, secret: secret, hostName: identity.name)
+        let account = PairingAccounts.pairedClient()
+        try deps.secrets.setSecret(secret, for: account)
+        log.notice("created out-of-band pairing code (\(account, privacy: .public))")
+        if let listener = state.withLock({ $0.wifiListener }) {
+            Task { listener.refresh() }
+        }
+        return code.encode()
+    }
+
     /// Ends the live session so that the iPad reconnects into a new one, which picks up settings read at
     /// a session's start (the display's scale, the system key). false: no session.
     @discardableResult

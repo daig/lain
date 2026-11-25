@@ -46,6 +46,8 @@ public struct ClientWiFiConfig: Sendable {
     public var wolInterval = 5.0
     /// Maximum Wake-on-LAN packets sent per foreground search before stopping.
     public var wolMaxAttempts = 6
+    /// Host ids to ignore during discovery (e.g. a local `LainHost` running on the same Mac).
+    public var excludeHostIds: Set<String> = []
     /// Tests only: wraps each attempt's dialer (to hold a dial, or watch its streams).
     var interpose: (@Sendable (any StreamDialer) -> any StreamDialer)?
 
@@ -194,7 +196,7 @@ struct WiFiDialPlan: Equatable {
     /// `only`: the host the owner picked (nil: automatic, every paired Mac in sight). `path`: services seen
     /// on a peer-to-peer interface (direct) or on the network (network) only.
     init(hosts: [DiscoveredHost], preferring lastHostId: String?, only: String? = nil, path: WiFiPath = .automatic,
-         versions: VersionList? = nil, secret: (String) -> [UInt8]?) {
+         excluding excluded: Set<String> = [], versions: VersionList? = nil, secret: (String) -> [UInt8]?) {
         let reachable = { (h: DiscoveredHost) -> Bool in
             switch path {
             case .automatic: true
@@ -202,7 +204,9 @@ struct WiFiDialPlan: Equatable {
             case .network: h.isOnNetwork
             }
         }
-        for host in hosts where PairingAccounts.isCanonicalHostId(host.hostId) && (only == nil || host.hostId == only)
+        for host in hosts where PairingAccounts.isCanonicalHostId(host.hostId)
+            && !excluded.contains(host.hostId)
+            && (only == nil || host.hostId == only)
             && reachable(host) {
             let stored = secret(PairingAccounts.mac(host.hostId))
             if let gap = VersionGap(local: versions, advertised: host.versions) {
@@ -467,7 +471,7 @@ extension SessionCore {
         updateDiscovery(now: now)
         w.plan = current == nil && w.discovery != nil
             ? WiFiDialPlan(hosts: w.hosts, preferring: w.config.lastHost.get(), only: w.config.lastHost.selected(),
-                           path: w.config.path, versions: versions, secret: storedSecret)
+                           path: w.config.path, excluding: w.config.excludeHostIds, versions: versions, secret: storedSecret)
                 .ordered(lastGood: w.config.lastHost.service, lastTried: { w.services[$0]?.lastAttemptAt ?? now })
             : WiFiDialPlan()
         maybeWakeSleepingHost(now: now)

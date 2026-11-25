@@ -446,6 +446,34 @@ func eventually(within seconds: Double = 5, _ body: () -> Bool) async -> Bool {
 @Suite(.serialized) struct ClientSessionWiFiTests {
     let secret = ChannelAuth.randomBytes(32)
 
+    @Test func pairingWithCodeConnectsOverWiFiWithoutUSB() async throws {
+        let hostId = UUID().uuidString
+        let pairingSecret = ChannelAuth.randomBytes(32)
+        let encoded = try PairingCode(hostId: hostId, secret: pairingSecret, hostName: "dai-AI90").encode()
+        let host = try await WiFiMac(secret: pairingSecret, hostId: hostId, name: "dai-AI90")
+        defer { host.cancel() }
+
+        let store = RecordingSecrets()
+        let statuses = Inbox<ClientSession.Status>()
+        let discoveries = Discoveries([host.discovered()])
+        let session = try ClientSession(listenForUSB: false, secrets: store, hello: hello,
+                                        wifi: testWiFi(discoveries)) { statuses.put($0) }
+        defer { session.stop() }
+        #expect(session.port == 0)
+
+        let sawUnpaired = await statuses.first { $0 == .needsCable(hostName: "dai-AI90") }
+        #expect(sawUnpaired != nil)
+        #expect(session.unpairedHosts() == [ClientSession.UnpairedHost(id: hostId, name: "dai-AI90", keyRefused: false)])
+        #expect(throws: PairingCode.Error.invalidFormat) { try PairingCode.decode("invalid") }
+
+        let decoded = try PairingCode.decode(encoded)
+        try session.pair(code: decoded, select: true)
+        let connected = await statuses.first { isNetwork($0) }
+        #expect(connected != nil)
+        #expect(store.secret(for: PairingAccounts.mac(hostId)) == pairingSecret)
+        #expect(session.unpairedHosts().isEmpty)
+    }
+
     @Test func aWiFiSessionComesUpAfterTheGraceAndCarriesInput() async throws {
         let mac = try await WiFiMac(secret: secret)
         defer { mac.cancel() }
@@ -897,7 +925,10 @@ func eventually(within seconds: Double = 5, _ body: () -> Bool) async -> Bool {
         #expect(await statuses.first(within: 0.05) { $0 == .pairingRefused(hostName: "Mac mini") } == nil)
         let second = try #require(await mac.refused.next())
         #expect(await statuses.first { $0 == .pairingRefused(hostName: "Mac mini") } != nil)
-        #expect(ClientStatus(.pairingRefused(hostName: "Mac mini")).detail == "Connect the USB-C cable once to pair again")
+        let refusedDetail = ClientStatus(.pairingRefused(hostName: "Mac mini")).detail
+        #expect(ClientStatus.device == "Apple TV"
+                ? refusedDetail.contains("pairing code")
+                : refusedDetail == "Connect the USB-C cable once to pair again")
 
         // Retried at the longest backoff (0.4 s here, where the doubling would be at 0.2 s), and the
         // status stays put through the redials.
@@ -1193,18 +1224,26 @@ func isPong(_ message: Message, _ id: UInt32) -> Bool {
     }
 
     @Test func statusesSayWhatToDo() {
-        #expect(ClientStatus(.listening(port: 1)).detail == "Connect your iPad to the Mac with a USB-C cable")
-        #expect(ClientStatus(.listening(port: 1, wifi: true)).detail.contains("paired Mac with Wi-Fi on"))
+        let device = ClientStatus.device
+        let isTV = device == "Apple TV"
+        if isTV {
+            #expect(ClientStatus(.listening(port: 1)).detail.contains("local network"))
+            #expect(ClientStatus(.needsCable(hostName: "Mac mini")).detail.contains("pairing code"))
+            #expect(ClientStatus(.pairingRefused(hostName: "Mac mini")).detail.contains("pairing code"))
+        } else {
+            #expect(ClientStatus(.listening(port: 1)).detail == "Connect your \(device) to the Mac with a USB-C cable")
+            #expect(ClientStatus(.listening(port: 1, wifi: true)).detail.contains("paired Mac with Wi-Fi on"))
+            #expect(ClientStatus(.needsCable(hostName: "Mac mini")).detail == "Connect the cable once to use it over Wi-Fi")
+            #expect(ClientStatus(.pairingRefused(hostName: "Mac mini")).detail == "Connect the USB-C cable once to pair again")
+        }
         #expect(ClientStatus(.needsCable(hostName: "Mac mini")).title == "Found Mac mini")
-        #expect(ClientStatus(.needsCable(hostName: "Mac mini")).detail == "Connect the cable once to use it over Wi-Fi")
         #expect(ClientStatus(.versionMismatch(hostName: nil, gap: .peerOlder(peer: "protocol v2"))).title == "The Mac runs another lain")
         #expect(ClientStatus(.versionMismatch(hostName: nil, gap: .peerOlder(peer: "protocol v2"))).detail.contains("update lain on the Mac"))
-        #expect(ClientStatus(.versionMismatch(hostName: "Mac mini", gap: .peerNewer(peer: "protocol v5"))).detail.contains("update lain on this iPad"))
+        #expect(ClientStatus(.versionMismatch(hostName: "Mac mini", gap: .peerNewer(peer: "protocol v5"))).detail.contains("update lain on this \(device)"))
         #expect(ClientStatus(.versionMismatch(hostName: "Mac mini", gap: .differentBuilds(version: 4))).detail
                     .contains("different development build of protocol v4"))
         #expect(ClientStatus(.connecting(hostName: "Mac mini", interfaces: ["en0", "awdl0"])).detail == "over Wi-Fi (en0, awdl0)")
-        #expect(ClientStatus(.pairingRefused(hostName: "Mac mini")).title == "Mac mini doesn't recognize this iPad")
-        #expect(ClientStatus(.pairingRefused(hostName: "Mac mini")).detail == "Connect the USB-C cable once to pair again")
+        #expect(ClientStatus(.pairingRefused(hostName: "Mac mini")).title == "Mac mini doesn't recognize this \(device)")
         #expect(ClientStatus.describe(.usb) == "USB")
         #expect(ClientStatus.describe(.network(interface: "awdl0", peerToPeer: true)) == "Wi-Fi · AWDL awdl0")
         #expect(ClientStatus.describe(.network(interface: "en1", peerToPeer: false)) == "Wi-Fi · LAN en1")

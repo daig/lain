@@ -55,9 +55,13 @@ public enum PairingAccounts {
     /// The Mac last paired over USB (D23).
     public static let usbHost = "host"
     private static let macPrefix = "mac:"
+    private static let pairedClientPrefix = "pair:"
 
     /// A Mac's secret usable over Wi-Fi, by the host id it advertises.
     public static func mac(_ hostId: String) -> String { macPrefix + hostId }
+
+    /// A host-side secret account created for an out-of-band pairing code (Mac/Apple TV clients).
+    public static func pairedClient(_ id: String = UUID().uuidString) -> String { pairedClientPrefix + id }
 
     /// The host id of a `mac:<hostId>` account; nil for other accounts and non-canonical ids.
     public static func hostId(fromAccount account: String) -> String? {
