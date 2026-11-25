@@ -59,9 +59,9 @@ struct LainHostApp: App {
             Text(host.status.title)
             Text(host.wifiLine)
             if let note = host.peerVersionNote { Text(note) }
-            if !host.hasAccessibility {
-                Text("Input is off until lain has Accessibility")
-                Button("Grant Accessibility…") { host.requestAccessibility() }
+            if host.permissions.hasMissing {
+                Text("Permissions needed: \(host.permissions.missingNames.joined(separator: ", "))")
+                Button("Setup Permissions…") { host.showPermissionsWindow() }
             }
             if let video = host.videoLines {
                 Divider()
@@ -118,6 +118,17 @@ struct LainHostApp: App {
                 host.update { $0.systemKey.toggle() }
             }
             Divider()
+            Button(host.permissions.hasMissing
+                   ? "Permissions (\(host.permissions.summaryBadge))…"
+                   : "Permissions…") {
+                host.showPermissionsWindow()
+            }
+            Menu("Open Permission Settings") {
+                Button((host.hasAccessibility ? "✓ " : "") + "Accessibility…") { host.requestAccessibility() }
+                Button((host.hasScreenRecording ? "✓ " : "") + "Screen Recording…") { host.requestScreenRecording() }
+                Button((host.localNetwork == .allowed ? "✓ " : "") + "Local Network…") { host.openLocalNetworkSettings() }
+                Button("Login Items…") { HostPermissionSettings.openLoginItems() }
+            }
             switch host.loginAgent {
             case .enabled:
                 Button("✓ Start at Login") { host.setStartAtLogin(false) }
@@ -147,7 +158,16 @@ final class HostController {
     /// The Wi-Fi listener (§7.7): advertising, blocked by Local Network privacy, off or failed.
     private(set) var wifiLine = HostWiFiStatus.starting.title
     private(set) var hasAccessibility = InputInjector.hasAccess
+    private(set) var hasScreenRecording = CGPreflightScreenCaptureAccess()
+    private(set) var localNetwork = HostPermissionStatus.LocalNetwork.checking
     private(set) var loginAgent = LoginAgent.state
+
+    var permissions: HostPermissionStatus {
+        HostPermissionStatus(accessibility: hasAccessibility,
+                             screenRecording: hasScreenRecording,
+                             localNetwork: localNetwork,
+                             loginAgent: loginAgent)
+    }
     /// The live session's video format (or why it has none): fixed for a session.
     private(set) var videoLines: [String]?
     /// lain on the iPad runs an older protocol version (it works): what updating it adds.
@@ -172,6 +192,8 @@ final class HostController {
     @ObservationIgnored private var session: HostSession?
     @ObservationIgnored private var accessPoll: Task<Void, Never>?
     @ObservationIgnored private var pairingNoticeTask: Task<Void, Never>?
+    @ObservationIgnored private let permissionsWindow = PermissionsWindowController()
+    @ObservationIgnored private var didAutoShowPermissions = false
 
     init() {
         keeper = DisplayKeeper(keepFor: .seconds(HostPreferences.load().displayKeepAliveSeconds), power: power)
@@ -211,6 +233,11 @@ final class HostController {
         session.start()
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil,
                                                queue: .main) { _ in session.stop() }
+        // Prompt for any missing permissions on startup so first-time setup (or re-granting after an update)
+        // never requires hunting through System Settings manually.
+        DispatchQueue.main.async { [weak self] in
+            self?.promptMissingPermissionsOnStartup()
+        }
         // The grant happens in System Settings; notice it without restarting.
         accessPoll = Task { [weak self] in
             while !Task.isCancelled {
@@ -221,8 +248,16 @@ final class HostController {
                 // the menu shows only what stays put during a session.
                 let granted = InputInjector.hasAccess
                 if self?.hasAccessibility != granted { self?.hasAccessibility = granted }
+                let screen = CGPreflightScreenCaptureAccess()
+                if self?.hasScreenRecording != screen { self?.hasScreenRecording = screen }
+                let localNet = Self.localNetworkState(session.wifiStatus)
+                if self?.localNetwork != localNet { self?.localNetwork = localNet }
                 let agent = LoginAgent.state
                 if self?.loginAgent != agent { self?.loginAgent = agent }
+                if let self, !self.didAutoShowPermissions, self.permissions.hasMissing {
+                    self.didAutoShowPermissions = true
+                    self.permissionsWindow.show(host: self)
+                }
                 let lines = Self.videoLines(session)
                 if self?.videoLines != lines { self?.videoLines = lines }
                 let wifi = identity == nil ? "Wi-Fi: off: this Mac's lain id couldn't be loaded" : session.wifiStatus.title
@@ -352,8 +387,66 @@ final class HostController {
         }
     }
 
+    func showPermissionsWindow() {
+        refreshPermissions()
+        permissionsWindow.show(host: self)
+    }
+
     func requestAccessibility() {
-        hasAccessibility = InputInjector.requestAccess()
+        HostPermissionSettings.openAccessibility()
+        hasAccessibility = InputInjector.hasAccess
+    }
+
+    func requestScreenRecording() {
+        HostPermissionSettings.openScreenRecording()
+        hasScreenRecording = CGPreflightScreenCaptureAccess()
+    }
+
+    func openLocalNetworkSettings() {
+        HostPermissionSettings.openLocalNetwork()
+    }
+
+    func requestAllMissingPermissions() {
+        refreshPermissions()
+        if !hasAccessibility { _ = InputInjector.requestAccess() }
+        if !hasScreenRecording { _ = CGRequestScreenCaptureAccess() }
+        if !hasAccessibility {
+            NSWorkspace.shared.open(HostPermissionSettings.accessibilityURL)
+        } else if !hasScreenRecording {
+            NSWorkspace.shared.open(HostPermissionSettings.screenRecordingURL)
+        } else if localNetwork == .denied {
+            HostPermissionSettings.openLocalNetwork()
+        } else if loginAgent == .requiresApproval {
+            HostPermissionSettings.openLoginItems()
+        }
+        refreshPermissions()
+    }
+
+    private func promptMissingPermissionsOnStartup() {
+        refreshPermissions()
+        guard permissions.hasMissing else { return }
+        didAutoShowPermissions = true
+        if !hasAccessibility { _ = InputInjector.requestAccess() }
+        if !hasScreenRecording { _ = CGRequestScreenCaptureAccess() }
+        refreshPermissions()
+        if permissions.hasMissing {
+            permissionsWindow.show(host: self)
+        }
+    }
+
+    private func refreshPermissions() {
+        hasAccessibility = InputInjector.hasAccess
+        hasScreenRecording = CGPreflightScreenCaptureAccess()
+        if let session { localNetwork = Self.localNetworkState(session.wifiStatus) }
+        loginAgent = LoginAgent.state
+    }
+
+    private static func localNetworkState(_ status: HostWiFiStatus) -> HostPermissionStatus.LocalNetwork {
+        switch status {
+        case .advertising: .allowed
+        case .denied: .denied
+        case .starting, .off, .failed: .checking
+        }
     }
 }
 
