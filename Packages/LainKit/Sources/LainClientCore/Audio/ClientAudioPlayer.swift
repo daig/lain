@@ -45,7 +45,7 @@ public final class ClientAudioPlayer: Sendable {
         guard let buffer, let config, offset != nil else { return nil }
         let stats = buffer.stats, perMs = Double(config.sampleRate) / 1000
         var output = 0.0
-        #if os(iOS)
+        #if os(iOS) || os(tvOS)
         let session = AVAudioSession.sharedInstance()
         output = (session.outputLatency + session.ioBufferDuration) * 1000
         #endif
@@ -145,8 +145,8 @@ public final class ClientAudioPlayer: Sendable {
     }
 
     private func start(_ engine: AVAudioEngine) {
-        #if os(iOS)
-        // Plays beside the iPad's own audio, with a short hardware buffer. Dictation switches the category for
+        #if os(iOS) || os(tvOS)
+        // Plays beside the device's own audio, with a short hardware buffer. Dictation switches the category for
         // the microphone and back (`Dictation`).
         let session = AVAudioSession.sharedInstance()
         if session.category != .playAndRecord {

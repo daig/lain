@@ -1,3 +1,4 @@
+#if os(macOS)
 import CoreVideo
 import Foundation
 import LainProtocol
@@ -42,3 +43,4 @@ import Testing
         #expect(ms < 16, "the encoder isn't slowed down")
     }
 }
+#endif

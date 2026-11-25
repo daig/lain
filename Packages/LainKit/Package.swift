@@ -5,7 +5,7 @@ import PackageDescription
 
 let package = Package(
     name: "LainKit",
-    platforms: [.macOS("27.0"), .iOS("27.0")],
+    platforms: [.macOS("27.0"), .iOS("27.0"), .tvOS("27.0")],
     products: [
         .library(name: "LainHostCore", targets: ["LainHostCore"]),
         .library(name: "LainClientCore", targets: ["LainClientCore"]),

@@ -28,6 +28,11 @@ public final class ClientInputPipeline {
     /// A finger on the screen's trackpad areas, which has less room to travel.
     public static let touchCurve = AccelerationCurve(sensitivity: 1.2, acceleration: 1)
     public var touchCurve = ClientInputPipeline.touchCurve
+    /// The Siri Remote's ~28 mm circular clickpad: low sensitivity at slow thumb rolls for targeting,
+    /// steep acceleration ramp so a single full-width swipe crosses a 4K desktop.
+    public static let siriRemoteCurve = AccelerationCurve(sensitivity: 0.55, acceleration: 2.2,
+                                                          threshold: 160, exponent: 1.05, maxGain: 9.0)
+    public var siriRemoteCurve = ClientInputPipeline.siriRemoteCurve
     /// The streamed display's width, in points, that the speeds were tuned at: the iPad's own (its screen's
     /// long side). 0: speeds don't follow the resolution.
     public var referenceWidth = 0.0
@@ -209,6 +214,7 @@ public final class ClientInputPipeline {
         keyRepeat.cancel()
         apply(touch.cancelled(), at: timeNs)
         apply(pad.cancelled(), at: timeNs, fromPad: true)
+        apply(remote.cancelled(), at: timeNs)
         onLocalShortcut(.overlay(true))
     }
 
@@ -473,6 +479,134 @@ public final class ClientInputPipeline {
         zoomBy(factor, aboutX: x, y: y)
     }
 
+    /// Toggles client-side viewport zoom between `1×` and `factor` (default `2×`), centered on the pointer.
+    public func toggleZoom(factor: Double = 2.0) {
+        let wasZoomed = isZoomed
+        if wasZoomed {
+            zoom = 1.0
+            pinched = true
+            updateViewport()
+        } else if viewGeometry != nil {
+            zoomAboutPointer(factor)
+        } else {
+            zoom = max(factor, 1.0)
+            pinched = true
+            updateViewport()
+        }
+        publishRemoteStateIfNeeded()
+    }
+
+    /// Whether the viewport is currently zoomed in past `1×`.
+    public var isZoomed: Bool { effectiveZoom > 1.05 }
+
+    // MARK: Siri Remote (Apple TV)
+
+    /// Local remote-control mode state for HUD/badge display on Apple TV.
+    public struct RemoteState: Sendable, Equatable {
+        public var dragLocked: Bool
+        public var zoomed: Bool
+        public init(dragLocked: Bool = false, zoomed: Bool = false) {
+            self.dragLocked = dragLocked
+            self.zoomed = zoomed
+        }
+    }
+
+    public private(set) var remote = SiriRemoteInput()
+    public var onRemoteStateChange: (RemoteState) -> Void = { _ in }
+    private var lastRemoteState = RemoteState()
+
+    public var remoteState: RemoteState {
+        RemoteState(dragLocked: remote.isDragLocked, zoomed: isZoomed)
+    }
+
+    public func setRemoteJogScroll(_ enabled: Bool) { remote.jogScrollEnabled = enabled }
+
+    public func remoteSurfaceTouched(_ isTouched: Bool, at timeNs: UInt64) {
+        guard !overlayShown else { return }
+        apply(remote.surfaceTouched(isTouched, at: timeNs), at: timeNs)
+    }
+
+    public func remoteSurfaceMoved(x: Double, y: Double, at timeNs: UInt64) {
+        guard !overlayShown else { return }
+        apply(remote.surfaceMoved(x: x, y: y, at: timeNs), at: timeNs)
+    }
+
+    public func remoteIndirectMoved(dx: Double, dy: Double, at timeNs: UInt64) {
+        guard !overlayShown else { return }
+        apply(remote.indirectMoved(dx: dx, dy: dy, at: timeNs), at: timeNs)
+    }
+
+    public func remoteCenterButton(isDown: Bool, at timeNs: UInt64) {
+        guard !overlayShown else { return }
+        apply(remote.centerButton(isDown: isDown, at: timeNs), at: timeNs)
+    }
+
+    public func remoteRingDirection(_ direction: SiriRemoteInput.Direction, isDown: Bool, at timeNs: UInt64) {
+        guard !overlayShown else { return }
+        apply(remote.ringDirection(direction, isDown: isDown, at: timeNs), at: timeNs)
+    }
+
+    public func remotePlayPause(isDown: Bool, at timeNs: UInt64) {
+        guard !overlayShown else { return }
+        apply(remote.playPause(isDown: isDown, at: timeNs), at: timeNs)
+    }
+
+    public func remoteMenu(isDown: Bool, at timeNs: UInt64) {
+        guard !overlayShown else { return }
+        apply(remote.menu(isDown: isDown, at: timeNs), at: timeNs)
+    }
+
+    public func setRemoteDragLocked(_ locked: Bool, at timeNs: UInt64) {
+        apply(remote.setDragLocked(locked), at: timeNs)
+    }
+
+    public func remoteCancelled(at timeNs: UInt64) {
+        apply(remote.cancelled(), at: timeNs)
+    }
+
+    private func publishRemoteStateIfNeeded() {
+        let now = remoteState
+        guard now != lastRemoteState else { return }
+        lastRemoteState = now
+        onRemoteStateChange(now)
+    }
+
+    private func apply(_ actions: [SiriRemoteInput.Action], at timeNs: UInt64) {
+        guard !actions.isEmpty else { return }
+        applyingTouch = true
+        defer {
+            applyingTouch = false
+            publishRemoteStateIfNeeded()
+        }
+        for action in actions {
+            switch action {
+            case .moveBy(let dx, let dy):
+                guard let move = pointer.move(dx: dx, dy: dy, at: timeNs, buttons: heldButtons.mask,
+                                              using: scaled(siriRemoteCurve)) else { continue }
+                send(.pointerMove(move))
+            case .button(let button, let isDown):
+                mouseButton(button, isDown: isDown, at: timeNs)
+            case .scrollBegan:
+                scrollBegan(at: timeNs)
+            case .scroll(let dx, let dy):
+                scrollChanged(dx: dx, dy: dy, at: timeNs)
+            case .scrollEnded:
+                scrollEnded(at: timeNs)
+            case .scrollCancelled:
+                scrollCancelled(at: timeNs)
+            case .keyTap(let key):
+                keyChanged(key, isDown: true, at: timeNs)
+                keyChanged(key, isDown: false, at: timeNs)
+            case .toggleZoom:
+                toggleZoom()
+            case .openPanel:
+                openPanel(at: timeNs)
+            case .dragLockChanged:
+                break   // published in defer via publishRemoteStateIfNeeded()
+            }
+        }
+    }
+
     /// A scroll from a control on the glass (the scroll ribbon): as a touch, it needs no pointer lock. Only the
     /// scroll actions are taken.
     public func glassScroll(_ action: TouchGestures.Action, at timeNs: UInt64) {
@@ -588,6 +722,7 @@ public final class ClientInputPipeline {
         if let repeated = keyRepeat.tick(at: timeNs) { send(.keyEvent(repeated)) }
         apply(touch.tick(at: timeNs), at: timeNs)
         apply(pad.tick(at: timeNs), at: timeNs, fromPad: true)
+        apply(remote.tick(at: timeNs), at: timeNs)
         if let down = systemKeyDownAtNs, !overlayShown, timeNs &- down >= Self.overlayHoldNs, timeNs >= down {
             systemKeyDownAtNs = nil
             overlayShown = true
@@ -596,6 +731,7 @@ public final class ClientInputPipeline {
             keyRepeat.cancel()
             apply(touch.cancelled(), at: timeNs)   // the panel takes the screen too
             apply(pad.cancelled(), at: timeNs, fromPad: true)
+            apply(remote.cancelled(), at: timeNs)
             onLocalShortcut(.overlay(true))
         }
     }
@@ -620,6 +756,8 @@ public final class ClientInputPipeline {
         _ = heldButtons.releaseAll(x: pointer.x, y: pointer.y)
         touch.reset()
         pad.reset()
+        remote.reset()
+        publishRemoteStateIfNeeded()
         keyRepeat.cancel()
         clicks.reset()
         momentum = MomentumSynthesizer(config: momentum.config)

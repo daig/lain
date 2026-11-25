@@ -121,7 +121,9 @@ import Testing
 
     @Test func deviceNameFollowsTheModel() {
         #expect(ClientStatus.deviceName(model: "iPhone19,4") == "iPhone" && ClientStatus.deviceName(model: "iPad16,6") == "iPad")
+        #expect(ClientStatus.deviceName(model: "AppleTV14,1") == "Apple TV")
         #expect(ClientStatus.homeDisplay(model: "iPhone19,4")?.pixelWidth == 2853 && ClientStatus.homeDisplay(model: "iPad16,6") == nil)
+        #expect(ClientStatus.homeDisplay(model: "AppleTV14,1") == nil)
     }
 
     @Test func theHostLineSaysWhyItHasNoNumbers() {

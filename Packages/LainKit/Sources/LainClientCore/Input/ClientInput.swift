@@ -294,6 +294,80 @@ public final class ClientInput: @unchecked Sendable {
         perform { self.pipeline.glassScroll(action, at: t) }
     }
 
+    // MARK: Siri Remote (Apple TV)
+
+    public func setRemoteStateHandler(_ handler: @escaping @Sendable (ClientInputPipeline.RemoteState) -> Void) {
+        perform { self.pipeline.onRemoteStateChange = handler }
+    }
+
+    public func setRemoteJogScroll(_ enabled: Bool) {
+        perform { self.pipeline.setRemoteJogScroll(enabled) }
+    }
+
+    public func remoteSurfaceTouched(_ isTouched: Bool) {
+        let t = MonotonicClock.now()
+        perform { self.pipeline.remoteSurfaceTouched(isTouched, at: t) }
+    }
+
+    public func remoteSurfaceMoved(x: Double, y: Double) {
+        let t = MonotonicClock.now()
+        perform {
+            self.pipeline.remoteSurfaceMoved(x: x, y: y, at: t)
+            self.publishCursor()
+        }
+    }
+
+    public func remoteIndirectMoved(dx: Double, dy: Double) {
+        let t = MonotonicClock.now()
+        perform {
+            self.pipeline.remoteIndirectMoved(dx: dx, dy: dy, at: t)
+            self.publishCursor()
+        }
+    }
+
+    public func remoteCenterButton(isDown: Bool) {
+        let t = MonotonicClock.now()
+        perform {
+            self.pipeline.remoteCenterButton(isDown: isDown, at: t)
+            self.publishCursor()
+        }
+    }
+
+    public func remoteRingDirection(_ direction: SiriRemoteInput.Direction, isDown: Bool) {
+        let t = MonotonicClock.now()
+        perform { self.pipeline.remoteRingDirection(direction, isDown: isDown, at: t) }
+    }
+
+    public func remotePlayPause(isDown: Bool) {
+        let t = MonotonicClock.now()
+        perform {
+            self.pipeline.remotePlayPause(isDown: isDown, at: t)
+            self.publishCursor()
+        }
+    }
+
+    public func remoteMenu(isDown: Bool) {
+        let t = MonotonicClock.now()
+        perform { self.pipeline.remoteMenu(isDown: isDown, at: t) }
+    }
+
+    public func setRemoteDragLocked(_ locked: Bool) {
+        let t = MonotonicClock.now()
+        perform { self.pipeline.setRemoteDragLocked(locked, at: t) }
+    }
+
+    public func remoteCancelled() {
+        let t = MonotonicClock.now()
+        perform { self.pipeline.remoteCancelled(at: t) }
+    }
+
+    public func toggleZoom(factor: Double = 2.0) {
+        perform {
+            self.pipeline.toggleZoom(factor: factor)
+            self.publishCursor()
+        }
+    }
+
     public func mouseButton(_ button: MouseButton, isDown: Bool) {
         let t = MonotonicClock.now()
         perform { self.pipeline.mouseButton(button, isDown: isDown, at: t) }
@@ -332,7 +406,10 @@ public final class ClientInput: @unchecked Sendable {
     /// Call at the display rate (~120 Hz).
     public func tick() {
         let t = MonotonicClock.now()
-        perform { self.pipeline.tick(at: t) }
+        perform {
+            self.pipeline.tick(at: t)
+            self.publishCursor()
+        }
     }
 
     /// Invariant 4: sends `ReleaseAll` (if connected) and forgets everything held.

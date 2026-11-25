@@ -43,10 +43,13 @@ public enum ClientStatus: Sendable, Equatable {
         }
     }
 
-    /// What this device is called in the texts: "iPhone" on one, else "iPad".
+    /// What this device is called in the texts: "Apple TV" or "iPhone" on one, else "iPad".
     public static let device = deviceName(model: hardwareModel())
 
-    public static func deviceName(model: String) -> String { model.hasPrefix("iPhone") ? "iPhone" : "iPad" }
+    public static func deviceName(model: String) -> String {
+        if model.hasPrefix("AppleTV") { return "Apple TV" }
+        return model.hasPrefix("iPhone") ? "iPhone" : "iPad"
+    }
 
     /// The hardware's model identifier ("iPad16,6", "iPhone19,4"); in the simulator, the simulated device's.
     public static func hardwareModel() -> String {
@@ -90,11 +93,14 @@ public enum ClientStatus: Sendable, Equatable {
     public var detail: String {
         switch self {
         case .waitingForMac(let wifi):
-            wifi ? Self.connectHint : "Connect your \(Self.device) to the Mac with a USB-C cable"
+            if Self.isAppleTV { Self.tvConnectHint }
+            else { wifi ? Self.connectHint : "Connect your \(Self.device) to the Mac with a USB-C cable" }
         case .searching:
-            Self.connectHint
+            Self.isAppleTV ? Self.tvConnectHint : Self.connectHint
         case .needsCable:
-            "Connect the cable once to use it over Wi-Fi"
+            Self.isAppleTV
+                ? "Select Pair below and paste a pairing code from this computer"
+                : "Connect the cable once to use it over Wi-Fi"
         case .versionMismatch(_, .peerOlder(let peer)):
             "It speaks \(peer), this \(Self.device) protocol \(VersionList.offered): update lain on the Mac"
         case .versionMismatch(_, .peerNewer(let peer)):
@@ -102,11 +108,15 @@ public enum ClientStatus: Sendable, Equatable {
         case .versionMismatch(_, .differentBuilds(let version)):
             "It runs a different development build of protocol v\(version): update both from the same tree"
         case .localNetworkDenied:
-            "Allow lain in Settings › Privacy & Security › Local Network, or connect the cable"
+            Self.isAppleTV
+                ? "Allow lain in Settings › Privacy & Security › Local Network"
+                : "Allow lain in Settings › Privacy & Security › Local Network, or connect the cable"
         case .hostBusy:
             "It has another session (a cable connection wins); trying again shortly"
         case .pairingRefused:
-            "Connect the USB-C cable once to pair again"
+            Self.isAppleTV
+                ? "Select Re-pair below and paste a new pairing code from this computer"
+                : "Connect the USB-C cable once to pair again"
         case .connecting(_, let interfaces):
             "over Wi-Fi" + (interfaces.isEmpty ? "" : " (\(interfaces.joined(separator: ", ")))")
         case .connected(let n):
@@ -155,5 +165,7 @@ public enum ClientStatus: Sendable, Equatable {
         }
     }
 
+    private static var isAppleTV: Bool { device == "Apple TV" }
     private static let connectHint = "Connect the USB-C cable, or keep the \(device) near a paired Mac with Wi-Fi on"
+    private static let tvConnectHint = "Make sure lain is running on a computer on your local network"
 }
