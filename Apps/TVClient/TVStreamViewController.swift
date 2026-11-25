@@ -70,6 +70,9 @@ final class TVStreamViewController: GCEventViewController {
     private var renderedGenericPairButton = false
     private let hud = UILabel()
     private let modeBadge = UILabel()
+    private let dictationBanner = UILabel()
+    private let dictation = TVDictation()
+    private var dictationPartial = ""
 
     private static let log = Logger(subsystem: "lain", category: "tvclient")
 
@@ -109,6 +112,7 @@ final class TVStreamViewController: GCEventViewController {
 
         setUpRendering()
         setUpLabels()
+        setUpDictation()
         observe()
 
         input.setPointerEnabled(true)
@@ -202,12 +206,29 @@ final class TVStreamViewController: GCEventViewController {
         modeBadge.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(modeBadge)
 
+        dictationBanner.font = .monospacedSystemFont(ofSize: 22, weight: .medium)
+        dictationBanner.textColor = .white
+        dictationBanner.backgroundColor = UIColor.black.withAlphaComponent(0.78)
+        dictationBanner.layer.cornerRadius = 18
+        dictationBanner.layer.masksToBounds = true
+        dictationBanner.layer.borderWidth = 1.5
+        dictationBanner.layer.borderColor = UIColor.systemRed.withAlphaComponent(0.7).cgColor
+        dictationBanner.textAlignment = .center
+        dictationBanner.numberOfLines = 4
+        dictationBanner.isHidden = true
+        dictationBanner.accessibilityIdentifier = "stream.dictationBanner"
+        dictationBanner.translatesAutoresizingMaskIntoConstraints = false
+        view.addSubview(dictationBanner)
+
         NSLayoutConstraint.activate([
             hud.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 24),
             hud.trailingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.trailingAnchor, constant: -24),
             modeBadge.topAnchor.constraint(equalTo: view.safeAreaLayoutGuide.topAnchor, constant: 24),
             modeBadge.leadingAnchor.constraint(equalTo: view.safeAreaLayoutGuide.leadingAnchor, constant: 24),
             modeBadge.heightAnchor.constraint(equalToConstant: 42),
+            dictationBanner.bottomAnchor.constraint(equalTo: view.safeAreaLayoutGuide.bottomAnchor, constant: -28),
+            dictationBanner.centerXAnchor.constraint(equalTo: view.centerXAnchor),
+            dictationBanner.widthAnchor.constraint(lessThanOrEqualTo: view.widthAnchor, multiplier: 0.80),
         ])
 
         uiTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
@@ -360,6 +381,67 @@ final class TVStreamViewController: GCEventViewController {
             hud.text = link + "\n" + stats.hudText
         }
         if overlayController != nil { refreshOverlay() }
+        if dictation.isActive { renderDictationBanner() }
+    }
+
+    // MARK: Live Dictation & Hardware Probe
+
+    private func setUpDictation() {
+        dictation.onState = { [weak self] state in
+            guard let self else { return }
+            self.audio?.setMuted(self.dictation.isActive)
+            if !self.dictation.isActive { self.dictationPartial = "" }
+            self.renderDictationBanner()
+            self.refreshOverlay()
+            if case .failed = state {
+                Task { @MainActor [weak self] in
+                    try? await Task.sleep(for: .seconds(8))
+                    guard let self, case .failed = self.dictation.state else { return }
+                    self.dictationBanner.isHidden = true
+                }
+            }
+        }
+        dictation.onPartial = { [weak self] partial in
+            guard let self else { return }
+            self.dictationPartial = partial
+            self.renderDictationBanner()
+        }
+        dictation.onFinal = { [weak self] text in
+            guard let self, !text.isEmpty else { return }
+            self.input.typeText(text)
+        }
+        dictation.onProbeUpdated = { [weak self] _ in
+            self?.refreshOverlay()
+        }
+        if !AppDelegate.isTestHost {
+            Task { @MainActor [weak self] in
+                _ = await self?.dictation.runProbe(requestPermission: false)
+            }
+        }
+    }
+
+    private func renderDictationBanner() {
+        switch dictation.state {
+        case .idle:
+            dictationBanner.isHidden = true
+        case .preparing(let msg):
+            dictationBanner.layer.borderColor = UIColor.systemYellow.withAlphaComponent(0.75).cgColor
+            dictationBanner.text = "  \(msg)  "
+            dictationBanner.isHidden = false
+        case .listening(let micName):
+            let level = min(Int((dictation.liveLevel * 40).rounded()), 10)
+            let meter = String(repeating: "▮", count: level) + String(repeating: "▯", count: 10 - level)
+            let header = "● Listening (\(micName)) [\(meter)] · Press Back to stop"
+            dictationBanner.layer.borderColor = UIColor.systemRed.withAlphaComponent(0.85).cgColor
+            dictationBanner.text = dictationPartial.isEmpty
+                ? "  \(header)  "
+                : "  \(header)\n  \(dictationPartial)  "
+            dictationBanner.isHidden = false
+        case .failed(let why):
+            dictationBanner.layer.borderColor = UIColor.systemOrange.withAlphaComponent(0.85).cgColor
+            dictationBanner.text = "  Dictation unavailable: \(why)  "
+            dictationBanner.isHidden = false
+        }
     }
 
     private func toggleHUD() {
@@ -387,6 +469,17 @@ final class TVStreamViewController: GCEventViewController {
                 guard let self else { return }
                 if !text.isEmpty { self.input.typeText(text) }
                 if sendReturn { self.tapKey(.return) }
+            }
+            vc.onToggleDictation = { [weak self] in
+                guard let self else { return }
+                let wasActive = self.dictation.isActive
+                self.input.closePanel()
+                if wasActive { self.dictation.stop() } else { self.dictation.start() }
+            }
+            vc.onProbeDictation = { [weak self] in
+                Task { @MainActor [weak self] in
+                    _ = await self?.dictation.runProbe(requestPermission: true)
+                }
             }
             vc.onTapKey = { [weak self] key, mods in
                 self?.tapKey(key, holding: mods)
@@ -441,6 +534,7 @@ final class TVStreamViewController: GCEventViewController {
         let sheet = panel.sheet(info: info, video: video.stats(), host: session?.hostStats,
                                 hosts: hostList, preferences: preferences, sound: audio?.delay)
         vc.update(sheet: sheet, remoteState: remoteState, hudVisible: !hud.isHidden, canType: hostTypes,
+                  isDictating: dictation.isActive, dictationProbeText: dictation.lastProbe?.summary ?? "",
                   unpairedHosts: session?.unpairedHosts() ?? [])
     }
 
@@ -653,7 +747,12 @@ final class TVStreamViewController: GCEventViewController {
             case .leftArrow: input.remoteRingDirection(.left, isDown: isDown)
             case .rightArrow: input.remoteRingDirection(.right, isDown: isDown)
             case .playPause: input.remotePlayPause(isDown: isDown)
-            case .menu: input.remoteMenu(isDown: isDown)
+            case .menu:
+                if dictation.isActive {
+                    if !isDown { dictation.stop() }
+                } else {
+                    input.remoteMenu(isDown: isDown)
+                }
             default: unhandled.insert(press)
             }
         }

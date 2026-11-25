@@ -121,6 +121,8 @@ targets:
         UIApplicationSceneManifest:
           UIApplicationSupportsMultipleScenes: false
         NSLocalNetworkUsageDescription: lain finds your computer and connects to it over the local network.
+        NSMicrophoneUsageDescription: lain listens while you dictate, and types what you say on your computer.
+        NSSpeechRecognitionUsageDescription: lain turns what you dictate into text on this Apple TV, and types it on your computer.
         NSBonjourServices:
           - _lain._tcp
         # Siri Remote (2nd–4th gen) exposes GCDirectionalGamepad; required to read inner/outer clickpad elements.

@@ -6,6 +6,8 @@ import UIKit
 /// shortcuts) with Lain's `ControlPanel` status, host picker, and settings.
 final class TVOverlayViewController: UIViewController {
     var onTypeText: ((String, Bool) -> Void)?
+    var onToggleDictation: (() -> Void)?
+    var onProbeDictation: (() -> Void)?
     var onTapKey: ((PhysicalKey, [PhysicalKey]) -> Void)?
     var onToggleZoom: (() -> Void)?
     var onToggleDragLock: (() -> Void)?
@@ -17,6 +19,8 @@ final class TVOverlayViewController: UIViewController {
     private var remoteState = ClientInputPipeline.RemoteState()
     private var hudVisible = false
     private var canType = false
+    private var isDictating = false
+    private var dictationProbeText = ""
     private var sheet = ControlPanel.Sheet()
     private var unpairedHosts: [ClientSession.UnpairedHost] = []
 
@@ -24,9 +28,11 @@ final class TVOverlayViewController: UIViewController {
     private let titleLabel = UILabel()
     private let subtitleLabel = UILabel()
     private let statusLabel = UILabel()
+    private let probeLabel = UILabel()
     private let quickStack = UIStackView()
     private let settingsStack = UIStackView()
 
+    private var dictationButton: UIButton?
     private var zoomButton: UIButton?
     private var dragLockButton: UIButton?
     private var hudButton: UIButton?
@@ -46,7 +52,7 @@ final class TVOverlayViewController: UIViewController {
         card.translatesAutoresizingMaskIntoConstraints = false
         view.addSubview(card)
 
-        let header = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel, statusLabel])
+        let header = UIStackView(arrangedSubviews: [titleLabel, subtitleLabel, statusLabel, probeLabel])
         header.axis = .vertical
         header.spacing = 6
         header.translatesAutoresizingMaskIntoConstraints = false
@@ -59,6 +65,10 @@ final class TVOverlayViewController: UIViewController {
         statusLabel.font = .monospacedSystemFont(ofSize: 20, weight: .regular)
         statusLabel.textColor = UIColor(white: 1, alpha: 0.78)
         statusLabel.numberOfLines = 4
+        probeLabel.font = .monospacedSystemFont(ofSize: 18, weight: .regular)
+        probeLabel.textColor = UIColor(red: 0.65, green: 0.90, blue: 1.0, alpha: 0.92)
+        probeLabel.numberOfLines = 0
+        probeLabel.isHidden = true
 
         quickStack.axis = .vertical
         quickStack.spacing = 14
@@ -103,11 +113,14 @@ final class TVOverlayViewController: UIViewController {
     }
 
     func update(sheet: ControlPanel.Sheet, remoteState: ClientInputPipeline.RemoteState, hudVisible: Bool, canType: Bool,
+                isDictating: Bool = false, dictationProbeText: String = "",
                 unpairedHosts: [ClientSession.UnpairedHost] = []) {
         self.sheet = sheet
         self.remoteState = remoteState
         self.hudVisible = hudVisible
         self.canType = canType
+        self.isDictating = isDictating
+        self.dictationProbeText = dictationProbeText
         self.unpairedHosts = unpairedHosts
         if isViewLoaded { applyContent() }
     }
@@ -118,7 +131,18 @@ final class TVOverlayViewController: UIViewController {
         quickStack.arrangedSubviews.forEach { $0.removeFromSuperview() }
         quickStack.addArrangedSubview(sectionHeading("QUICK ACTIONS"))
 
-        let typeBtn = makeActionButton(title: "Type / Dictate…", accessibilityId: "overlay.type") { [weak self] in
+        let dictBtn = makeActionButton(title: "Start Live Dictation", accessibilityId: "overlay.dictation") { [weak self] in
+            self?.onToggleDictation?()
+        }
+        dictationButton = dictBtn
+        quickStack.addArrangedSubview(dictBtn)
+
+        let probeBtn = makeActionButton(title: "Probe Mic & Speech", accessibilityId: "overlay.probeDictation") { [weak self] in
+            self?.onProbeDictation?()
+        }
+        quickStack.addArrangedSubview(probeBtn)
+
+        let typeBtn = makeActionButton(title: "Type / Siri Keyboard…", accessibilityId: "overlay.type") { [weak self] in
             self?.presentTextEntry()
         }
         typeButton = typeBtn
@@ -164,7 +188,10 @@ final class TVOverlayViewController: UIViewController {
     private func applyContent() {
         titleLabel.text = sheet.title.isEmpty ? "lain" : sheet.title
         statusLabel.text = sheet.status.joined(separator: "\n")
+        probeLabel.text = dictationProbeText
+        probeLabel.isHidden = dictationProbeText.isEmpty
 
+        dictationButton?.setTitle(isDictating ? "Stop Live Dictation" : "Start Live Dictation", for: .normal)
         typeButton?.isEnabled = canType
         zoomButton?.setTitle("2× Cursor Zoom: \(remoteState.zoomed ? "On" : "Off")", for: .normal)
         dragLockButton?.setTitle("Drag Lock: \(remoteState.dragLocked ? "On" : "Off")", for: .normal)
