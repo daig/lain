@@ -28,10 +28,10 @@ public final class ClientInputPipeline {
     /// A finger on the screen's trackpad areas, which has less room to travel.
     public static let touchCurve = AccelerationCurve(sensitivity: 1.2, acceleration: 1)
     public var touchCurve = ClientInputPipeline.touchCurve
-    /// The Siri Remote's ~28 mm circular clickpad: low sensitivity at slow thumb rolls for targeting,
-    /// steep acceleration ramp so a single full-width swipe crosses a 4K desktop.
-    public static let siriRemoteCurve = AccelerationCurve(sensitivity: 0.55, acceleration: 2.2,
-                                                          threshold: 160, exponent: 1.05, maxGain: 9.0)
+    /// The Siri Remote's ~28 mm circular clickpad: calm linear response at slow/medium thumb rolls
+    /// for precise targeting, with a smooth sublinear ramp for brisk swipes across a 4K desktop.
+    public static let siriRemoteCurve = AccelerationCurve(sensitivity: 0.55, acceleration: 1.35,
+                                                          threshold: 360, exponent: 0.85, maxGain: 5.0)
     public var siriRemoteCurve = ClientInputPipeline.siriRemoteCurve
     /// The streamed display's width, in points, that the speeds were tuned at: the iPad's own (its screen's
     /// long side). 0: speeds don't follow the resolution.

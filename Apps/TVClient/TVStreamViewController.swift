@@ -561,7 +561,10 @@ final class TVStreamViewController: GCEventViewController {
             return
         }
         activeIndirectTouch = ObjectIdentifier(touch)
-        lastIndirectPoint = touch.preciseLocation(in: view)
+        // Anchor on the first `touchesMoved` rather than `touchesBegan`: on tvOS, `touchesBegan`
+        // initializes indirect touches at `view.center` and the first `touchesMoved` can jump to
+        // the finger's settled offset, which would otherwise cause an initial cursor leap.
+        lastIndirectPoint = nil
         video.cursor.pointerMoved()
         input.remoteSurfaceTouched(true)
     }
@@ -569,12 +572,15 @@ final class TVStreamViewController: GCEventViewController {
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
         guard remoteStreamingActive,
               let active = activeIndirectTouch,
-              let touch = touches.first(where: { ObjectIdentifier($0) == active }),
-              let prev = lastIndirectPoint else {
+              let touch = touches.first(where: { ObjectIdentifier($0) == active }) else {
             super.touchesMoved(touches, with: event)
             return
         }
         let now = touch.preciseLocation(in: view)
+        guard let prev = lastIndirectPoint else {
+            lastIndirectPoint = now
+            return
+        }
         lastIndirectPoint = now
         let radius = indirectPadRadiusPoints
         let dx = Double((now.x - prev.x) / radius)
