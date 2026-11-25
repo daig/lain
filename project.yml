@@ -6,6 +6,7 @@ options:
   deploymentTarget:
     macOS: "27.0"
     iOS: "27.0"
+    tvOS: "27.0"
   createIntermediateGroups: true
 settings:
   base:
@@ -104,6 +105,36 @@ targets:
         PRODUCT_NAME: LainClient
         TARGETED_DEVICE_FAMILY: "1,2"  # iPhone (built for the Duo) and iPad: one app, laid out by size
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon   # Apps/Client/AppIcon.icon (Scripts/assets/generate.swift)
+  LainTVClient:
+    type: application
+    platform: tvOS
+    sources: [Apps/TVClient]
+    dependencies:
+      - package: LainKit
+        product: LainClientCore
+    info:
+      path: Generated/LainTVClient-Info.plist
+      properties:
+        CFBundleDisplayName: lain
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        UIApplicationSceneManifest:
+          UIApplicationSupportsMultipleScenes: false
+        NSLocalNetworkUsageDescription: lain finds your computer and connects to it over the local network.
+        NSBonjourServices:
+          - _lain._tcp
+        # Siri Remote (2nd–4th gen) exposes GCDirectionalGamepad; required to read inner/outer clickpad elements.
+        GCSupportsControllerUserInteraction: true
+        GCSupportsMultipleMicroGamepads: true
+        GCSupportedGameControllers:
+          - ProfileName: DirectionalGamepad
+          - ProfileName: MicroGamepad
+          - ProfileName: ExtendedGamepad
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sub.dev.lain.client.tv
+        PRODUCT_NAME: LainTVClient
+        TARGETED_DEVICE_FAMILY: "3"  # Apple TV
   # Hosted unit tests: run inside the signed app, so Keychain and other identity-bound APIs work.
   LainClientTests:
     type: bundle.unit-test
@@ -115,6 +146,16 @@ targets:
       base:
         TARGETED_DEVICE_FAMILY: "1,2"
         PRODUCT_BUNDLE_IDENTIFIER: sub.dev.lain.client.tests
+  LainTVClientTests:
+    type: bundle.unit-test
+    platform: tvOS
+    sources: [Apps/TVClientTests]
+    dependencies:
+      - target: LainTVClient
+    settings:
+      base:
+        TARGETED_DEVICE_FAMILY: "3"
+        PRODUCT_BUNDLE_IDENTIFIER: sub.dev.lain.client.tv.tests
   LainHostTests:
     type: bundle.unit-test
     platform: macOS
@@ -158,3 +199,18 @@ schemes:
         - package: LainKit/LainMediaTests
         - package: LainKit/LainClientCoreTests  # input pipeline + ClientSession over loopback TCP
         - LainClientTests
+  LainTVClient:
+    build:
+      targets: { LainTVClient: all }
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - package: LainKit/LainProtocolTests
+        - package: LainKit/LainTelemetryTests
+        - package: LainKit/LainInputTests
+        - package: LainKit/LainTransportTests
+        - package: LainKit/LainMediaTests
+        - package: LainKit/LainClientCoreTests
+        - LainTVClientTests
