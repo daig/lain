@@ -76,6 +76,12 @@ struct LainHostApp: App {
             if host.isPaused {
                 Button("Resume Accepting Connections") { host.resumeConnections() }
             }
+            if host.canCreatePairingCode {
+                Button("Copy Pairing Code") { host.copyPairingCode() }
+                if let note = host.pairingCodeNotice {
+                    Text(note)
+                }
+            }
             Divider()
             Menu("Color") {
                 ForEach(HostPreferences.ColorFormat.allCases, id: \.self) { format in
@@ -154,6 +160,10 @@ final class HostController {
     private(set) var canRestoreHostDisplay = false
     /// Whether connections are paused after "Return to Host Display".
     private(set) var isPaused = false
+    /// Whether this Mac has a host identity and can create out-of-band pairing codes.
+    private(set) var canCreatePairingCode = false
+    /// Brief feedback after copying a pairing code (or why it failed).
+    private(set) var pairingCodeNotice: String?
     /// Read by the session's queues as each session starts.
     @ObservationIgnored private let livePreferences = LivePreferences(HostPreferences.load())
     @ObservationIgnored private let power = IOPMPowerAssertions()
@@ -161,6 +171,7 @@ final class HostController {
 
     @ObservationIgnored private var session: HostSession?
     @ObservationIgnored private var accessPoll: Task<Void, Never>?
+    @ObservationIgnored private var pairingNoticeTask: Task<Void, Never>?
 
     init() {
         keeper = DisplayKeeper(keepFor: .seconds(HostPreferences.load().displayKeepAliveSeconds), power: power)
@@ -196,6 +207,7 @@ final class HostController {
             DispatchQueue.main.async { MainActor.assumeIsolated { self?.status = status } }
         }
         self.session = session
+        self.canCreatePairingCode = identity != nil
         session.start()
         NotificationCenter.default.addObserver(forName: NSApplication.willTerminateNotification, object: nil,
                                                queue: .main) { _ in session.stop() }
@@ -306,6 +318,25 @@ final class HostController {
     func resumeConnections() {
         session?.resumeConnections()
         isPaused = session?.isPaused ?? false
+    }
+
+    func copyPairingCode() {
+        guard let session else { return }
+        pairingNoticeTask?.cancel()
+        do {
+            let code = try session.createPairingCode()
+            NSPasteboard.general.clearContents()
+            NSPasteboard.general.setString(code, forType: .string)
+            pairingCodeNotice = "Pairing code copied to clipboard"
+        } catch {
+            NSLog("lain: failed to create pairing code: \(error)")
+            pairingCodeNotice = "Couldn't create pairing code"
+        }
+        pairingNoticeTask = Task { [weak self] in
+            try? await Task.sleep(for: .seconds(6))
+            guard !Task.isCancelled else { return }
+            self?.pairingCodeNotice = nil
+        }
     }
 
     /// "2×", "1.75×".

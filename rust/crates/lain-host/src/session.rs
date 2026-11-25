@@ -9,7 +9,7 @@ use lain_link::{
     VersionGap,
 };
 use lain_media::{HostVideoStats, VideoEnd};
-use lain_platform::{DisplayBackend, Platform, SettingsSource, SetupSource};
+use lain_platform::{DisplayBackend, Platform, SecretStore, SettingsSource, SetupSource};
 use lain_proto::{
     AudioEncoding, ChromaFormat, DisplayMode, ErrorCode, ErrorMessage, Hello, HelloAck, Message, ProtocolFeature,
     VideoCodec,
@@ -380,6 +380,38 @@ impl<P: Platform> HostSession<P> {
     /// PSKs then (Swift: `wifiListener.refresh()`).
     pub fn secrets_changed(&self) -> watch::Receiver<u64> {
         self.inner.secrets_changed.subscribe()
+    }
+
+    /// Generates an out-of-band `lain1:...` pairing code for a non-USB client (macOS, Apple TV):
+    /// stores a fresh 32-byte secret in the secret store, bumps `secrets_changed` so the Wi-Fi listener
+    /// reloads immediately, and returns the encoded code.
+    pub async fn create_pairing_code(&self) -> Result<String, String> {
+        let identity = self
+            .inner
+            .config
+            .identity
+            .as_ref()
+            .ok_or_else(|| "this host has no identity; cannot create a pairing code".to_owned())?;
+        let secret = lain_link::ChannelAuth::random_bytes::<{ lain_proto::Pair::SECRET_SIZE }>();
+        let code = lain_link::PairingCode::new(identity.id.clone(), secret, &identity.name)
+            .map_err(|e| e.to_string())?;
+        let encoded = code.encode().map_err(|e| e.to_string())?;
+        let id_bytes = lain_link::ChannelAuth::random_bytes::<16>();
+        let mut peer_suffix = String::with_capacity(32);
+        for b in id_bytes {
+            use std::fmt::Write;
+            let _ = write!(&mut peer_suffix, "{b:02X}");
+        }
+        let account = lain_link::PairingAccounts::paired_client(&peer_suffix);
+        self.inner
+            .platform
+            .secrets()
+            .set_secret(&account, &secret)
+            .await
+            .map_err(|e| format!("could not store pairing secret: {e}"))?;
+        self.inner.secrets_changed.send_modify(|n| *n = n.wrapping_add(1));
+        info!(account = %account, "created out-of-band pairing code");
+        Ok(encoded)
     }
 
     /// The live session's video numbers (`None` when no session streams).

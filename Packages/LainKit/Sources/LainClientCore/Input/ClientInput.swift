@@ -197,6 +197,23 @@ public final class ClientInput: @unchecked Sendable {
         }
     }
 
+    /// Native macOS mouse delta in points (y down-positive, already accelerated by macOS).
+    public func mouseMovedDirect(dx: Double, dy: Double) {
+        guard dx != 0 || dy != 0 else { return }
+        perform {
+            self.pipeline.mouseMovedDirect(dx: dx, dy: dy)
+            self.publishCursor()
+        }
+    }
+
+    /// Absolute pointer position within the stream view (points, top-left origin) for seamless windowed mode.
+    public func pointerMovedAbsolute(surfaceX: Double, surfaceY: Double) {
+        perform {
+            self.pipeline.pointerMovedAbsolute(surfaceX: surfaceX, surfaceY: surfaceY)
+            self.publishCursor()
+        }
+    }
+
     /// Text for the host to type, with `modifiers` held if any (only to a host with `ProtocolFeature.textInput`).
     public func typeText(_ text: String, modifiers: ModifierFlags = []) {
         perform { self.pipeline.typeText(text, modifiers: modifiers) }
@@ -312,6 +329,11 @@ public final class ClientInput: @unchecked Sendable {
     public func scrollWheel(dx: Double, dy: Double) {
         let t = MonotonicClock.now()
         perform { self.pipeline.scrollWheel(dx: dx, dy: dy, at: t) }
+    }
+
+    /// Native continuous scroll with macOS-supplied phases and momentum (bypasses `MomentumSynthesizer`).
+    public func scrollDirect(dx: Double, dy: Double, phase: GesturePhase, momentumPhase: MomentumPhase) {
+        perform { self.pipeline.scrollDirect(dx: dx, dy: dy, phase: phase, momentumPhase: momentumPhase) }
     }
 
     public func scrollEnded() {

@@ -24,6 +24,7 @@ public final class StreamRenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unch
     private let viewport: ShownPart
     private let tick: @Sendable () -> Void
     private var link: CAMetalDisplayLink?
+    private let targetFrameRate: Mutex<Float>
     private var current: DecodedFrame?
     private var session: UInt64 = .max
     private var sprite: (version: UInt64, sprite: CursorSprite, macVisible: Bool)?
@@ -44,15 +45,18 @@ public final class StreamRenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unch
     ///   - cursorPosition: the cursor in streamed-display points, nil when it's on another display.
     ///   - displayPointSize: the streamed display's size in points (cursor space), nil when unknown.
     ///   - viewport: the part of the streamed display to draw (the whole of it by default).
+    ///   - preferredFrameRate: target refresh rate (120 on ProMotion/iPad; screen's max refresh rate on macOS).
     ///   - tick: called first on every display-link tick (the input pipeline's tick).
     public init(video: ClientVideoPipeline, cursorPosition: @escaping CursorPosition,
                 displayPointSize: @escaping DisplayPointSize, viewport: @escaping ShownPart = { .full },
+                preferredFrameRate: Float = 120,
                 tick: @escaping @Sendable () -> Void) throws {
         renderer = try VideoRenderer(pixelFormat: .bgr10a2Unorm)
         self.video = video
         self.cursorPosition = cursorPosition
         self.displayPointSize = displayPointSize
         self.viewport = viewport
+        self.targetFrameRate = Mutex(max(30, min(240, preferredFrameRate)))
         self.tick = tick
         layer = CAMetalLayer()
         layer.device = renderer.device
@@ -64,11 +68,18 @@ public final class StreamRenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unch
         super.init()
     }
 
+    /// Updates the display link's preferred refresh rate (e.g. when a macOS window moves between 60 Hz and 120 Hz screens).
+    public func setPreferredFrameRate(_ fps: Float) {
+        let clamped = max(30, min(240, fps))
+        targetFrameRate.withLock { $0 = clamped }
+    }
+
     /// Starts the render thread and the display link.
     public func start() {
         let link = CAMetalDisplayLink(metalLayer: layer)
         link.delegate = self
-        link.preferredFrameRateRange = CAFrameRateRange(minimum: 120, maximum: 120, preferred: 120)
+        let fps = targetFrameRate.withLock { $0 }
+        link.preferredFrameRateRange = CAFrameRateRange(minimum: min(60, fps), maximum: max(60, fps), preferred: fps)
         link.preferredFrameLatency = 1
         self.link = link
         let thread = Thread { [self] in
@@ -90,6 +101,10 @@ public final class StreamRenderLoop: NSObject, CAMetalDisplayLinkDelegate, @unch
     // MARK: CAMetalDisplayLinkDelegate (render thread)
 
     public func metalDisplayLink(_ link: CAMetalDisplayLink, needsUpdate update: CAMetalDisplayLink.Update) {
+        let fps = targetFrameRate.withLock { $0 }
+        if link.preferredFrameRateRange.preferred != fps {
+            link.preferredFrameRateRange = CAFrameRateRange(minimum: min(60, fps), maximum: max(60, fps), preferred: fps)
+        }
         tick()
 
         let generation = video.sessionGeneration

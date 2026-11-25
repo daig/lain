@@ -65,6 +65,10 @@ pub trait Control: Send + Sync + 'static {
     }
     /// Resumes accepting incoming connections after `restore_host_display`.
     fn resume_connections(&self) {}
+    /// Generates an out-of-band `lain1:...` pairing code for a non-USB client (macOS, Apple TV).
+    fn create_pairing_code(&self) -> BoxFuture<'_, Result<String, String>> {
+        Box::pin(async { Err("pairing codes are not supported".into()) })
+    }
     /// The scale setting (`None`: the iPad's own). Platforms without one say `None` and ignore changes.
     fn scale_setting(&self) -> Option<f64> {
         None
@@ -140,6 +144,9 @@ where
     }
     fn resume_connections(&self) {
         DaemonHandle::resume_connections(self)
+    }
+    fn create_pairing_code(&self) -> BoxFuture<'_, Result<String, String>> {
+        Box::pin(DaemonHandle::create_pairing_code(self))
     }
 }
 
@@ -381,6 +388,12 @@ impl HostService {
         self.control.resume_connections();
         let _ = self.is_paused_changed(&emitter).await;
         let _ = self.can_restore_host_display_changed(&emitter).await;
+    }
+
+    /// Generates an out-of-band `lain1:...` pairing code for a non-USB client (macOS, Apple TV).
+    async fn create_pairing_code(&self) -> zbus::fdo::Result<String> {
+        info!("CreatePairingCode called over D-Bus");
+        self.control.create_pairing_code().await.map_err(zbus::fdo::Error::Failed)
     }
 }
 

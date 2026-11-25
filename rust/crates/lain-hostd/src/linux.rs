@@ -157,6 +157,11 @@ impl crate::Control for LinuxControl {
     fn resume_connections(&self) {
         crate::Control::resume_connections(&self.handle)
     }
+    fn create_pairing_code(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<String, String>> + Send + '_>> {
+        crate::Control::create_pairing_code(&self.handle)
+    }
     fn scale_setting(&self) -> Option<f64> {
         self.display.scale_setting()
     }

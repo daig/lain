@@ -82,11 +82,13 @@ public final class ClientSession: Sendable {
     /// Video (M3): decode, render slot, keyframe requests, cursor shapes. nil keeps the M1/M2
     /// behaviour of acking frames without decoding them.
     public let video: ClientVideoPipeline?
-    private let listener: ClientLinkListener
+    private let listener: ClientLinkListener?
     private let core: SessionCore
 
     /// - Parameters:
     ///   - port: nil: `LainProtocol.usbPort` (the iPad); 0 in tests (the bound port is `port`).
+    ///   - listenForUSB: true on iOS/iPadOS (accepts usbmuxd connections on loopback); false on macOS/tvOS
+    ///     clients that connect over Wi-Fi/LAN only.
     ///   - wifi: nil keeps the session USB-only.
     ///   - versions: the protocol versions offered (PROTOCOL-VERSIONING §3.2); nil: `VersionList.offered`.
     ///   - onStatus: called in order on the session's queue; hop to the main queue for UI.
@@ -94,7 +96,7 @@ public final class ClientSession: Sendable {
     /// the audio channel's messages on that channel's queue.
     public func setAudioPlayer(_ player: ClientAudioPlayer?) { core.audioSink.player.withLock { $0 = player } }
 
-    public init(port: UInt16? = nil, secrets: some SecretStore, hello: Hello,
+    public init(port: UInt16? = nil, listenForUSB: Bool = true, secrets: some SecretStore, hello: Hello,
                 input: ClientInput = ClientInput(), video: ClientVideoPipeline? = nil, wifi: ClientWiFiConfig? = nil,
                 versions: VersionList? = nil, onStatus: @escaping @Sendable (Status) -> Void) throws {
         let versions = versions ?? .offered
@@ -103,30 +105,36 @@ public final class ClientSession: Sendable {
         self.core = core
         self.input = input
         self.video = video
-        listener = try ClientLinkListener(port: port, secrets: secrets, acceptsPairing: true, versions: versions,
-                                          onReject: { [weak core] error in
-                                              guard let core else { return }
-                                              core.queue.async { core.rejected(error) }
-                                          },
-                                          onLink: { [weak core] accepted in
-                                              guard let core else { return accepted.link.close() }
-                                              core.queue.async { core.adoptUSB(accepted) }
-                                          })
-        self.port = listener.port
-        core.start(port: listener.port)
+        if listenForUSB {
+            let l = try ClientLinkListener(port: port, secrets: secrets, acceptsPairing: true, versions: versions,
+                                           onReject: { [weak core] error in
+                                               guard let core else { return }
+                                               core.queue.async { core.rejected(error) }
+                                           },
+                                           onLink: { [weak core] accepted in
+                                               guard let core else { return accepted.link.close() }
+                                               core.queue.async { core.adoptUSB(accepted) }
+                                           })
+            listener = l
+            self.port = l.port
+        } else {
+            listener = nil
+            self.port = 0
+        }
+        core.start(port: self.port)
     }
 
     /// Stops listening and the Wi-Fi loop (discovery and any dial in flight), and closes the current
     /// link. Nothing is installed or published afterwards.
     public func stop() {
-        listener.cancel()
+        listener?.cancel()
         core.stop()
     }
 
     /// The app is quitting (swiped away in the switcher): tells the host to end the session and restore its
     /// display immediately (skipping keep-alive), waits briefly for the frame to flush, then stops.
     public func quit() {
-        listener.cancel()
+        listener?.cancel()
         core.quit()
     }
 
@@ -189,6 +197,28 @@ public final class ClientSession: Sendable {
     /// picked one is dialed at once; over the cable nothing changes (the panel doesn't offer it then).
     public func selectHost(_ id: String?) {
         core.queue.async { [core] in core.selectHost(id) }
+    }
+
+    /// Stores an out-of-band pairing code (`lain1:...`) for Wi-Fi/LAN dialing and immediately attempts to
+    /// connect to that host (clearing any previous backoff or key-refusal history for it).
+    public func pair(code: PairingCode, select: Bool = true) throws {
+        try core.pair(code: code, select: select)
+    }
+
+    /// Removes a paired host's Wi-Fi secret and disconnects if currently connected to it over Wi-Fi.
+    public func forgetHost(_ hostId: String) throws {
+        try core.forgetHost(hostId)
+    }
+
+    /// Disconnects the current Wi-Fi session (telling the host to restore immediately) and pauses automatic
+    /// dialing until `reconnect()` or `selectHost(_:)` is called.
+    public func disconnectAndPause() {
+        core.queue.async { [core] in core.disconnectAndPause() }
+    }
+
+    /// Resumes automatic Wi-Fi discovery and dialing after `disconnectAndPause()`.
+    public func reconnect() {
+        core.queue.async { [core] in core.resumeFromPause() }
     }
 
     /// The Wi-Fi path and radio priority (the panel). A Wi-Fi link closes and redials at once to take them;
@@ -605,10 +635,74 @@ final class SessionCore: @unchecked Sendable {
 
     func selectHost(_ id: String?) {
         guard let w = wifi, !stopped else { return }
+        w.paused = false
         w.config.lastHost.setSelected(id)
         log.notice("host picked: \(id ?? "automatic", privacy: .public)")
         // A Wi-Fi link to another Mac makes way at once; the cable always stays.
         if let id, let c = current, !c.via.isUSB, c.hostId != id { redialWiFi(because: "to switch hosts") }
+        redialNow()
+    }
+
+    func pair(code: PairingCode, select: Bool) throws {
+        try onQueue { [self] in
+            guard !stopped else { return }
+            let account = PairingAccounts.mac(code.hostId)
+            try secrets.setSecret(code.secret, for: account)
+            if let w = wifi {
+                w.paused = false
+                if !code.hostName.isEmpty { w.config.lastHost.setName(code.hostId, code.hostName) }
+                else if w.config.lastHost.names()[code.hostId] == nil {
+                    w.config.lastHost.setName(code.hostId, "Host \(code.hostId.prefix(8))")
+                }
+                w.config.lastHost.set(code.hostId)
+                if select {
+                    w.config.lastHost.setSelected(code.hostId)
+                }
+                for (endpoint, _) in w.services where w.hosts.first(where: { $0.endpoint == endpoint })?.hostId == code.hostId {
+                    w.services[endpoint]?.clearFailures()
+                }
+                if select, let c = current, !c.via.isUSB, c.hostId != code.hostId {
+                    redialWiFi(because: "to connect to newly paired host")
+                }
+                redialNow()
+            }
+            log.notice("paired with host \(code.hostId, privacy: .public) via pairing code")
+        }
+    }
+
+    func forgetHost(_ hostId: String) throws {
+        try onQueue { [self] in
+            guard !stopped else { return }
+            try secrets.removeSecret(for: PairingAccounts.mac(hostId))
+            if let w = wifi {
+                if w.config.lastHost.selected() == hostId { w.config.lastHost.setSelected(nil) }
+                if let c = current, !c.via.isUSB, c.hostId == hostId {
+                    c.link.realtime.send(.releaseAll(ReleaseAll(reason: .disconnect)))
+                    redialWiFi(because: "host forgotten")
+                }
+                evaluateWiFi()
+                publish()
+            }
+            log.notice("forgot paired host \(hostId, privacy: .public)")
+        }
+    }
+
+    func disconnectAndPause() {
+        guard let w = wifi, !stopped else { return }
+        w.paused = true
+        w.dialing?.task.cancel()
+        w.dialing = nil
+        if let c = current, !c.via.isUSB {
+            c.link.realtime.send(.releaseAll(ReleaseAll(reason: .disconnect)))
+            redialWiFi(because: "disconnected by user")
+        }
+        evaluateWiFi()
+        publish()
+    }
+
+    func resumeFromPause() {
+        guard let w = wifi, !stopped else { return }
+        w.paused = false
         redialNow()
     }
 
@@ -749,8 +843,8 @@ final class SessionCore: @unchecked Sendable {
     }
 
     /// Runs `body` on `queue` and waits (inline when already there).
-    private func onQueue<R>(_ body: () -> R) -> R {
-        if DispatchQueue.getSpecific(key: onQueueKey) != nil { return body() }
-        return queue.sync(execute: body)
+    private func onQueue<R>(_ body: () throws -> R) rethrows -> R {
+        if DispatchQueue.getSpecific(key: onQueueKey) != nil { return try body() }
+        return try queue.sync(execute: body)
     }
 }

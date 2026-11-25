@@ -285,6 +285,23 @@ public final class ClientInputPipeline {
         send(.pointerMove(move))
     }
 
+    /// A native macOS mouse delta in points (y down-positive, already accelerated by macOS), used by the
+    /// macOS client in captured relative pointer mode. Bypasses `AccelerationCurve`.
+    public func mouseMovedDirect(dx: Double, dy: Double) {
+        guard pointerEnabled, dx != 0 || dy != 0 else { return }
+        if overlayShown { return onLocalShortcut(.panelPointer(dx: dx, dy: -dy)) }
+        guard let move = pointer.moveDirect(dx: dx, dy: dy, buttons: heldButtons.mask) else { return }
+        send(.pointerMove(move))
+    }
+
+    /// Moves the pointer to an absolute point within the stream view (points, top-left origin), used by the
+    /// macOS client in seamless windowed mode.
+    public func pointerMovedAbsolute(surfaceX: Double, surfaceY: Double) {
+        guard !overlayShown, let p = hostPoint(surfaceX: surfaceX, surfaceY: surfaceY),
+              let move = pointer.moveTo(x: p.x, y: p.y, buttons: heldButtons.mask) else { return }
+        send(.pointerMove(move))
+    }
+
     public func mouseButton(_ button: MouseButton, isDown: Bool, at timeNs: UInt64) {
         if isDown {
             systemKeyDownAtNs = nil   // a click with Right Option held is a Command-click on the host
@@ -560,6 +577,26 @@ public final class ClientInputPipeline {
         let k = (invertScroll ? -scrollScale : scrollScale) * resolutionScale
         let (sx, sy) = (dx * k, dy * k)
         send(.scroll(Scroll(dx: Float(sx), dy: Float(sy), phase: .none, momentumPhase: .none)))
+    }
+
+    /// Native continuous scroll with macOS-supplied phases and momentum (used by the macOS client).
+    /// Bypasses `MomentumSynthesizer` so native macOS trackpad momentum isn't duplicated.
+    public func scrollDirect(dx: Double, dy: Double, phase: GesturePhase, momentumPhase: MomentumPhase) {
+        guard pointerAllowed, !overlayShown else { return }
+        if let stop = momentum.cancel() { send(.scroll(stop)) }
+        switch phase {
+        case .began, .changed:
+            isScrolling = true
+            scrollStarted = true
+        case .ended, .cancelled:
+            isScrolling = false
+            scrollStarted = false
+        case .mayBegin, .none:
+            break
+        }
+        let k = invertScroll ? -scrollScale : scrollScale
+        let (sx, sy) = (dx * k, dy * k)
+        send(.scroll(Scroll(dx: Float(sx), dy: Float(sy), phase: phase, momentumPhase: momentumPhase)))
     }
 
     /// The system cancelled the pan: end the phase without momentum.

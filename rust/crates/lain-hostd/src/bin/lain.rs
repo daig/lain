@@ -59,6 +59,8 @@ enum Command {
     AutoResume { state: Option<OnOff> },
     /// Show or set whether the computer's sound plays on the iPad.
     Sound { state: Option<OnOff> },
+    /// Create a pairing code (`lain1:...`) for a Mac or Apple TV client.
+    PairCode,
 }
 
 #[derive(Clone, Copy, ValueEnum)]
@@ -243,6 +245,13 @@ async fn run(command: Command) -> Result<(), String> {
             }
             let on: bool = host.get_property("Sound").await.map_err(|e| e.to_string())?;
             println!("sound on the iPad: {}", if on { "on" } else { "off" });
+            Ok(())
+        }
+        Command::PairCode => {
+            let host = host(&conn).await?.ok_or("lain-hostd isn't running")?;
+            let reply = host.call_method("CreatePairingCode", &()).await.map_err(|e| e.to_string())?;
+            let code: String = reply.body().deserialize().map_err(|e| e.to_string())?;
+            println!("{code}");
             Ok(())
         }
         Command::KeepAlive { seconds } => {

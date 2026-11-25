@@ -23,6 +23,7 @@ mod acceptor;
 mod channel;
 mod error;
 mod link;
+mod pairing_code;
 mod security;
 mod stream;
 mod version_gap;
@@ -33,6 +34,7 @@ pub use acceptor::{
 pub use channel::{CLOSE_LINGER, ChannelOptions, ChannelSender, CloseReason, INBOUND_BUFFER, MessageChannel};
 pub use error::{DialError, SendError, TransportError};
 pub use link::{Configure, HostLink, Link, LinkDialer};
+pub use pairing_code::{PairingCode, PairingCodeError};
 pub use security::{ChannelAuth, PairingAccounts};
 pub use stream::{
     BoundStream, ByteStream, LinkTransport, MEMORY_STREAM_BUFFER, MemoryConnection, MemoryDialer, StreamDialer,

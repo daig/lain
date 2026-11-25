@@ -16,7 +16,30 @@ public enum MacKeyCode {
     /// Keyboard/keypad page (0x07) usage.
     public static func from(hidUsage: UInt16) -> UInt16? { keyboard[hidUsage] }
 
+    /// Reverse mapping: macOS virtual keycode (`NSEvent.keyCode` / `CGKeyCode`) → physical HID key.
+    /// Used by the macOS client to send physical HID positions on the wire.
+    public static func physicalKey(forMacKeyCode keyCode: UInt16) -> PhysicalKey? {
+        if keyCode == function { return .globe }
+        return reverseKeyboard[keyCode].map { PhysicalKey(usage: $0) }
+    }
+
     public static let function: UInt16 = 0x3F   // kVK_Function
+
+    /// Deterministic inverse of `keyboard`: prefers standard US backslash (`0x31` over non-US `#` `0x32`),
+    /// F13–F15 (`0x68`–`0x6A` over PrintScreen/ScrollLock/Pause), and Insert/Help (`0x49` over `0x75`).
+    static let reverseKeyboard: [UInt16: UInt16] = {
+        var map: [UInt16: UInt16] = [:]
+        // Insert lower usages first, then let canonical overrides win.
+        for (hid, mac) in keyboard.sorted(by: { $0.key < $1.key }) {
+            if map[mac] == nil { map[mac] = hid }
+        }
+        map[0x2A] = 0x31   // kVK_ANSI_Backslash → HID Backslash
+        map[0x69] = 0x68   // kVK_F13
+        map[0x6B] = 0x69   // kVK_F14
+        map[0x71] = 0x6A   // kVK_F15
+        map[0x72] = 0x49   // kVK_Help / Insert
+        return map
+    }()
 
     static let keyboard: [UInt16: UInt16] = [
         // Letters A–Z (0x04–0x1D)

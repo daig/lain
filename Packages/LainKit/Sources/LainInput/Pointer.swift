@@ -157,6 +157,15 @@ public struct PointerTracker: Sendable {
         return PointerMove(x: x, y: y, dx: Float(x - oldX), dy: Float(y - oldY), buttons: buttons)
     }
 
+    /// Applies a native macOS point delta (y down-positive, already accelerated by macOS) directly without
+    /// applying `AccelerationCurve`. Used by the macOS client in captured relative pointer mode.
+    public mutating func moveDirect(dx: Double, dy: Double, buttons: UInt8) -> PointerMove? {
+        guard dx != 0 || dy != 0 else { return nil }
+        lastEventNs = nil
+        travel(dx, dy)
+        return PointerMove(x: x, y: y, dx: Float(dx), dy: Float(dy), buttons: buttons)
+    }
+
     /// Applies one GCMouse delta (y up-positive). Deltas were integers on iPadOS 26.7 and are
     /// fractional on 27 (§13). Returns nil for zero deltas, which iPadOS sends while fingers rest.
     /// `using`: the curve for this delta when it isn't the tracker's own (another control, or a scaled one).

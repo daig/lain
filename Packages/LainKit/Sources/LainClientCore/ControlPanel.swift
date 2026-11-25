@@ -136,17 +136,27 @@ public struct ControlPanel: Sendable, Equatable {
 
     /// Index into `rows(hosts:)`.
     public private(set) var selection = 0
+    /// Whether touch-screen controls apply on this device (false on macOS).
+    public var includeTouchMode: Bool
+    /// Whether this panel is rendered on a macOS client (adjusts pairing & shortcut copy).
+    public var isMac: Bool
 
-    public init() {}
+    public init(includeTouchMode: Bool = true, isMac: Bool = false) {
+        self.includeTouchMode = includeTouchMode
+        self.isMac = isMac
+    }
 
     /// What the owner can act on now: the hosts (unless the cable is in), then the device's options.
-    public static func rows(hosts: ClientSession.HostList, preferences: ClientPreferences = ClientPreferences()) -> [Row] {
+    public static func rows(hosts: ClientSession.HostList, preferences: ClientPreferences = ClientPreferences(),
+                            includeTouchMode: Bool = true) -> [Row] {
         var rows: [Row] = []
         if !hosts.onCable, !hosts.hosts.isEmpty {
             rows.append(.host(nil))
             rows += hosts.hosts.map { .host($0.id) }
         }
-        rows += [.scrollDirection, .touchMode, .wifiPath, .radioPriority]
+        rows.append(.scrollDirection)
+        if includeTouchMode { rows.append(.touchMode) }
+        rows += [.wifiPath, .radioPriority]
         if hosts.supportsDisplayMode {
             rows.append(.displayMode)
             if preferences.mirrorDisplay { rows.append(.mirrorSource) }
@@ -164,7 +174,7 @@ public struct ControlPanel: Sendable, Equatable {
 
     /// A key-down while the panel is open.
     public mutating func key(_ key: PhysicalKey, hosts: ClientSession.HostList, preferences: ClientPreferences) -> Action {
-        let rows = Self.rows(hosts: hosts, preferences: preferences)
+        let rows = Self.rows(hosts: hosts, preferences: preferences, includeTouchMode: includeTouchMode)
         selection = min(selection, rows.count - 1)
         guard key.page == PhysicalKey.keyboardPage else { return .none }
         switch key.usage {
@@ -186,7 +196,7 @@ public struct ControlPanel: Sendable, Equatable {
 
     /// A click on the line acting on `row`: selects it and acts as Return would.
     public mutating func click(row: Int, hosts: ClientSession.HostList, preferences: ClientPreferences) -> Action {
-        let rows = Self.rows(hosts: hosts, preferences: preferences)
+        let rows = Self.rows(hosts: hosts, preferences: preferences, includeTouchMode: includeTouchMode)
         guard rows.indices.contains(row) else { return .none }
         selection = row
         return activate(rows[row], hosts: hosts, preferences: preferences)
@@ -221,7 +231,7 @@ public struct ControlPanel: Sendable, Equatable {
     public func lines(info: ClientSession.ConnectionInfo?, video: VideoStats, host: HostStats?,
                       hosts: ClientSession.HostList, preferences: ClientPreferences,
                       sound: ClientAudioPlayer.Delay? = nil) -> [Line] {
-        let rows = Self.rows(hosts: hosts, preferences: preferences)
+        let rows = Self.rows(hosts: hosts, preferences: preferences, includeTouchMode: includeTouchMode)
         let selected = min(selection, rows.count - 1)
         var out: [Line] = []
         func add(_ text: String, _ style: Line.Style = .text, row: Int? = nil) {
@@ -237,13 +247,14 @@ public struct ControlPanel: Sendable, Equatable {
 
         add("STREAM", .heading)
         add(Self.streamLine(video))
-        add(Self.pad(ClientStatus.device, to: 7) + Self.iPadLine(video))
+        add(Self.pad(isMac ? "Mac" : ClientStatus.device, to: 7) + Self.iPadLine(video))
         add("Host   " + Self.hostLine(info: info, host: host), host == nil ? .dim : .text)
         if let sound { add("Sound  " + Self.soundLine(sound)) }
 
         add("HOSTS", .heading)
         if hosts.hosts.isEmpty {
-            add("none saved yet: connect a host with the cable once", .dim)
+            add(isMac ? "none saved yet: use Connection › Pair Host… with a pairing code"
+                      : "none saved yet: connect a host with the cable once", .dim)
         } else if hosts.onCable {
             add("the cable is in, and it always wins: unplug it to switch", .dim)
             for h in hosts.hosts { add(Self.hostRow(h.id, hosts: hosts), .dim) }
@@ -277,7 +288,7 @@ public struct ControlPanel: Sendable, Equatable {
         }
 
         add("SHORTCUTS", .heading)
-        for (keys, action) in Self.shortcuts { add(Self.pad(keys) + action) }
+        for (keys, action) in (isMac ? Self.macShortcuts : Self.shortcuts) { add(Self.pad(keys) + action) }
         add("in this panel: ↑ ↓ select · ← → change · return or click: choose · esc or right ⌥: close", .dim)
         return out
     }
@@ -395,6 +406,18 @@ public struct ControlPanel: Sendable, Equatable {
         if fraction == 0 { return "\(whole)×" }
         return fraction % 10 == 0 ? "\(whole).\(fraction / 10)×" : "\(whole).\(String(format: "%02d", fraction))×"
     }
+
+    /// The cheat sheet on macOS.
+    public static let macShortcuts: [(String, String)] = [
+        ("right ⌥ tap", "Mission Control · Overview"),
+        ("right ⌥ + key", "⌘ + key: ⌘ Tab, ⌘ Space, ⌘ Q…"),
+        ("right ⌥ + ↑ / ↓", "Mission Control / App Exposé · Overview / app grid"),
+        ("right ⌥ + ← / →", "previous / next Space · workspace"),
+        ("right ⌥ hold", "this panel"),
+        ("left ⌥", "Option"),
+        ("⌃⌥ Esc", "release pointer capture"),
+        ("⌃⌥⌘ L", "stats HUD"),
+    ]
 
     /// The cheat sheet. Where a host's systems differ: the Mac's, then Linux's (GNOME).
     public static let shortcuts: [(String, String)] = [

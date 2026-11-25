@@ -104,6 +104,37 @@ targets:
         PRODUCT_NAME: LainClient
         TARGETED_DEVICE_FAMILY: "1,2"  # iPhone (built for the Duo) and iPad: one app, laid out by size
         ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon   # Apps/Client/AppIcon.icon (Scripts/assets/generate.swift)
+  LainMacClient:
+    type: application
+    platform: macOS
+    sources:
+      - Apps/MacClient
+      - path: Apps/Client/AppIcon.icon
+    dependencies:
+      - package: LainKit
+        product: LainClientCore
+    info:
+      path: Generated/LainMacClient-Info.plist
+      properties:
+        CFBundleDisplayName: lain
+        CFBundleShortVersionString: $(MARKETING_VERSION)
+        CFBundleVersion: $(CURRENT_PROJECT_VERSION)
+        LSApplicationCategoryType: public.app-category.utilities
+        NSLocalNetworkUsageDescription: lain finds paired Mac and Linux hosts on your local network and connects over Wi-Fi or Ethernet.
+        NSBonjourServices:
+          - _lain._tcp
+    entitlements:
+      path: Generated/LainMacClient.entitlements
+      properties:
+        keychain-access-groups: ["$(AppIdentifierPrefix)sub.dev.lain.client.mac"]
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sub.dev.lain.client.mac
+        PRODUCT_NAME: LainMacClient
+        ENABLE_HARDENED_RUNTIME: YES
+        ENABLE_APP_SANDBOX: NO         # unsandboxed so optional CGEventTap system-shortcut capture works
+        ASSETCATALOG_COMPILER_APPICON_NAME: AppIcon
+        CODE_SIGN_IDENTITY: "Apple Development"
   # Hosted unit tests: run inside the signed app, so Keychain and other identity-bound APIs work.
   LainClientTests:
     type: bundle.unit-test
@@ -115,6 +146,16 @@ targets:
       base:
         TARGETED_DEVICE_FAMILY: "1,2"
         PRODUCT_BUNDLE_IDENTIFIER: sub.dev.lain.client.tests
+  LainMacClientTests:
+    type: bundle.unit-test
+    platform: macOS
+    sources: [Apps/MacClientTests]
+    dependencies:
+      - target: LainMacClient
+    settings:
+      base:
+        PRODUCT_BUNDLE_IDENTIFIER: sub.dev.lain.client.mac.tests
+        ENABLE_HARDENED_RUNTIME: YES
   LainHostTests:
     type: bundle.unit-test
     platform: macOS
@@ -158,3 +199,19 @@ schemes:
         - package: LainKit/LainMediaTests
         - package: LainKit/LainClientCoreTests  # input pipeline + ClientSession over loopback TCP
         - LainClientTests
+  LainMacClient:
+    build:
+      targets: { LainMacClient: all }
+    run:
+      config: Debug
+    test:
+      config: Debug
+      targets:
+        - package: LainKit/LainProtocolTests
+        - package: LainKit/LainTelemetryTests
+        - package: LainKit/LainInputTests
+        - package: LainKit/LainTransportTests
+        - package: LainKit/LainMediaTests
+        - package: LainKit/LainClientCoreTests
+        - package: LainKit/LainLoopbackTests
+        - LainMacClientTests

@@ -64,10 +64,16 @@ impl PairingAccounts {
     /// The host last paired over USB (D23), on the client.
     pub const USB_HOST: &'static str = "host";
     const MAC_PREFIX: &'static str = "mac:";
+    const PAIRED_CLIENT_PREFIX: &'static str = "pair:";
 
     /// A host's secret usable over Wi-Fi, by the host id it advertises.
     pub fn mac(host_id: &str) -> String {
         format!("{}{host_id}", Self::MAC_PREFIX)
+    }
+
+    /// A host-side secret account created for an out-of-band pairing code (macOS / Apple TV clients).
+    pub fn paired_client(id: &str) -> String {
+        format!("{}{id}", Self::PAIRED_CLIENT_PREFIX)
     }
 
     /// The host id of a `mac:<hostId>` account; `None` for other accounts and non-canonical ids.

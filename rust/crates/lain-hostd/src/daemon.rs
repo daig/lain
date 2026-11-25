@@ -186,6 +186,11 @@ impl<P: Platform> DaemonHandle<P> {
         self.session.resume_connections();
     }
 
+    /// Generates an out-of-band `lain1:...` pairing code for a non-USB client (macOS, Apple TV).
+    pub async fn create_pairing_code(&self) -> Result<String, String> {
+        self.session.create_pairing_code().await
+    }
+
     /// Swift's `HostController.videoLines`: `None` unless connected.
     pub fn video_lines(&self) -> Option<Vec<String>> {
         video_lines(

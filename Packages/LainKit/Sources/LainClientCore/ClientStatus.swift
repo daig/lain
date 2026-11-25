@@ -46,7 +46,11 @@ public enum ClientStatus: Sendable, Equatable {
     /// What this device is called in the texts: "iPhone" on one, else "iPad".
     public static let device = deviceName(model: hardwareModel())
 
-    public static func deviceName(model: String) -> String { model.hasPrefix("iPhone") ? "iPhone" : "iPad" }
+    public static func deviceName(model: String) -> String {
+        if model.hasPrefix("iPhone") { return "iPhone" }
+        if model.hasPrefix("Mac") || model.hasPrefix("iMac") { return "Mac" }
+        return "iPad"
+    }
 
     /// The hardware's model identifier ("iPad16,6", "iPhone19,4"); in the simulator, the simulated device's.
     public static func hardwareModel() -> String {
@@ -54,6 +58,19 @@ public enum ClientStatus: Sendable, Equatable {
         var info = utsname()
         uname(&info)
         return withUnsafeBytes(of: info.machine) { String(decoding: $0.prefix { $0 != 0 }, as: UTF8.self) }
+    }
+
+    /// On macOS, `uname().machine` returns `"arm64"`; `hw.model` returns the real model identifier ("Mac16,1").
+    public static func macHardwareModel() -> String {
+        #if os(macOS)
+        var size = 0
+        guard sysctlbyname("hw.model", nil, &size, nil, 0) == 0, size > 0 else { return "Mac" }
+        var buf = [UInt8](repeating: 0, count: size)
+        guard sysctlbyname("hw.model", &buf, &size, nil, 0) == 0 else { return "Mac" }
+        return String(decoding: buf.prefix { $0 != 0 }, as: UTF8.self)
+        #else
+        return hardwareModel()
+        #endif
     }
 
     /// The display a device asks the host for when it isn't simply the screen the app is on. The iPhone Duo
@@ -156,4 +173,53 @@ public enum ClientStatus: Sendable, Equatable {
     }
 
     private static let connectHint = "Connect the USB-C cable, or keep the \(device) near a paired Mac with Wi-Fi on"
+
+    /// macOS client status heading (Wi-Fi/LAN-only, paired via out-of-band pairing codes).
+    public var macTitle: String {
+        switch self {
+        case .waitingForMac: "Disconnected"
+        case .searching: "Searching for Paired Hosts…"
+        case .needsCable(let name): "Found \(name)"
+        case .versionMismatch(let name, _): "\(name ?? "Host") runs another lain"
+        case .localNetworkDenied: "Local Network Access Is Off"
+        case .hostBusy(let name): "\(name) Is Busy"
+        case .pairingRefused(let name): "\(name) Doesn't Recognize This Mac"
+        case .connecting(let name, _): "Connecting to \(name)…"
+        case .connected: "Connected"
+        case .session(let info): "Connected to \(info.hostName.isEmpty ? "Host" : info.hostName)"
+        case .failed: "Connection Error"
+        }
+    }
+
+    /// macOS client status detail text.
+    public var macDetail: String {
+        switch self {
+        case .waitingForMac:
+            "Choose Connection › Connect or Pair Host… to connect over your network"
+        case .searching:
+            "Looking for paired hosts on the local network. Choose Pair Host… to add a Mac or Linux host."
+        case .needsCable:
+            "Not paired yet — copy a pairing code from that host and choose Pair Host…"
+        case .versionMismatch(_, .peerOlder(let peer)):
+            "It speaks \(peer), this Mac protocol \(VersionList.offered): update lain on the host"
+        case .versionMismatch(_, .peerNewer(let peer)):
+            "It speaks \(peer), this Mac protocol \(VersionList.offered): update lain on this Mac"
+        case .versionMismatch(_, .differentBuilds(let version)):
+            "It runs a different development build of protocol v\(version): update both from the same tree"
+        case .localNetworkDenied:
+            "Allow lain in System Settings › Privacy & Security › Local Network"
+        case .hostBusy:
+            "It has another active session; trying again shortly"
+        case .pairingRefused:
+            "Copy a new pairing code from that host and choose Pair Host… to pair again"
+        case .connecting(_, let interfaces):
+            "over Wi-Fi / LAN" + (interfaces.isEmpty ? "" : " (\(interfaces.joined(separator: ", ")))")
+        case .connected(let n):
+            n == 0 ? "Link up" : "\(n) frames received"
+        case .session:
+            detail
+        case .failed(let why):
+            why
+        }
+    }
 }
