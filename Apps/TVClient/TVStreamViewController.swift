@@ -8,12 +8,11 @@ import UIKit
 
 /// Root view controller for the Apple TV client (`LainTVClient`).
 ///
-/// Subclasses `GCEventViewController` so input routing switches cleanly between:
-/// - `controllerUserInteractionEnabled = false`: raw `GameController` events (`GCDirectionalGamepad`
-///   / `GCMicroGamepad` / `GCExtendedGamepad`) drive `ClientInput` directly on `input.queue`.
-/// - `controllerUserInteractionEnabled = true`: standard tvOS Focus Engine navigation for the status
-///   screen, Quick Actions / Control Panel overlay, native Type/Dictate modal, and UIKit indirect
-///   touches/presses (used in the Apple TV Simulator where no hardware `GCController` remote is present).
+/// Subclasses `GCEventViewController` with `controllerUserInteractionEnabled = true` so Siri Remote
+/// clickpad input arrives via UIKit indirect touches (`touchesBegan`/`Moved`/`Ended` — true raw
+/// capacitive finger motion with zero `GCMicroGamepad.dpad` spring-back on lift) and physical presses
+/// (`pressesBegan`/`Ended` for Center Click, outer-ring arrows, Play/Pause, and Back/Menu), while
+/// Bluetooth keyboards (`GCKeyboard`) and gamepads (`GCExtendedGamepad`) still attach via GameController.
 final class TVStreamViewController: GCEventViewController {
     let input: ClientInput
     let video: ClientVideoPipeline
@@ -49,18 +48,15 @@ final class TVStreamViewController: GCEventViewController {
     private var hasVideo = false
     private var observers: [NSObjectProtocol] = []
 
-    /// Whether a hardware `GCController` remote (`microGamepad`) is currently attached.
-    /// In the tvOS Simulator this is typically false, so UIKit indirect touches/presses take over.
-    private var hasHardwareRemote = false
     private var panel = ControlPanel()
     private var overlayController: TVOverlayViewController?
     private var remoteState = ClientInputPipeline.RemoteState()
 
-    /// Tracks the previous UIKit indirect touch position (simulator / fallback path).
+    /// Tracks the active UIKit indirect touch on the Siri Remote clickpad.
     private var lastIndirectPoint: CGPoint?
     private var activeIndirectTouch: ObjectIdentifier?
-    /// Approximate view-point span matching one Siri Remote pad radius for UIKit indirect touches.
-    private static let indirectPadRadiusPoints: CGFloat = 220
+    /// View-point span corresponding to one normalized Siri Remote pad radius (`1.0`).
+    private var indirectPadRadiusPoints: CGFloat { max(view.bounds.height * 0.5, 220) }
 
     /// Optional extended-gamepad thumbstick polling state (DualSense / Xbox).
     private var extendedLeftStick = SIMD2<Float>(0, 0)
@@ -349,6 +345,7 @@ final class TVStreamViewController: GCEventViewController {
         if hasVideo != self.hasVideo {
             self.hasVideo = hasVideo
             render()
+            updateControllerRouting()
         } else if !hasVideo && !status.isConnected {
             refreshUnpairedButtons()
         }
@@ -481,14 +478,15 @@ final class TVStreamViewController: GCEventViewController {
     }
 
     private func updateControllerRouting() {
-        // When a hardware GCController remote is attached and we're actively streaming, disable UIKit
-        // controller routing so all raw Siri Remote clicks/touches flow to GameController without
-        // activating the tvOS Focus Engine. In overlays, when disconnected, or in the Simulator
-        // (no GCController remote), keep UIKit routing active.
-        controllerUserInteractionEnabled = !(hasHardwareRemote && remoteStreamingActive)
+        // Keep UIKit routing enabled so Siri Remote touches arrive as true indirect `UITouch`
+        // events (no `GCMicroGamepad.dpad` spring-back on finger lift) and buttons arrive as `UIPress`.
+        controllerUserInteractionEnabled = true
+        if remoteStreamingActive {
+            becomeFirstResponder()
+        }
     }
 
-    // MARK: GameController (Physical Apple TV 4K + Paired Keyboards / Gamepads)
+    // MARK: GameController (Paired Keyboards & Extended Gamepads)
 
     private func observe() {
         let center = NotificationCenter.default
@@ -502,81 +500,21 @@ final class TVStreamViewController: GCEventViewController {
         }
         on(.GCControllerDidConnect) { vc in
             GCController.controllers().forEach(vc.attach(controller:))
-            vc.refreshHardwareRemotePresence()
         }
         on(.GCControllerDidDisconnect) { vc in
             vc.input.remoteCancelled()
             vc.input.mouseDisconnected()
-            vc.refreshHardwareRemotePresence()
         }
         on(.GCKeyboardDidConnect) { vc in GCKeyboard.coalesced.map(vc.attach(keyboard:)) }
         on(.GCKeyboardDidDisconnect) { vc in vc.input.keyboardDisconnected() }
     }
 
-    private func refreshHardwareRemotePresence() {
-        hasHardwareRemote = GCController.controllers().contains { $0.microGamepad != nil && $0.extendedGamepad == nil }
-        updateControllerRouting()
-    }
-
     private func attach(controller: GCController) {
         controller.handlerQueue = input.queue
-        if let extended = controller.extendedGamepad {
-            attach(extended: extended, vendor: controller.vendorName)
-            return
-        }
-        guard let micro = controller.microGamepad else { return }
-        hasHardwareRemote = true
-        updateControllerRouting()
-
-        micro.reportsAbsoluteDpadValues = true
-        let profile = controller.physicalInputProfile
-        let hasCenter = profile.buttons[GCInputDirectionalCenterButton] != nil
-        let hasCardinal = profile.dpads[GCInputDirectionalCardinalDpad] != nil
-        let hasTouchSurface = profile.buttons[GCInputDirectionalTouchSurfaceButton] != nil
-        let vendor = controller.vendorName ?? "unknown"
-        let isDirectional = micro is GCDirectionalGamepad
-        let isAnalog = micro.dpad.isAnalog
-        Self.log.notice("Siri Remote connected: \(vendor, privacy: .public) directional=\(isDirectional) analog=\(isAnalog) center=\(hasCenter) cardinal=\(hasCardinal) touchSurface=\(hasTouchSurface)")
-
-        let input = self.input
-        let cursor = video.cursor
-
-        if let touchSurface = profile.buttons[GCInputDirectionalTouchSurfaceButton] {
-            touchSurface.touchedChangedHandler = { @Sendable _, _, _, touched in
-                input.remoteSurfaceTouched(touched)
-            }
-        }
-
-        micro.dpad.valueChangedHandler = { @Sendable _, x, y in
-            cursor.pointerMoved()
-            input.remoteSurfaceMoved(x: Double(x), y: Double(y))
-        }
-
-        // Prefer dedicated inner Center Button (2nd–4th gen Siri Remote); fall back to buttonA (1st gen).
-        let centerBtn = profile.buttons[GCInputDirectionalCenterButton] ?? micro.buttonA
-        centerBtn.pressedChangedHandler = { @Sendable _, _, pressed in
-            input.remoteCenterButton(isDown: pressed)
-        }
-
-        if let cardinal = profile.dpads[GCInputDirectionalCardinalDpad] {
-            let mappings: [(SiriRemoteInput.Direction, GCControllerButtonInput)] = [
-                (.up, cardinal.up), (.down, cardinal.down),
-                (.left, cardinal.left), (.right, cardinal.right),
-            ]
-            for (dir, button) in mappings {
-                button.pressedChangedHandler = { @Sendable _, _, pressed in
-                    input.remoteRingDirection(dir, isDown: pressed)
-                }
-            }
-        }
-
-        micro.buttonX.pressedChangedHandler = { @Sendable _, _, pressed in
-            input.remotePlayPause(isDown: pressed)
-        }
-
-        micro.buttonMenu.pressedChangedHandler = { @Sendable _, _, pressed in
-            input.remoteMenu(isDown: pressed)
-        }
+        // Siri Remote clickpad/buttons are handled via UIKit indirect touches & presses above so
+        // lifting the thumb never suffers from `GCMicroGamepad.dpad`'s return-to-center spring decay.
+        guard let extended = controller.extendedGamepad else { return }
+        attach(extended: extended, vendor: controller.vendorName)
     }
 
     private func attach(extended: GCExtendedGamepad, vendor: String?) {
@@ -614,11 +552,11 @@ final class TVStreamViewController: GCEventViewController {
         }
     }
 
-    // MARK: UIKit Indirect Touches & Presses (tvOS Simulator & Fallback)
+    // MARK: Siri Remote Indirect Touches & Presses (UIKit)
 
     override func touchesBegan(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard !hasHardwareRemote, remoteStreamingActive,
-              let touch = touches.first(where: { $0.type == .indirect }) else {
+        guard remoteStreamingActive,
+              let touch = touches.first(where: { $0.type == .indirect || $0.type == .indirectPointer }) else {
             super.touchesBegan(touches, with: event)
             return
         }
@@ -629,7 +567,7 @@ final class TVStreamViewController: GCEventViewController {
     }
 
     override func touchesMoved(_ touches: Set<UITouch>, with event: UIEvent?) {
-        guard !hasHardwareRemote, remoteStreamingActive,
+        guard remoteStreamingActive,
               let active = activeIndirectTouch,
               let touch = touches.first(where: { ObjectIdentifier($0) == active }),
               let prev = lastIndirectPoint else {
@@ -638,9 +576,10 @@ final class TVStreamViewController: GCEventViewController {
         }
         let now = touch.preciseLocation(in: view)
         lastIndirectPoint = now
-        let dx = Double((now.x - prev.x) / Self.indirectPadRadiusPoints)
+        let radius = indirectPadRadiusPoints
+        let dx = Double((now.x - prev.x) / radius)
         // UIKit view y is down-positive; SiriRemoteInput expects y up-positive.
-        let dy = Double((prev.y - now.y) / Self.indirectPadRadiusPoints)
+        let dy = Double((prev.y - now.y) / radius)
         video.cursor.pointerMoved()
         input.remoteIndirectMoved(dx: dx, dy: dy)
     }
@@ -701,7 +640,6 @@ final class TVStreamViewController: GCEventViewController {
                 unhandled.insert(press)
                 continue
             }
-            guard !hasHardwareRemote else { continue }
             switch press.type {
             case .select: input.remoteCenterButton(isDown: isDown)
             case .upArrow: input.remoteRingDirection(.up, isDown: isDown)
