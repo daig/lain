@@ -32,16 +32,16 @@ import Testing
         let slowDelta = p.pointer.x - startX
         #expect(slowDelta > 4 && slowDelta < 15)
 
-        // Fast swipe across same 0.10 × 6 = 0.60 pad width over 60 ms (high speed → steep gain).
+        // Fast swipe across 6× the pad distance (0.60 over 60 ms → high speed → acceleration gain).
         let midX = p.pointer.x
         p.remoteSurfaceTouched(true, at: 300 * ms)
-        p.remoteSurfaceMoved(x: -0.3, y: 0.0, at: 305 * ms)
+        p.remoteSurfaceMoved(x: -0.3, y: 0.05, at: 305 * ms)
         for i in 1...6 {
-            p.remoteSurfaceMoved(x: -0.3 + Double(i) * 0.10, y: 0.0, at: UInt64(305 + i * 10) * ms)
+            p.remoteSurfaceMoved(x: -0.3 + Double(i) * 0.10, y: 0.05, at: UInt64(305 + i * 10) * ms)
         }
         p.remoteSurfaceTouched(false, at: 400 * ms)
         let fastDelta = p.pointer.x - midX
-        #expect(fastDelta > slowDelta * 15)
+        #expect(fastDelta > slowDelta * 12)
     }
 
     @Test func centerClickDoubleClickAndDragLockEmitCorrectWireMessages() {
