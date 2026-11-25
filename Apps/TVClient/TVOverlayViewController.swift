@@ -61,7 +61,7 @@ final class TVOverlayViewController: UIViewController {
         titleLabel.textColor = .white
         subtitleLabel.font = .systemFont(ofSize: 22, weight: .regular)
         subtitleLabel.textColor = UIColor(white: 1, alpha: 0.65)
-        subtitleLabel.text = "Press Back to resume · Hold Back anytime to reopen"
+        subtitleLabel.text = "Press Back to resume · Hold Play/Pause anytime to reopen"
         statusLabel.font = .monospacedSystemFont(ofSize: 20, weight: .regular)
         statusLabel.textColor = UIColor(white: 1, alpha: 0.78)
         statusLabel.numberOfLines = 4

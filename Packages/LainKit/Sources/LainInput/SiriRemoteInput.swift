@@ -23,9 +23,9 @@ import LainProtocol
 /// - **Modeless Scroll**: outer-ring cardinal clicks (`↑ ↓ ← →`) scroll immediately on tap and ramp
 ///   into smooth continuous scrolling while held (suppressed while dragging). Tracing a circular arc
 ///   around the outer ring (`jogScrollEnabled`) drives analog vertical scrolling.
-/// - **Play/Pause**: short tap right-clicks; holding for `longPressNs` toggles cursor zoom.
-/// - **Back (`<`)**: short tap sends Escape (or cancels Drag Lock); holding for `longPressNs` opens
-///   lain's overlay panel.
+/// - **Play/Pause**: short tap right-clicks; holding for `longPressNs` opens lain's overlay panel.
+/// - **Back (`<`)**: short tap sends Escape (or cancels Drag Lock); holding Back is reserved by tvOS
+///   to return to the Apple TV Home Screen.
 public struct SiriRemoteInput: Sendable {
     public enum Direction: Sendable, Equatable, Hashable {
         case up, down, left, right
@@ -299,7 +299,7 @@ public struct SiriRemoteInput: Sendable {
         }
     }
 
-    /// Play/Pause (`buttonX` / `UIPressType.playPause`): tap = Right Click, hold (`longPressNs`) = Toggle 2× Zoom.
+    /// Play/Pause (`buttonX` / `UIPressType.playPause`): tap = Right Click, hold (`longPressNs`) = Open Lain Overlay Panel.
     public mutating func playPause(isDown: Bool, at timeNs: UInt64) -> [Action] {
         if isDown {
             guard playPauseDownAtNs == nil else { return [] }
@@ -320,8 +320,8 @@ public struct SiriRemoteInput: Sendable {
         }
     }
 
-    /// Back / Menu (`buttonMenu` / `UIPressType.menu`): tap = Escape (or cancels Drag Lock),
-    /// hold (`longPressNs`) = Open Lain Overlay Panel.
+    /// Back / Menu (`buttonMenu` / `UIPressType.menu`): tap = Escape (or cancels Drag Lock).
+    /// Holding Back is reserved by tvOS to return to the Home Screen.
     public mutating func menu(isDown: Bool, at timeNs: UInt64) -> [Action] {
         if isDown {
             guard menuDownAtNs == nil else { return [] }
@@ -386,17 +386,10 @@ public struct SiriRemoteInput: Sendable {
             actions.append(.dragLockChanged(true))
         }
 
-        // 2. Play/Pause long-press → Toggle 2× Zoom.
+        // 2. Play/Pause long-press → Open Lain Panel (Hold Back is reserved by tvOS for Home Screen).
         if let downAt = playPauseDownAtNs, !playPauseTriggeredLong,
            timeNs >= downAt, timeNs - downAt >= longPressNs {
             playPauseTriggeredLong = true
-            actions.append(.toggleZoom)
-        }
-
-        // 3. Back/Menu long-press → Open Lain Panel.
-        if let downAt = menuDownAtNs, !menuTriggeredLong,
-           timeNs >= downAt, timeNs - downAt >= longPressNs {
-            menuTriggeredLong = true
             actions += cancelForOverlay()
             actions.append(.openPanel)
             return actions

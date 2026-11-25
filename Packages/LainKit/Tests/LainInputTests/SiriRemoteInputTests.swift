@@ -204,7 +204,7 @@ import Testing
         #expect(backOut.allSatisfy { if case .moveBy = $0 { true } else { false } })
     }
 
-    @Test func playPauseTapRightClicksAndHoldTogglesZoom() {
+    @Test func playPauseTapRightClicksAndHoldOpensPanelAndCancelsActiveState() {
         var r = SiriRemoteInput()
         #expect(r.playPause(isDown: true, at: 0).isEmpty)
         #expect(r.playPause(isDown: false, at: 120 * ms) == [
@@ -212,23 +212,18 @@ import Testing
             .button(.right, isDown: false),
         ])
 
-        // Hold past longPressNs: toggles zoom, and release emits no right-click.
+        // Holding ring scroll + long-pressing Play/Pause cancels scroll and opens panel; release emits no right-click.
+        _ = r.ringDirection(.down, isDown: true, at: 400 * ms)
         #expect(r.playPause(isDown: true, at: 500 * ms).isEmpty)
-        #expect(r.tick(at: 850 * ms).isEmpty)
-        #expect(r.tick(at: 900 * ms) == [.toggleZoom])
+        #expect(!r.tick(at: 850 * ms).contains(.openPanel))
+        #expect(r.tick(at: 900 * ms) == [.scrollCancelled, .openPanel])
         #expect(r.playPause(isDown: false, at: 950 * ms).isEmpty)
     }
 
-    @Test func menuTapSendsEscapeAndHoldOpensPanelAndCancelsActiveState() {
+    @Test func menuTapSendsEscape() {
         var r = SiriRemoteInput()
         #expect(r.menu(isDown: true, at: 0).isEmpty)
         #expect(r.menu(isDown: false, at: 100 * ms) == [.keyTap(.escape)])
-
-        // Holding ring scroll + long-pressing Menu cancels the scroll and opens panel.
-        _ = r.ringDirection(.down, isDown: true, at: 500 * ms)
-        _ = r.menu(isDown: true, at: 600 * ms)
-        #expect(r.tick(at: 1000 * ms) == [.scrollCancelled, .openPanel])
-        #expect(r.menu(isDown: false, at: 1100 * ms).isEmpty)
     }
 
     @Test func cancelledReleasesHeldDragLockAndScroll() {

@@ -78,24 +78,18 @@ import Testing
         #expect(p.heldButtons.mask == 0)
     }
 
-    @Test func playPauseLongPressTogglesCursorZoomAndBackLongPressOpensPanel() {
+    @Test func zoomToggleBackEscapeAndPlayPauseLongPressOpensPanel() {
         let (p, sent, shortcuts, states) = makePipeline()
         #expect(p.viewport == .full)
 
-        // Long-press Play/Pause → 2× zoom centered about pointer.
-        p.remotePlayPause(isDown: true, at: 0)
-        p.tick(at: 400 * ms)
-        p.remotePlayPause(isDown: false, at: 450 * ms)
+        // Programmatic zoom toggle (e.g. from overlay) → 2× zoom centered about pointer.
+        p.toggleZoom()
         #expect(abs(p.viewport.width - 0.5) < 1e-6)
         #expect(abs(p.viewport.height - 0.5) < 1e-6)
         #expect(states.value.last == .init(dragLocked: false, zoomed: true))
-        // No right-click was emitted.
         #expect(sent.value.isEmpty)
 
-        // Second long-press Play/Pause → back to 1×.
-        p.remotePlayPause(isDown: true, at: 600 * ms)
-        p.tick(at: 1000 * ms)
-        p.remotePlayPause(isDown: false, at: 1050 * ms)
+        p.toggleZoom()
         #expect(p.viewport == .full)
         #expect(states.value.last == .init(dragLocked: false, zoomed: false))
 
@@ -107,11 +101,11 @@ import Testing
         }
         #expect(keys.count == 2 && keys[0].isDown && !keys[1].isDown)
 
-        // Long-press Back → opens overlay panel and blocks subsequent remote moves until closed.
+        // Long-press Play/Pause → opens overlay panel and blocks subsequent remote moves until closed.
         sent.value.removeAll()
-        p.remoteMenu(isDown: true, at: 1500 * ms)
+        p.remotePlayPause(isDown: true, at: 1500 * ms)
         p.tick(at: 1900 * ms)
-        p.remoteMenu(isDown: false, at: 1950 * ms)
+        p.remotePlayPause(isDown: false, at: 1950 * ms)
         #expect(shortcuts.value == [.overlay(true)])
         #expect(p.overlayShown)
 
