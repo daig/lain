@@ -24,9 +24,9 @@ import Testing
 
         // Slow roll: 0.10 normalized over 100 ms in 5 small steps (low speed → gain = 1.0).
         p.remoteSurfaceTouched(true, at: 0)
-        p.remoteSurfaceMoved(x: 0.0, y: 0.0, at: 10 * ms)
+        p.remoteSurfaceMoved(x: 0.1, y: 0.0, at: 10 * ms)
         for i in 1...5 {
-            p.remoteSurfaceMoved(x: Double(i) * 0.02, y: 0.0, at: UInt64(10 + i * 20) * ms)
+            p.remoteSurfaceMoved(x: 0.1 + Double(i) * 0.02, y: 0.0, at: UInt64(10 + i * 20) * ms)
         }
         p.remoteSurfaceTouched(false, at: 150 * ms)
         let slowDelta = p.pointer.x - startX

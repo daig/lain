@@ -104,8 +104,6 @@ public struct SiriRemoteInput: Sendable {
     private var surfaceTouched = false
     /// Last accepted absolute pad position (`[-1, 1]`), nil until the first sample after touchdown.
     private var lastSurface: (x: Double, y: Double)?
-    /// Buffers a sudden exact `(0, 0)` sample from `GCMicroGamepad.dpad` in case `surfaceTouched(false)` arrives next.
-    private var suppressedZero = false
     private var jogState: JogState = .disarmed
 
     /// Recent pointer deltas for pre-click jitter stabilization.
@@ -155,13 +153,11 @@ public struct SiriRemoteInput: Sendable {
         surfaceTouched = isTouched
         if isTouched {
             lastSurface = nil
-            suppressedZero = false
             jogState = .disarmed
             return []
         }
         let wasJogging = isJogActive
         lastSurface = nil
-        suppressedZero = false
         jogState = .disarmed
         return wasJogging ? [.scrollEnded] : []
     }
@@ -169,24 +165,23 @@ public struct SiriRemoteInput: Sendable {
     /// Absolute normalized position (`x, y ∈ [-1, 1]`, y up-positive) from `GCDirectionalGamepad.dpad`.
     public mutating func surfaceMoved(x: Double, y: Double, at timeNs: UInt64) -> [Action] {
         guard x.isFinite, y.isFinite else { return [] }
-        // Ignore lift-to-zero after touch-up.
+        // Exact (0, 0) on `GCMicroGamepad.dpad` is the hardware finger-lift signal. On Siri Remotes
+        // whose touch-surface button does not fire capacitive `touchedChangedHandler(false)`, this is
+        // the only lift event we receive — reset `surfaceTouched` and `lastSurface` so lifting and
+        // re-touching on another part of the pad never snaps the cursor backwards.
+        if x == 0 && y == 0 {
+            let wasJogging = isJogActive
+            surfaceTouched = false
+            lastSurface = nil
+            jogState = .disarmed
+            return wasJogging ? [.scrollEnded] : []
+        }
         if !surfaceTouched {
-            if x == 0 && y == 0 { return [] }
-            // Fallback for remotes that don't expose `isTouched`: treat non-zero as implicitly touched.
             surfaceTouched = true
             lastSurface = (x, y)
-            suppressedZero = false
             armJogIfOuterRing(x: x, y: y)
             return []
         }
-        // Guard against `(0, 0)` arriving slightly before `surfaceTouched(false)` on hardware lift:
-        // if we jump straight to exact `(0, 0)` from away from center, wait for the next sample.
-        if x == 0 && y == 0, let prev = lastSurface, hypot(prev.x, prev.y) > 0.08 {
-            suppressedZero = true
-            return []
-        }
-        suppressedZero = false
-
         guard let prev = lastSurface else {
             lastSurface = (x, y)
             armJogIfOuterRing(x: x, y: y)
@@ -446,7 +441,6 @@ public struct SiriRemoteInput: Sendable {
     public mutating func reset() {
         surfaceTouched = false
         lastSurface = nil
-        suppressedZero = false
         jogState = .disarmed
         recentMoves.removeAll()
         isLeftDown = false
@@ -611,7 +605,6 @@ public struct SiriRemoteInput: Sendable {
         }
         surfaceTouched = false
         lastSurface = nil
-        suppressedZero = false
         centerPhysicalDown = false
         centerConsumedForUnlock = false
         centerDownAtNs = nil

@@ -36,12 +36,36 @@ import Testing
         #expect(b.surfaceTouched(false, at: 22 * ms).isEmpty)
     }
 
+    @Test func clutchingWithoutTouchedEventsNeverSnapsCursorBack() {
+        // Real Siri Remote clickpads do not fire capacitive touchedChangedHandler(false) on light thumb lift;
+        // dpad simply returns to (0, 0). Re-touching on the opposite side to swipe again must not snap back.
+        var r = SiriRemoteInput()
+        #expect(r.surfaceMoved(x: -0.5, y: 0.0, at: 10 * ms).isEmpty)
+        let firstSwipe = r.surfaceMoved(x: 0.5, y: 0.0, at: 30 * ms)
+        guard case .moveBy(let dx1, _) = firstSwipe.first else {
+            Issue.record("expected positive swipe, got \(firstSwipe)"); return
+        }
+        #expect(dx1 > 0)
+
+        // Thumb lifts -> dpad jumps to (0, 0) with no surfaceTouched(false).
+        #expect(r.surfaceMoved(x: 0.0, y: 0.0, at: 50 * ms).isEmpty)
+        #expect(!r.isActive)
+
+        // Thumb lands back on the left edge -> sets new anchor with ZERO backward snap.
+        #expect(r.surfaceMoved(x: -0.5, y: 0.0, at: 100 * ms).isEmpty)
+        let secondSwipe = r.surfaceMoved(x: 0.5, y: 0.0, at: 120 * ms)
+        guard case .moveBy(let dx2, _) = secondSwipe.first else {
+            Issue.record("expected second positive swipe, got \(secondSwipe)"); return
+        }
+        #expect(dx2 > 0)
+    }
+
     @Test func clickStabilizationRollsBackSmallPreClickThumbRoll() {
         var r = SiriRemoteInput()
         _ = r.surfaceTouched(true, at: 0)
-        _ = r.surfaceMoved(x: 0.0, y: 0.0, at: 10 * ms)
+        _ = r.surfaceMoved(x: 0.1, y: 0.0, at: 10 * ms)
         // Small pre-click thumb roll right before pressing Center (~4.2 counts).
-        let drift = r.surfaceMoved(x: 0.03, y: 0.0, at: 40 * ms)
+        let drift = r.surfaceMoved(x: 0.13, y: 0.0, at: 40 * ms)
         #expect(drift.count == 1)
         let click = r.centerButton(isDown: true, at: 60 * ms)
         #expect(click.count == 2)
@@ -57,9 +81,9 @@ import Testing
     @Test func clickStabilizationDoesNotUndoFastDeliberateFlick() {
         var r = SiriRemoteInput()
         _ = r.surfaceTouched(true, at: 0)
-        _ = r.surfaceMoved(x: 0.0, y: 0.0, at: 10 * ms)
+        _ = r.surfaceMoved(x: 0.1, y: 0.0, at: 10 * ms)
         // Large deliberate swipe (0.4 * 140 = 56 counts > stabilizeMaxTravel 14).
-        _ = r.surfaceMoved(x: 0.4, y: 0.0, at: 40 * ms)
+        _ = r.surfaceMoved(x: 0.5, y: 0.0, at: 40 * ms)
         let click = r.centerButton(isDown: true, at: 55 * ms)
         #expect(click == [.button(.left, isDown: true)])
     }
@@ -67,12 +91,12 @@ import Testing
     @Test func postClickFreezeAbsorbsMicroJitterThenAllowsDeliberateDrag() {
         var r = SiriRemoteInput()
         _ = r.surfaceTouched(true, at: 0)
-        _ = r.surfaceMoved(x: 0.0, y: 0.0, at: 10 * ms)
+        _ = r.surfaceMoved(x: 0.1, y: 0.0, at: 10 * ms)
         _ = r.centerButton(isDown: true, at: 100 * ms)
         // Tiny mechanical settle within freeze window (2.8 counts < clickSlop 8).
-        #expect(r.surfaceMoved(x: 0.02, y: 0.0, at: 120 * ms).isEmpty)
+        #expect(r.surfaceMoved(x: 0.12, y: 0.0, at: 120 * ms).isEmpty)
         // Deliberate drag exceeding clickSlop (0.12 * 140 = 16.8 counts).
-        let drag = r.surfaceMoved(x: 0.14, y: 0.0, at: 130 * ms)
+        let drag = r.surfaceMoved(x: 0.24, y: 0.0, at: 130 * ms)
         #expect(drag.count == 1)
         if case .moveBy(let dx, _) = drag[0] {
             #expect(dx > 10)
